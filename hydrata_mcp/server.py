@@ -223,7 +223,7 @@ async def list_runs(
 # ---------------------------------------------------------------------------
 def create_app():
     """Create ASGI application for uvicorn."""
-    return mcp.http_app(path="/mcp", stateless_http=True)
+    return mcp.http_app(path="/", stateless_http=True)
 
 
 # Module-level ASGI app for `uvicorn hydrata_mcp.server:app`

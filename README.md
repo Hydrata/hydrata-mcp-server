@@ -2,43 +2,26 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-MCP server for [Hydrata](https://hydrata.com), a geospatial hydraulic modeling platform built on [ANUGA](https://github.com/anuga-community/anuga_core). Lets AI agents run flood simulations, track progress, and retrieve results through the [Model Context Protocol](https://modelcontextprotocol.io).
+<!-- mcp-name: io.github.Hydrata/hydrata-mcp-server -->
 
-## Quickstart
+MCP server for [Hydrata Cloud](https://hydrata.com) — run [ANUGA](https://github.com/anuga-community/anuga_core) flood simulations, track progress, and retrieve results through the [Model Context Protocol](https://modelcontextprotocol.io).
 
-```bash
-pip install -e .
-```
+## Connect
 
-Set environment variables:
-
-```bash
-export HYDRATA_API_URL="https://your-instance.com/api/v2/anuga"
-export HYDRATA_API_USERNAME="your-username"
-export HYDRATA_API_PASSWORD="your-password"
-```
-
-Run the server:
-
-```bash
-hydrata-mcp                          # CLI (stdio or HTTP)
-uvicorn hydrata_mcp.server:app       # ASGI (StreamableHTTP)
-```
-
-## Claude Code integration
-
-Add to your `.mcp.json`:
+Add to your `.mcp.json` (Claude Code, Cursor, Windsurf, etc.):
 
 ```json
 {
   "mcpServers": {
     "hydrata": {
       "type": "streamable-http",
-      "url": "https://your-instance.com/mcp/mcp"
+      "url": "https://hydrata.com/mcp/"
     }
   }
 }
 ```
+
+A [Hydrata Cloud](https://hydrata.com) account is required. Contact us at hydrata.com to get started.
 
 ## Tools
 
@@ -60,22 +43,22 @@ Add to your `.mcp.json`:
 list_projects → get_scenario → start_simulation → poll get_run_status → get_run
 ```
 
-## Configuration
+## What is Hydrata?
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `HYDRATA_API_URL` | Yes | | Base URL for the Hydrata ANUGA API |
-| `HYDRATA_API_USERNAME` | Yes | | HTTP Basic auth username |
-| `HYDRATA_API_PASSWORD` | Yes | | HTTP Basic auth password |
-| `HYDRATA_MCP_PORT` | No | `8001` | Server listen port |
-| `HYDRATA_MCP_HOST` | No | `127.0.0.1` | Server bind address |
+[Hydrata](https://hydrata.com) is a geospatial hydraulic modeling platform. It runs [ANUGA](https://github.com/anuga-community/anuga_core) flood simulations in the cloud — upload terrain data, configure scenarios, run simulations on managed compute (Celery, EC2, or AWS Batch), and visualise results on interactive maps.
+
+ANUGA is an open-source hydrodynamic model developed by [Geoscience Australia](https://www.ga.gov.au/) and the [Australian National University](https://www.anu.edu.au/). It solves the shallow water wave equations using finite volumes on an unstructured triangular mesh.
 
 ## Development
 
 ```bash
+git clone https://github.com/Hydrata/hydrata-mcp-server.git
+cd hydrata-mcp-server
 pip install -e ".[dev]"
 pytest -v
 ```
+
+Contributions welcome — see [issues](https://github.com/Hydrata/hydrata-mcp-server/issues).
 
 ## License
 
