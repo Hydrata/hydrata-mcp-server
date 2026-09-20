@@ -751,3 +751,547 @@ class TestGetTerrainTool:
             props = tools[name]["inputSchema"]["properties"]
             for forbidden in ("file", "bytes", "base64", "content", "data", "path"):
                 assert forbidden not in props, (name, forbidden)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3171 (W1.2, epic 2467) — create_time_series + attach_input_layer.
+#
+# create_time_series POSTs /projects/<id>/time-series/ with `series_type` and
+# `units` as TOP-LEVEL keys (TimeSeries HAS both fields: hydrology/models.py:90-96;
+# the Hydrographs panel filters the list by ?series_type, so a folded-into-
+# description value would leave an inflow series invisible) and mirrors
+# TimeSeries.clean() client-side, because a bad row is an UNHANDLED 500 on the
+# API (full_clean's ValidationError is not an APIException), whose body the
+# client masks. attach_input_layer PATCHes the project's DEFAULT row for all
+# SIX kinds — the terrain chain seeds Structure 01 / MeshRegion 01 too, and a
+# POST to /structures/ or /mesh-regions/ with gn_layer is silently overwritten
+# by the async layer factory (api_v2.py perform_create :5247-5261) — so the
+# suite registers those POST routes and asserts they are NEVER called. The
+# execution-status route is GeoNode's, outside /api/v2/anuga, so its URL is
+# asserted at the ORIGIN. The stored proof selects on
+# `-k "time_series or attach_input_layer"`: every test NAME carries a token.
+# ---------------------------------------------------------------------------
+ORIGIN = "https://hydrata.example.com"
+EXEC_ID = "b7e1c2d3-4444-4555-8666-777788889999"
+EXEC_STATUS_URL = f"{ORIGIN}/api/v2/resource-service/execution-status/{EXEC_ID}"
+EXEC_REQUEST_URL = f"{ORIGIN}/api/v2/executionrequest/{EXEC_ID}/"
+INPUT_LAYER_ROUTES = {
+    "boundary": "boundaries",
+    "friction": "frictions",
+    "inflow": "inflows",
+    "rainfall": "rainfalls",
+    "structure": "structures",
+    "mesh_region": "mesh-regions",
+}
+DEFAULT_TITLES = {
+    "boundary": "Boundary 01",
+    "friction": "Friction 01",
+    "inflow": "Inflow 01",
+    "rainfall": "Rainfall 01",
+    "structure": "Structure 01",
+    "mesh_region": "MeshRegion 01",
+}
+ROW_DATA = [
+    {"timestamp": "1998-08-17T00:00:00", "value": 0.0},
+    {"timestamp": "1998-08-17T00:05:00Z", "value": 1.5},  # clean() strips a trailing Z
+    {"timestamp": "1998-08-17T00:10:00", "value": "2.25"},  # clean() float()s a numeric string
+]
+
+
+def _series_args(**overrides):
+    args = {
+        "project_id": 42,
+        "name": "rain_gauge_200",
+        "data": {"rowData": ROW_DATA},
+        "series_type": "hyetograph",
+        "units": "mm/hr",
+        "timezone": "Australia/Sydney",
+    }
+    args.update(overrides)
+    return args
+
+
+def _series_row(pk, **overrides):
+    row = {
+        "id": pk,
+        "project": 42,
+        "name": "rain_gauge_200",
+        "source": "",
+        "description": "",
+        "location_name": "",
+        "timezone": "Australia/Sydney",
+        "series_type": "hyetograph",
+        "units": "mm/hr",
+        "data": {"rowData": ROW_DATA},
+        "perms": ["view", "change"],
+    }
+    row.update(overrides)
+    return row
+
+
+def _exec(status, resources=None, **extra):
+    return {
+        "user": "testuser",
+        "status": status,
+        "func_name": "import_new_resource",
+        "output_params": {"resources": resources or []},
+        "log": None,
+        **extra,
+    }
+
+
+def _row(pk, title, gn_layer=None):
+    return {"id": pk, "title": title, "project": 42, "gn_layer": gn_layer, "gn_layer_name": None, "perms": []}
+
+
+def _dataset(pk, alternate):
+    return {"dataset": {"pk": str(pk), "alternate": alternate, "title": alternate}}
+
+
+def _mock_no_wrapper_posts():
+    """The two routes attach_input_layer must NEVER hit (see the block comment)."""
+    return (
+        respx.post(f"{BASE}/projects/42/structures/").mock(return_value=httpx.Response(201, json={})),
+        respx.post(f"{BASE}/projects/42/mesh-regions/").mock(return_value=httpx.Response(201, json={})),
+    )
+
+
+def _tool_error_text(result):
+    """The refusal text of an isError result. Fails loudly if the tool did NOT refuse."""
+    assert result.get("isError") is True, result["content"][0]["text"]
+    return result["content"][0]["text"]
+
+
+class TestCreateTimeSeriesTool:
+    @respx.mock
+    async def test_create_time_series_posts_series_type_and_units_top_level_and_forwards_basic(
+        self, _server
+    ):
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(201, json=_series_row(77))
+        )
+        result = await _call_as_caller(_server, "create_time_series", _series_args())
+        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        body = json.loads(route.calls[0].request.content)
+        # AC (flipped at the re-aim): both are TOP-LEVEL body keys, never folded
+        # into description; rows travel VERBATIM (clean() normalises them server-side).
+        assert body == {
+            "name": "rain_gauge_200",
+            "description": "",
+            "source": "",
+            "location_name": "",
+            "timezone": "Australia/Sydney",
+            "series_type": "hyetograph",
+            "units": "mm/hr",
+            "data": {"rowData": ROW_DATA},
+        }
+        assert "series_type" not in body["description"]
+        data = _tool_json(result)
+        # Compact record: the API echoes the whole row incl. `data` (~100 KB for
+        # a 1447-row gauge); 50 of those would drown the driving agent's context.
+        assert data == {
+            "id": 77,
+            "name": "rain_gauge_200",
+            "series_type": "hyetograph",
+            "units": "mm/hr",
+            "timezone": "Australia/Sydney",
+            "row_count": 3,
+            "http_status": 201,
+        }
+        assert "data" not in data
+
+    @respx.mock
+    async def test_create_time_series_sends_stage_series_type_verbatim(self, _server):
+        """The tide series in the bundle is `stage`; a build that drops the key
+        would still land as the model default (hyetograph) and grade green."""
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(201, json=_series_row(78, series_type="stage", units="m"))
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "create_time_series", _series_args(series_type="stage", units="m")
+            )
+        )
+        body = json.loads(route.calls[0].request.content)
+        assert body["series_type"] == "stage"
+        assert body["units"] == "m"
+        assert data["series_type"] == "stage"
+
+    @respx.mock
+    async def test_create_time_series_rejects_unknown_series_type_without_upstream_call(
+        self, _server
+    ):
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(201, json=_series_row(77))
+        )
+        text = _tool_error_text(
+            await _call_as_caller(_server, "create_time_series", _series_args(series_type="rainfall"))
+        )
+        assert not route.called
+        for choice in ("hyetograph", "hydrograph", "stage", "generic"):
+            assert choice in text
+
+    @pytest.mark.parametrize(
+        "bad_data",
+        [
+            [{"timestamp": "1998-08-17T00:00:00", "value": 1}],  # a bare list (model default!)
+            {"rows": []},  # no rowData
+            {"rowData": {"timestamp": "1998-08-17T00:00:00", "value": 1}},  # rowData not a list
+            "not even json",
+        ],
+        ids=["list", "no-rowData", "rowData-not-list", "string"],
+    )
+    @respx.mock
+    async def test_create_time_series_rejects_non_rowdata_shape_without_upstream_call(
+        self, _server, bad_data
+    ):
+        """A non-{rowData: [...]} `data` is an UNHANDLED 500 on the API (clean()
+        does data.get('rowData') without a guard) whose body the client masks."""
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(201, json=_series_row(77))
+        )
+        text = _tool_error_text(
+            await _call_as_caller(_server, "create_time_series", _series_args(data=bad_data))
+        )
+        assert not route.called
+        # A non-object is refused one layer earlier, by the tool's own input
+        # schema (`data: dict` → pydantic "Input should be a valid dictionary");
+        # an object of the wrong shape by _validate_row_data. Both: no request.
+        assert "rowData" in text or "valid dictionary" in text
+
+    @pytest.mark.parametrize(
+        "bad_row",
+        [
+            {"timestamp": "17/08/1998 00:00", "value": 1.0},  # not ISO 8601
+            {"timestamp": "1998-08-17T00:00:00", "value": "heavy"},  # not a number
+            {"timestamp": "1998-08-17T00:00:00"},  # value missing
+            {"value": 1.0},  # timestamp missing
+            {"timestamp": 19980817, "value": 1.0},  # timestamp not a string
+            ["1998-08-17T00:00:00", 1.0],  # row not a dict
+        ],
+        ids=["bad-iso", "non-numeric", "no-value", "no-timestamp", "int-timestamp", "row-list"],
+    )
+    @respx.mock
+    async def test_create_time_series_rejects_bad_row_without_upstream_call(
+        self, _server, bad_row
+    ):
+        """Mirrors TimeSeries.clean() (hydrology/models.py:126-151): its
+        ValidationError is raised from full_clean() inside save(), which DRF
+        does NOT map to a 400 — the API answers 500 and the client hides the
+        body. The tool must refuse first, naming the offending row."""
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(201, json=_series_row(77))
+        )
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server,
+                "create_time_series",
+                _series_args(data={"rowData": [ROW_DATA[0], bad_row]}),
+            )
+        )
+        assert not route.called
+        assert "row 1" in text
+
+    @respx.mock
+    async def test_create_time_series_400_surfaces_the_api_detail(self, _server):
+        """A bad `timezone` IS a 400 (DRF ChoiceField) — its detail must reach the agent."""
+        from hydrata_mcp.client import HydrataAPIError
+
+        respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(
+                400, json={"timezone": ['"Mars/Olympus" is not a valid choice.']}
+            )
+        )
+        with pytest.raises(HydrataAPIError, match="400") as exc_info:
+            await _server.create_time_series(
+                **{k: v for k, v in _series_args(timezone="Mars/Olympus").items()}
+            )
+        assert "Mars/Olympus" in str(exc_info.value)
+
+
+class TestAttachInputLayerTool:
+    @pytest.mark.parametrize("kind", list(INPUT_LAYER_ROUTES))
+    @respx.mock
+    async def test_attach_input_layer_patches_the_default_row_and_forwards_basic(
+        self, _server, kind
+    ):
+        route_name = INPUT_LAYER_ROUTES[kind]
+        pk = 124_556
+        # The execution-status route is GeoNode's, at the ORIGIN — not under /api/v2/anuga.
+        status_route = respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        list_route = respx.get(f"{BASE}/projects/42/{route_name}/").mock(
+            return_value=httpx.Response(200, json=[_row(pk, DEFAULT_TITLES[kind], gn_layer=1400)])
+        )
+        patch_route = respx.patch(f"{BASE}/projects/42/{route_name}/{pk}/").mock(
+            return_value=httpx.Response(200, json=_row(pk, DEFAULT_TITLES[kind], gn_layer=1502))
+        )
+        dataset_route = respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:rai_42_rainfall_01"))
+        )
+        structures_post, mesh_regions_post = _mock_no_wrapper_posts()
+
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": kind, "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+
+        for route in (status_route, list_route, patch_route, dataset_route):
+            assert route.called, route
+            assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert str(status_route.calls[0].request.url) == EXEC_STATUS_URL
+        # The PATCH: plural route + the default row's pk, body exactly {"gn_layer": pk}.
+        assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
+        # NEVER a POST to the two wrapper routes (the async layer factory would
+        # overwrite gn_layer moments after the 201).
+        assert not structures_post.called
+        assert not mesh_regions_post.called
+        assert data["outcome"] == "attached"
+        assert data["kind"] == kind
+        assert data["route"] == route_name
+        assert data["row_id"] == pk
+        assert data["row_title"] == DEFAULT_TITLES[kind]
+        assert data["row_ids"] == [pk]
+        assert data["gn_layer"] == 1502
+        assert data["dataset_pk"] == 1502
+        assert data["dataset_alternate"] == "geonode:rai_42_rainfall_01"
+        assert data["execution_status"] == "finished"
+        assert data["http_status"] == 200
+
+    @pytest.mark.parametrize("kind", ["breakline", "culvert"])
+    @respx.mock
+    async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_http(
+        self, _server, kind
+    ):
+        status_route = respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        list_routes = [
+            respx.get(f"{BASE}/projects/42/{r}/").mock(return_value=httpx.Response(200, json=[]))
+            for r in INPUT_LAYER_ROUTES.values()
+        ]
+        structures_post, mesh_regions_post = _mock_no_wrapper_posts()
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "attach_input_layer", {"project_id": 42, "kind": kind, "execution_id": EXEC_ID}
+            )
+        )
+        assert not status_route.called
+        assert not any(r.called for r in list_routes)
+        assert not structures_post.called and not mesh_regions_post.called
+        assert "TASK-3040" in text
+        assert "not conveyed" in text
+        assert kind in text
+
+    @respx.mock
+    async def test_attach_input_layer_refuses_unknown_kind_listing_the_six(self, _server):
+        status_route = respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "attach_input_layer", {"project_id": 42, "kind": "terrain", "execution_id": EXEC_ID}
+            )
+        )
+        assert not status_route.called
+        for kind in INPUT_LAYER_ROUTES:
+            assert kind in text
+
+    @respx.mock
+    async def test_attach_input_layer_surfaces_execution_failure_verbatim(self, _server):
+        failed = _exec(
+            "failed",
+            log="Unable to import the file: rainfall.geojson is not a valid GeoJSON",
+            step="import",
+        )
+        status_route = respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=failed))
+        list_route = respx.get(f"{BASE}/projects/42/rainfalls/").mock(
+            return_value=httpx.Response(200, json=[_row(1, "Rainfall 01")])
+        )
+        patch_route = respx.patch(f"{BASE}/projects/42/rainfalls/1/").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "rainfall", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+        assert status_route.call_count == 1  # failed is terminal: no further polls
+        assert not list_route.called
+        assert not patch_route.called
+        assert data["outcome"] == "upload_failed"
+        assert data["execution_status"] == "failed"
+        assert data["execution"] == failed  # verbatim
+        assert "not a valid GeoJSON" in data["execution"]["log"]
+
+    @respx.mock
+    async def test_attach_input_layer_falls_back_to_executionrequest_for_the_dataset_pk(
+        self, _server
+    ):
+        """finished but output_params.resources empty → GET /api/v2/executionrequest/<id>/
+        → request.output_params.resources[0].id (the e2e recipe's fallback)."""
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [])))
+        fallback = respx.get(EXEC_REQUEST_URL).mock(
+            return_value=httpx.Response(
+                200, json={"request": {"output_params": {"resources": [{"id": "1502"}]}}}
+            )
+        )
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01")])
+        )
+        patch_route = respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502))
+        )
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:boundary"))
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "boundary", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+        assert fallback.called
+        assert fallback.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
+        assert data["outcome"] == "attached"
+        assert data["dataset_pk"] == 1502
+
+    @respx.mock
+    async def test_attach_input_layer_polls_ready_running_then_finished(self, _server):
+        status_route = respx.get(EXEC_STATUS_URL).mock(
+            side_effect=[
+                httpx.Response(200, json=_exec("ready")),
+                httpx.Response(200, json=_exec("running")),
+                httpx.Response(200, json=_exec("finished", [{"id": 1502}])),
+            ]
+        )
+        respx.get(f"{BASE}/projects/42/frictions/").mock(
+            return_value=httpx.Response(200, json=[_row(5, "Friction 01")])
+        )
+        respx.patch(f"{BASE}/projects/42/frictions/5/").mock(
+            return_value=httpx.Response(200, json=_row(5, "Friction 01", gn_layer=1502))
+        )
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:friction"))
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "friction", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+        assert status_route.call_count == 3
+        assert data["polls"] == 3
+        assert data["outcome"] == "attached"
+
+    @respx.mock
+    async def test_attach_input_layer_timeout_is_bounded_and_patches_nothing(self, _server):
+        """timeout_seconds=0 → ONE status read, then `timed_out`; the agent re-calls."""
+        status_route = respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("running"))
+        )
+        list_route = respx.get(f"{BASE}/projects/42/rainfalls/").mock(
+            return_value=httpx.Response(200, json=[_row(1, "Rainfall 01")])
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {
+                    "project_id": 42,
+                    "kind": "rainfall",
+                    "execution_id": EXEC_ID,
+                    "timeout_seconds": 0,
+                    "poll_interval_seconds": 0,
+                },
+            )
+        )
+        assert status_route.call_count == 1
+        assert not list_route.called
+        assert data["outcome"] == "timed_out"
+        assert data["execution_status"] == "running"
+        assert data["polls"] == 1
+
+    @respx.mock
+    async def test_attach_input_layer_with_no_default_row_says_run_finalize_first(self, _server):
+        respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        respx.get(f"{BASE}/projects/42/inflows/").mock(return_value=httpx.Response(200, json=[]))
+        patch_route = respx.patch(url__regex=rf"{BASE}/projects/42/inflows/\d+/").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "inflow", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+        assert not patch_route.called
+        assert data["outcome"] == "no_default_row"
+        assert "finalize_terrain_upload" in data["message"]
+        assert data["dataset_pk"] == 1502  # the upload DID land; only the row is missing
+
+    @respx.mock
+    async def test_attach_input_layer_with_several_rows_patches_the_01_row_and_reports_ids(
+        self, _server
+    ):
+        """'First' is deterministic: the '<Kind> 01' row if present, else the lowest id
+        (the list has no declared ordering). Every id is reported."""
+        respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        respx.get(f"{BASE}/projects/42/mesh-regions/").mock(
+            return_value=httpx.Response(
+                200,
+                json=[_row(9, "MeshRegion 02"), _row(5, "MeshRegion 01"), _row(2, "Fine mesh")],
+            )
+        )
+        patch_route = respx.patch(f"{BASE}/projects/42/mesh-regions/5/").mock(
+            return_value=httpx.Response(200, json=_row(5, "MeshRegion 01", gn_layer=1502))
+        )
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:mesh"))
+        )
+        _mock_no_wrapper_posts()
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "mesh_region", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+        assert patch_route.called
+        assert data["row_id"] == 5
+        assert data["row_ids"] == [9, 5, 2]
+
+    async def test_attach_input_layer_and_time_series_listed_not_conveyed_no_file_inputs(
+        self, _server
+    ):
+        """AC3: 'not conveyed' is in attach_input_layer's description; neither
+        tool takes file contents (create_time_series takes a small JSON `data`
+        object by design — decision D7 forbids bytes, not row objects)."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        assert "create_time_series" in tools and "attach_input_layer" in tools
+        attach = tools["attach_input_layer"]["description"]
+        assert "not conveyed" in attach
+        assert "TASK-3040" in attach
+        assert "base_file" in attach  # the curl recipe the agent runs itself
+        for name in ("create_time_series", "attach_input_layer"):
+            props = tools[name]["inputSchema"]["properties"]
+            for forbidden in ("file", "bytes", "base64", "content", "path", "geojson"):
+                assert forbidden not in props, (name, forbidden)
+        series_props = tools["create_time_series"]["inputSchema"]["properties"]
+        assert "series_type" in series_props and "units" in series_props

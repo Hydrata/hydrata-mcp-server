@@ -1,16 +1,18 @@
-"""Hydrata MCP Server — 13 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 15 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Annotated
 
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from starlette.middleware import Middleware
 
-from .client import HydrataClient
+from .client import HydrataAPIError, HydrataClient
 from .config import Config
 
 config = Config.from_env()
@@ -157,7 +159,11 @@ mcp = FastMCP(
         "poll get_run_status until complete → get_run for results. "
         "To author a project from your own files: create_project → "
         "presign_terrain_upload → PUT the GeoTIFF yourself (curl --upload-file) → "
-        "finalize_terrain_upload → get_terrain (polls until ready). No tool accepts "
+        "finalize_terrain_upload → get_terrain (polls until ready) → for each "
+        "input GeoJSON (boundary, friction, inflow, rainfall, structure, mesh_region): "
+        "multipart-POST it yourself to <origin>/api/v2/uploads/upload/ with the "
+        "same credential, then attach_input_layer with the execution_id → "
+        "create_time_series for each rain gauge / hydrograph. No tool accepts "
         "file contents; the agent moves the bytes."
     ),
     lifespan=lifespan,
@@ -363,8 +369,8 @@ async def list_runs(
 # (api_v2.py upload_presign / upload_finalize): the bytes never touch uwsgi,
 # and no Terrain row exists until finalize. finalize kicks the SAME Celery
 # chain as a multipart upload — create_terrain_gn_layer → create_supporting_models —
-# which also seeds the project's default Boundary/Friction/Inflow/Rainfall/
-# MeshRegion rows that W1.2's attach_input_layer PATCHes.
+# which also seeds the project's SIX default Boundary/Friction/Inflow/Rainfall/
+# Structure/MeshRegion rows that W1.2's attach_input_layer PATCHes.
 # ---------------------------------------------------------------------------
 
 # Terrain.status runs creating → styling → ready | error (gn_anuga tasks.py
@@ -470,9 +476,9 @@ async def finalize_terrain_upload(
 
     Call this only after the presigned PUT returned 200. Creates the Terrain row
     (status `creating`) and queues the import chain — reproject to UTM, publish
-    the layer + hillshade, style — which also seeds the project's default
-    boundary, friction, inflow, rainfall and mesh-region rows. Returns 202 with
-    the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND
+    the layer + hillshade, style — which also seeds the project's six default
+    boundary, friction, inflow, rainfall, structure and mesh-region rows.
+    Returns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND
     means no object is at `staging_key`: the PUT did not land (check its status
     code and Content-Type) — do not retry finalize until it has.
     """
@@ -567,6 +573,352 @@ async def get_terrain(
     }
     if terrain_id is None:
         result["terrain_count"] = terrain_count
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3171 (W1.2, epic 2467) — time series + input-layer attach tools.
+#
+# create_time_series is the one tool that takes structured data inline: a
+# gauge is a few thousand {timestamp, value} rows (~72 KB compact for the
+# largest Towradgi gauge), not a file — decision D7 forbids BYTES, and the
+# GeoJSONs stay with the agent. attach_input_layer never sees the GeoJSON
+# either: the agent multipart-POSTs it to GeoNode's /api/v2/uploads/upload/
+# with its own credential and hands over the execution id; the tool follows
+# the import, then PATCHes the dataset pk onto the project's DEFAULT row.
+# ---------------------------------------------------------------------------
+
+# TimeSeries.series_type choices (hydrology/models.py:90-95). The list route
+# filters by ?series_type and the Hydrographs panel reads `hydrograph` rows,
+# so the value must travel as a TOP-LEVEL key — folded into `description` it
+# would leave an inflow series invisible. Validated here so an unknown value
+# is refused without an upstream call.
+SERIES_TYPES = ("hyetograph", "hydrograph", "stage", "generic")
+
+# kind → the plural V2 route (gn_anuga urls.py :141-:225). ALL SIX are handled
+# the same way — GET the list, PATCH the default row's gn_layer — because the
+# terrain chain seeds all six (tasks.py create_supporting_models :2802-2809)
+# and a POST to /structures/ or /mesh-regions/ carrying gn_layer is silently
+# OVERWRITTEN: perform_create (api_v2.py :5247-5261) unconditionally queues
+# create_layer_for_model, which makes an empty dataset and re-saves gn_layer
+# moments after the 201.
+INPUT_LAYER_ROUTES = {
+    "boundary": "boundaries",
+    "friction": "frictions",
+    "inflow": "inflows",
+    "rainfall": "rainfalls",
+    "structure": "structures",
+    "mesh_region": "mesh-regions",
+}
+# The title create_supporting_models gives each default row; used to pick the
+# row deterministically when a project has more than one (the list has no
+# declared ordering).
+INPUT_LAYER_DEFAULT_TITLES = {
+    "boundary": "Boundary 01",
+    "friction": "Friction 01",
+    "inflow": "Inflow 01",
+    "rainfall": "Rainfall 01",
+    "structure": "Structure 01",
+    "mesh_region": "MeshRegion 01",
+}
+# No REST create path exists for either at HEAD (api_v2.py:3392: "no create
+# path exists today (TASK-3040 AC6)"), and run_anuga does not convey culvert
+# flow — so the tool refuses up front rather than pretending the layer landed.
+UNSUPPORTED_INPUT_LAYER_KINDS = frozenset({"breakline", "culvert"})
+UNSUPPORTED_INPUT_LAYER_REASON = (
+    "no REST create path exists for breaklines or culverts at HEAD (TASK-3040 AC6 "
+    "retired the UI surface; the models + Scenario FKs stay dormant), and culvert "
+    "flow is not conveyed by run_anuga — attaching one would only pretend the "
+    "layer landed"
+)
+# GeoNode ExecutionRequest statuses (geonode/resource/models.py:29-32).
+EXECUTION_TERMINAL_STATUSES = frozenset({"finished", "failed"})
+
+
+def _validate_row_data(data) -> int:
+    """Client-side mirror of TimeSeries.clean() (hydrology/models.py:126-151).
+
+    Returns the row count. Why here: save() runs full_clean(), whose
+    ValidationError is NOT a DRF APIException, so a bad row (or a `data` that
+    is not {"rowData": [...]}) is an UNHANDLED 500 whose body the client masks
+    — the agent would see "server error" for a typo in one timestamp. The
+    checks are exactly clean()'s: every row a dict with `timestamp` (ISO 8601
+    string, trailing Z tolerated) and `value` (float()-able). Rows are NOT
+    rewritten — clean() normalises them server-side.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("rowData"), list):
+        raise ToolError(
+            "data must be an object shaped {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", "
+            "\"value\": <number>}, ...]} — the API answers 500, not 400, to any other shape"
+        )
+    for index, row in enumerate(data["rowData"]):
+        if not isinstance(row, dict) or not {"timestamp", "value"} <= set(row):
+            raise ToolError(
+                f"data.rowData row {index} must be an object with 'timestamp' and 'value' keys"
+            )
+        timestamp = row["timestamp"]
+        if not isinstance(timestamp, str):
+            raise ToolError(f"data.rowData row {index}: timestamp must be an ISO 8601 string")
+        try:
+            datetime.fromisoformat(timestamp.rstrip("Z"))
+            float(row["value"])
+        except (TypeError, ValueError):
+            raise ToolError(
+                f"data.rowData row {index}: timestamp must be ISO 8601 and value numeric "
+                f"(got timestamp={timestamp!r}, value={row['value']!r})"
+            )
+    return len(data["rowData"])
+
+
+# ---------------------------------------------------------------------------
+# Tool 14: create_time_series
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def create_time_series(
+    project_id: Annotated[int, "The project ID"],
+    name: Annotated[
+        str,
+        "Series name, kept VERBATIM — a rainfall polygon binds to its gauge by this "
+        "exact name (its `data` property), so use the name the GeoJSON features carry",
+    ],
+    data: Annotated[
+        dict,
+        "The rows: {\"rowData\": [{\"timestamp\": \"1998-08-17T00:00:00\", \"value\": 1.5}, "
+        "...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. "
+        "Validated here before anything is sent.",
+    ],
+    description: Annotated[str, "Free-text description (optional)"] = "",
+    series_type: Annotated[
+        str,
+        "One of hyetograph (rainfall depth/intensity — the default), hydrograph "
+        "(flow, read by the Hydrographs panel and inflow boundaries), stage (water "
+        "level, e.g. a tide) or generic. Sent as a top-level field.",
+    ] = "hyetograph",
+    units: Annotated[str, "Display label for the values, e.g. 'mm/hr', 'm^3/s', 'm' (optional)"] = "",
+    source: Annotated[str, "Where the data came from, e.g. a gauge id or agency (optional)"] = "",
+    location_name: Annotated[str, "Human-readable location of the gauge (optional)"] = "",
+    timezone: Annotated[str, "IANA timezone of the timestamps (default 'UTC'), e.g. 'Australia/Sydney'"] = "UTC",
+) -> str:
+    """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
+
+    POSTs /projects/<id>/time-series/ with `series_type` and `units` as
+    top-level fields. `series_type` is checked against the four choices and
+    `data` against the {"rowData": [{timestamp, value}, ...]} shape before any
+    request is made — the API answers 500 (not 400) to a malformed row.
+    Returns a compact record — id, name, series_type, units, timezone,
+    row_count, http_status — not the echoed rows; fetch the full row with the
+    REST API (GET /projects/<id>/time-series/<id>/) if you need to round-trip it.
+    A rainfall polygon references its gauge by the series NAME, so create the
+    gauges with the exact names the rainfall GeoJSON's features carry.
+    """
+    if series_type not in SERIES_TYPES:
+        raise ToolError(
+            f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}"
+        )
+    row_count = _validate_row_data(data)
+    payload = {
+        "name": name,
+        "description": description,
+        "source": source,
+        "location_name": location_name,
+        "timezone": timezone,
+        "series_type": series_type,
+        "units": units,
+        "data": data,
+    }
+    body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
+    if not isinstance(body, dict):
+        return _post_result(body, status_code)
+    landed = body.get("data")
+    if isinstance(landed, dict) and isinstance(landed.get("rowData"), list):
+        row_count = len(landed["rowData"])
+    return json.dumps(
+        {
+            "id": body.get("id"),
+            "name": body.get("name", name),
+            "series_type": body.get("series_type", series_type),
+            "units": body.get("units", units),
+            "timezone": body.get("timezone", timezone),
+            "row_count": row_count,
+            "http_status": status_code,
+        },
+        indent=2,
+    )
+
+
+def _first_resource_id(record) -> int | str | None:
+    """`output_params.resources[0].id` of an execution record, or None."""
+    if not isinstance(record, dict):
+        return None
+    resources = (record.get("output_params") or {}).get("resources") or []
+    if not resources or not isinstance(resources[0], dict):
+        return None
+    pk = resources[0].get("id")
+    if isinstance(pk, str) and pk.isdigit():
+        return int(pk)
+    return pk
+
+
+def _pick_default_row(rows: list, kind: str) -> dict:
+    """The '<Kind> 01' row if present, else the lowest id — the list has no declared ordering."""
+    for row in rows:
+        if isinstance(row, dict) and row.get("title") == INPUT_LAYER_DEFAULT_TITLES[kind]:
+            return row
+    return min(rows, key=lambda row: row.get("id", 0) if isinstance(row, dict) else 0)
+
+
+# ---------------------------------------------------------------------------
+# Tool 15: attach_input_layer
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def attach_input_layer(
+    project_id: Annotated[int, "The project ID"],
+    kind: Annotated[
+        str,
+        "Which input the uploaded layer is: boundary, friction, inflow, rainfall, "
+        "structure or mesh_region. breakline and culvert are refused (see below).",
+    ],
+    execution_id: Annotated[
+        str,
+        "`execution_id` returned by your multipart POST to <origin>/api/v2/uploads/upload/",
+    ],
+    timeout_seconds: Annotated[
+        int,
+        "How long this call keeps polling the upload before it returns `timed_out` "
+        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "0 = one status read, no waiting.",
+    ] = GET_TERRAIN_DEFAULT_TIMEOUT_SECONDS,
+    poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
+) -> str:
+    """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, structure or mesh_region layer.
+
+    The agent moves the bytes: first upload the GeoJSON yourself, with the
+    same credential, to GeoNode's upload endpoint at the site origin:
+
+        curl -sS -u <user>:<password> -F "base_file=@/path/rainfall.geojson" https://<site>/api/v2/uploads/upload/
+
+    → JSON with `execution_id`. Then call this tool with it. The tool polls
+    GET /api/v2/resource-service/execution-status/<execution_id> (bounded by
+    timeout_seconds; statuses ready → running → finished | failed), reads the
+    new dataset's pk, and PATCHes it onto the project's DEFAULT row of that
+    kind ('Boundary 01' … 'MeshRegion 01' — the six rows the terrain import
+    seeds ~30 s after get_terrain reports ready; if the list is still empty
+    the tool says so: run finalize_terrain_upload / wait for get_terrain first).
+
+    `outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk,
+    dataset_alternate — the WFS typename — and every row id seen);
+    `timed_out` (the import is still running: call again with the same
+    arguments); `upload_failed` (the execution record, incl. its log, is
+    returned verbatim — fix the file and upload again); `no_default_row`;
+    `no_dataset` (finished but no resource was recorded). The PATCH is
+    refused with a 400 if the dataset is not owned by you.
+
+    Refused, with no request made: kind `breakline` and kind `culvert` — no
+    REST create path exists for either at HEAD (TASK-3040 AC6), and culvert
+    flow is not conveyed by run_anuga, so attaching one would only pretend.
+    One GeoJSON per kind: all of a kind's features travel in that one file. A
+    rainfall polygon names its gauge in its `data` property — create that
+    gauge with create_time_series under the exact same name.
+    """
+    kind = kind.strip().lower().replace("-", "_")
+    if kind in UNSUPPORTED_INPUT_LAYER_KINDS:
+        raise ToolError(
+            f"kind {kind!r} is refused: {UNSUPPORTED_INPUT_LAYER_REASON}. "
+            f"Accepted kinds: {', '.join(INPUT_LAYER_ROUTES)}."
+        )
+    if kind not in INPUT_LAYER_ROUTES:
+        raise ToolError(
+            f"kind {kind!r} is not one of {', '.join(INPUT_LAYER_ROUTES)} "
+            "(breakline and culvert are refused: no REST create path at HEAD, TASK-3040 AC6)"
+        )
+    route = INPUT_LAYER_ROUTES[kind]
+    timeout_seconds = max(0, min(int(timeout_seconds), GET_TERRAIN_MAX_TIMEOUT_SECONDS))
+    poll_interval_seconds = max(0.0, float(poll_interval_seconds))
+    # GeoNode's route, at the ORIGIN, with NO trailing slash
+    # (geonode/resource/api/urls.py:26) — 404 with one.
+    status_path = f"/api/v2/resource-service/execution-status/{execution_id}"
+
+    started = time.monotonic()
+    polls = 0
+    while True:
+        execution = await client.get_from_origin(status_path)
+        polls += 1
+        status = execution.get("status") if isinstance(execution, dict) else None
+        if status in EXECUTION_TERMINAL_STATUSES:
+            break
+        remaining = timeout_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            return json.dumps(
+                {
+                    "outcome": "timed_out",
+                    "kind": kind,
+                    "execution_status": status,
+                    "polls": polls,
+                    "elapsed_seconds": round(time.monotonic() - started, 1),
+                },
+                indent=2,
+            )
+        await asyncio.sleep(min(poll_interval_seconds, remaining))
+
+    result: dict = {
+        "outcome": None,
+        "kind": kind,
+        "route": route,
+        "execution_status": status,
+        "polls": polls,
+        "elapsed_seconds": round(time.monotonic() - started, 1),
+    }
+    if status == "failed":
+        result["outcome"] = "upload_failed"
+        result["execution"] = execution  # verbatim: the log names the import error
+        return json.dumps(result, indent=2)
+
+    dataset_pk = _first_resource_id(execution)
+    if dataset_pk is None:
+        # The e2e recipe's fallback (test_anuga_merewether.py:296-320): the
+        # detail route carries the same output_params under `request`.
+        detail = await client.get_from_origin(f"/api/v2/executionrequest/{execution_id}/")
+        dataset_pk = _first_resource_id(detail.get("request") if isinstance(detail, dict) else None)
+    result["dataset_pk"] = dataset_pk
+    if dataset_pk is None:
+        result["outcome"] = "no_dataset"
+        result["execution"] = execution
+        return json.dumps(result, indent=2)
+
+    listing = await client.get(f"/projects/{project_id}/{route}/")
+    # A PLAIN JSON list on the six input routes (no count/results wrapper).
+    rows = listing if isinstance(listing, list) else listing.get("results", [])
+    result["row_ids"] = [row.get("id") for row in rows if isinstance(row, dict)]
+    if not rows:
+        result["outcome"] = "no_default_row"
+        result["message"] = (
+            f"project {project_id} has no {kind} row to attach to. The default "
+            f"'{INPUT_LAYER_DEFAULT_TITLES[kind]}' row is seeded by the terrain import: run "
+            "finalize_terrain_upload, wait for get_terrain to report ready, then ~30 s more."
+        )
+        return json.dumps(result, indent=2)
+
+    row = _pick_default_row(rows, kind)
+    body, status_code = await client.patch(
+        f"/projects/{project_id}/{route}/{row['id']}/", json={"gn_layer": dataset_pk}
+    )
+    result.update(
+        {
+            "outcome": "attached",
+            "row_id": row["id"],
+            "row_title": row.get("title"),
+            "gn_layer": body.get("gn_layer") if isinstance(body, dict) else None,
+            "http_status": status_code,
+        }
+    )
+    # The WFS typename, so the agent can count features without a GeoNode
+    # tool of its own. Best effort: the attach already happened.
+    try:
+        detail = await client.get_from_origin(f"/api/v2/datasets/{dataset_pk}/")
+        result["dataset_alternate"] = (detail.get("dataset") or {}).get("alternate")
+    except HydrataAPIError as exc:
+        result["dataset_alternate"] = None
+        result["dataset_lookup_error"] = str(exc)
     return json.dumps(result, indent=2)
 
 

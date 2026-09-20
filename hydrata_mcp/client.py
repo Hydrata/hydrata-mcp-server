@@ -1,6 +1,7 @@
 """Async HTTP client wrapper for Hydrata REST API."""
 
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastmcp.server.dependencies import get_http_headers
@@ -45,6 +46,15 @@ class HydrataClient:
 
     def __init__(self, config: Config) -> None:
         self._base = config.api_url
+        # TASK-3171 (W1.2, epic 2467) — GeoNode's own endpoints (the upload
+        # execution-status, executionrequest and datasets routes) live at
+        # /api/v2/…, NOT under HYDRATA_API_URL's /api/v2/anuga. The origin
+        # (scheme + host[:port]) is derived from the ONE configured URL rather
+        # than a second env var, so prod's 127.0.0.1:8081 internal listener and
+        # localhost both resolve without new config, and the Host header W0.2
+        # sets still applies.
+        split = urlsplit(config.api_url)
+        self._origin = f"{split.scheme}://{split.netloc}"
         self._api_host = config.api_host
         self._headers = {"Accept": "application/json"}
         self._client: httpx.AsyncClient | None = None
@@ -79,11 +89,16 @@ class HydrataClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def get(self, path: str, params: dict | None = None) -> Any:
+    async def _send(self, method: str, url: str, path: str, **kwargs) -> httpx.Response:
+        """One request with the caller's headers; every failure becomes a HydrataAPIError.
+
+        `path` is only for the message (the part after the base, as the tool
+        wrote it). 5xx bodies are deliberately NOT relayed — they are HTML
+        tracebacks, not a signal the agent can act on.
+        """
         client = await self._ensure_client()
-        url = f"{self._base}{path}"
         try:
-            resp = await client.get(url, params=params, headers=self._request_headers())
+            resp = await client.request(method, url, headers=self._request_headers(), **kwargs)
             resp.raise_for_status()
         except httpx.ConnectError:
             raise HydrataAPIError(
@@ -99,30 +114,37 @@ class HydrataClient:
                 raise HydrataAPIError(
                     f"Hydrata API server error ({status}). The backend may be experiencing issues."
                 )
-            raise HydrataAPIError(_client_error_message(exc, "GET", path))
+            raise HydrataAPIError(_client_error_message(exc, method, path))
+        return resp
+
+    @staticmethod
+    def _body(resp: httpx.Response) -> Any:
+        return resp.json() if resp.content else {}
+
+    async def get(self, path: str, params: dict | None = None) -> Any:
+        resp = await self._send("GET", f"{self._base}{path}", path, params=params)
+        return resp.json()
+
+    async def get_from_origin(self, path: str, params: dict | None = None) -> Any:
+        """GET a path relative to the API's ORIGIN (e.g. ``/api/v2/datasets/1/``).
+
+        TASK-3171 (W1.2, epic 2467) — for GeoNode endpoints outside /api/v2/anuga;
+        `path` must start with '/'. Same headers, same error mapping as get().
+        """
+        resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
         return resp.json()
 
     async def post(self, path: str, json: dict | None = None) -> tuple[Any, int]:
         """POST request. Returns (body, status_code) since some endpoints return 202."""
-        client = await self._ensure_client()
-        url = f"{self._base}{path}"
-        try:
-            resp = await client.post(url, json=json or {}, headers=self._request_headers())
-            resp.raise_for_status()
-        except httpx.ConnectError:
-            raise HydrataAPIError(
-                f"Hydrata API is unreachable at {self._base}. The backend may be restarting."
-            )
-        except httpx.TimeoutException:
-            raise HydrataAPIError(
-                "Hydrata API request timed out after 30s. Try again shortly."
-            )
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            if status >= 500:
-                raise HydrataAPIError(
-                    f"Hydrata API server error ({status}). The backend may be experiencing issues."
-                )
-            raise HydrataAPIError(_client_error_message(exc, "POST", path))
-        body = resp.json() if resp.content else {}
-        return body, resp.status_code
+        resp = await self._send("POST", f"{self._base}{path}", path, json=json or {})
+        return self._body(resp), resp.status_code
+
+    async def patch(self, path: str, json: dict | None = None) -> tuple[Any, int]:
+        """PATCH request (partial update). Returns (body, status_code) like post().
+
+        TASK-3171 (W1.2, epic 2467) — attach_input_layer sets ONE field
+        (``gn_layer``) on a default input row; PATCH is the only write the
+        four list+retrieve+update viewsets accept.
+        """
+        resp = await self._send("PATCH", f"{self._base}{path}", path, json=json or {})
+        return self._body(resp), resp.status_code
