@@ -16,6 +16,24 @@ class HydrataAPIError(Exception):
     """
 
 
+def _client_error_message(exc: httpx.HTTPStatusError, method: str, path: str) -> str:
+    """Status + reason phrase + the API's own body (``error_code`` / ``detail``).
+
+    TASK-2469 (W1.1, epic 2467) — the reason phrase alone ("400: Bad Request")
+    hid the one thing the agent needs to act on: a finalize against a key whose
+    PUT never landed answers ``UPLOAD_NOT_FOUND``, a presign over 5 GiB answers
+    a VALIDATION_ERROR detail, and W1.3's build refusal is a 422 whose body IS
+    the message. The body is clipped so a stray HTML error page cannot flood
+    the tool result.
+    """
+    resp = exc.response
+    message = f"Hydrata API returned {resp.status_code}: {resp.reason_phrase} for {method} {path}"
+    detail = resp.text.strip()[:1000]
+    if detail:
+        message = f"{message} — {detail}"
+    return message
+
+
 class HydrataClient:
     """Thin async wrapper around the Hydrata /api/v2/anuga/ endpoints.
 
@@ -81,9 +99,7 @@ class HydrataClient:
                 raise HydrataAPIError(
                     f"Hydrata API server error ({status}). The backend may be experiencing issues."
                 )
-            raise HydrataAPIError(
-                f"Hydrata API returned {status}: {exc.response.reason_phrase} for GET {path}"
-            )
+            raise HydrataAPIError(_client_error_message(exc, "GET", path))
         return resp.json()
 
     async def post(self, path: str, json: dict | None = None) -> tuple[Any, int]:
@@ -107,8 +123,6 @@ class HydrataClient:
                 raise HydrataAPIError(
                     f"Hydrata API server error ({status}). The backend may be experiencing issues."
                 )
-            raise HydrataAPIError(
-                f"Hydrata API returned {status}: {exc.response.reason_phrase} for POST {path}"
-            )
+            raise HydrataAPIError(_client_error_message(exc, "POST", path))
         body = resp.json() if resp.content else {}
         return body, resp.status_code
