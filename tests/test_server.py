@@ -1087,6 +1087,36 @@ class TestAttachInputLayerTool:
         assert "not conveyed" in text
         assert kind in text
 
+    @pytest.mark.parametrize(
+        "bad_id",
+        [
+            "../../api/v2/users/",  # dot-segments: would reach another route at the origin
+            "b7e1c2d3-4444-4555-8666-77778888999",  # one hex digit short
+            f"{EXEC_ID}?format=json",  # query injection
+            "",
+        ],
+        ids=["traversal", "short", "query", "empty"],
+    )
+    @respx.mock
+    async def test_attach_input_layer_refuses_a_non_uuid_execution_id_without_any_http(
+        self, _server, bad_id
+    ):
+        """W1a sweep (epic 2467): execution_id is the ONE free-form path segment a
+        tool interpolates into a URL, and on prod that URL is the unthrottled
+        loopback door to Django (geonode-https.j2 :8081). GeoNode's exec_id is a
+        UUIDField, so anything else is refused before a request is built."""
+        catch_all = respx.route().mock(return_value=httpx.Response(200, json={}))
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                # timeout 0 so an un-refused id fails fast as `timed_out`, not a hang
+                {"project_id": 42, "kind": "rainfall", "execution_id": bad_id, "timeout_seconds": 0},
+            )
+        )
+        assert not catch_all.called
+        assert "UUID" in text
+
     @respx.mock
     async def test_attach_input_layer_refuses_unknown_kind_listing_the_six(self, _server):
         status_route = respx.get(EXEC_STATUS_URL).mock(

@@ -143,8 +143,10 @@ class HydrataClient:
         """PATCH request (partial update). Returns (body, status_code) like post().
 
         TASK-3171 (W1.2, epic 2467) — attach_input_layer sets ONE field
-        (``gn_layer``) on a default input row; PATCH is the only write the
-        four list+retrieve+update viewsets accept.
+        (``gn_layer``) on one of the SIX default input rows. It is the only
+        safe write: the four list+retrieve+update viewsets accept nothing
+        else, and a POST to the two create-capable ones (structures,
+        mesh-regions) has its gn_layer overwritten by the async layer factory.
         """
         resp = await self._send("PATCH", f"{self._base}{path}", path, json=json or {})
         return self._body(resp), resp.status_code

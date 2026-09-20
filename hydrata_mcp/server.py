@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated
@@ -181,6 +182,52 @@ def _post_result(body, status_code: int) -> str:
         body = {"response": body}
     body["http_status"] = status_code
     return json.dumps(body, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Bounded polling — ONE loop for every tool that waits on the platform
+# (get_terrain, attach_input_layer; W1.3's build_scenario next).
+#
+# Why bounded, and why 240/280: prod's nginx proxies /mcp/ with a 300 s
+# proxy_read_timeout (geonode-https.j2). A tool call cut by the proxy returns
+# NOTHING to the agent, so a call that stops early, reports `timed_out` with
+# the last status and lets the agent re-call is strictly better than a longer
+# one. Values above the ceiling are clamped rather than refused.
+# ---------------------------------------------------------------------------
+POLL_DEFAULT_TIMEOUT_SECONDS = 240
+POLL_MAX_TIMEOUT_SECONDS = 280
+
+
+def _status_of(record) -> str | None:
+    """`status` of an API record, or None when it is not a dict."""
+    return record.get("status") if isinstance(record, dict) else None
+
+
+async def _poll_until(fetch, is_terminal, timeout_seconds, poll_interval_seconds):
+    """Call `fetch()` until `is_terminal(value)` or `timeout_seconds` elapses.
+
+    Returns (last value, polls, elapsed_seconds, timed_out). Always fetches at
+    least once (timeout 0 = one read, no wait); a terminal value on the last
+    read wins over the bound. The sleep is min(interval, remaining) — the W1a
+    round-1 sweep's Tier-A finding: an uncapped interval longer than what was
+    left overshot the bound (and prod's 300 s proxy cut).
+    """
+    timeout_seconds = max(0, min(int(timeout_seconds), POLL_MAX_TIMEOUT_SECONDS))
+    poll_interval_seconds = max(0.0, float(poll_interval_seconds))
+    started = time.monotonic()
+    polls = 0
+    while True:
+        value = await fetch()
+        polls += 1
+        if is_terminal(value):
+            timed_out = False
+            break
+        remaining = timeout_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            timed_out = True
+            break
+        await asyncio.sleep(min(poll_interval_seconds, remaining))
+    return value, polls, round(time.monotonic() - started, 1), timed_out
 
 
 # ---------------------------------------------------------------------------
@@ -376,13 +423,6 @@ async def list_runs(
 # Terrain.status runs creating → styling → ready | error (gn_anuga tasks.py
 # :1473/:1542/:1620); only the two terminal states end a poll.
 TERRAIN_TERMINAL_STATUSES = frozenset({"ready", "error"})
-# Why bounded, and why 240/280: prod's nginx proxies /mcp/ with a 300 s
-# proxy_read_timeout (geonode-https.j2). A tool call cut by the proxy returns
-# NOTHING to the agent, so a call that stops early, reports `timed_out` with
-# the last status and lets the agent re-call is strictly better than a longer
-# one. Values above the ceiling are clamped rather than refused.
-GET_TERRAIN_DEFAULT_TIMEOUT_SECONDS = 240
-GET_TERRAIN_MAX_TIMEOUT_SECONDS = 280
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +545,7 @@ async def get_terrain(
         "How long this call keeps polling before it returns `timed_out` "
         "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
         "0 = one status read, no waiting.",
-    ] = GET_TERRAIN_DEFAULT_TIMEOUT_SECONDS,
+    ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
     """Poll a terrain's import until it is `ready` (or `error`), bounded by timeout_seconds.
@@ -528,47 +568,41 @@ async def get_terrain(
     chain and appear over the following ~30 s. Poll the input-layer list until
     it is non-empty before attaching your own layer to a default row.
     """
-    timeout_seconds = max(0, min(int(timeout_seconds), GET_TERRAIN_MAX_TIMEOUT_SECONDS))
-    poll_interval_seconds = max(0.0, float(poll_interval_seconds))
     if terrain_id is not None:
         path = f"/projects/{project_id}/terrain/{terrain_id}/"
     else:
         path = f"/projects/{project_id}/terrain/"
 
-    started = time.monotonic()
-    polls = 0
-    terrain_count: int | None = None
-    while True:
+    async def fetch():
         data = await client.get(path)
-        polls += 1
-        if terrain_id is None:
-            # GET /terrain/ answers a BARE JSON array (no count/results); follow
-            # the newest row, which is the one the caller just finalized.
-            rows = data if isinstance(data, list) else data.get("results", [])
-            terrain_count = len(rows)
-            if not rows:
-                terrain, status, outcome = None, None, "not_found"
-                break
-            terrain = max(rows, key=lambda row: row.get("id", 0))
-        else:
-            terrain = data
-        status = terrain.get("status") if isinstance(terrain, dict) else None
-        if status in TERRAIN_TERMINAL_STATUSES:
-            outcome = status
-            break
-        remaining = timeout_seconds - (time.monotonic() - started)
-        if remaining <= 0:
-            outcome = "timed_out"
-            break
-        # Never sleep past the bound: an interval longer than what is left
-        # would overshoot timeout_seconds (and prod's 300 s proxy cut).
-        await asyncio.sleep(min(poll_interval_seconds, remaining))
+        if terrain_id is not None:
+            return data, None
+        # GET /terrain/ answers a BARE JSON array (no count/results); follow
+        # the newest row, which is the one the caller just finalized.
+        rows = data if isinstance(data, list) else data.get("results", [])
+        newest = max(rows, key=lambda row: row.get("id", 0)) if rows else None
+        return newest, len(rows)
 
+    def is_terminal(value):
+        terrain, _ = value
+        # No terrain at all is `not_found` — terminal, nothing to wait for.
+        return terrain is None or _status_of(terrain) in TERRAIN_TERMINAL_STATUSES
+
+    (terrain, terrain_count), polls, elapsed, timed_out = await _poll_until(
+        fetch, is_terminal, timeout_seconds, poll_interval_seconds
+    )
+    status = _status_of(terrain)
+    if terrain is None:
+        outcome = "not_found"
+    elif timed_out:
+        outcome = "timed_out"
+    else:
+        outcome = status
     result: dict = {
         "outcome": outcome,
         "status": status,
         "polls": polls,
-        "elapsed_seconds": round(time.monotonic() - started, 1),
+        "elapsed_seconds": elapsed,
         "terrain": terrain,
     }
     if terrain_id is None:
@@ -787,7 +821,7 @@ async def attach_input_layer(
         "How long this call keeps polling the upload before it returns `timed_out` "
         "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
         "0 = one status read, no waiting.",
-    ] = GET_TERRAIN_DEFAULT_TIMEOUT_SECONDS,
+    ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
     """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, structure or mesh_region layer.
@@ -816,6 +850,8 @@ async def attach_input_layer(
     Refused, with no request made: kind `breakline` and kind `culvert` — no
     REST create path exists for either at HEAD (TASK-3040 AC6), and culvert
     flow is not conveyed by run_anuga, so attaching one would only pretend.
+    Also refused without a request: an execution_id that is not the UUID the
+    upload returned.
     One GeoJSON per kind: all of a kind's features travel in that one file. A
     rainfall polygon names its gauge in its `data` property — create that
     gauge with create_time_series under the exact same name.
@@ -832,33 +868,40 @@ async def attach_input_layer(
             "(breakline and culvert are refused: no REST create path at HEAD, TASK-3040 AC6)"
         )
     route = INPUT_LAYER_ROUTES[kind]
-    timeout_seconds = max(0, min(int(timeout_seconds), GET_TERRAIN_MAX_TIMEOUT_SECONDS))
-    poll_interval_seconds = max(0.0, float(poll_interval_seconds))
+    # The one free-form path segment a tool interpolates into a URL — and on
+    # prod that URL is the unthrottled loopback door to Django (geonode-https.j2
+    # :8081). GeoNode's exec_id is a UUIDField (geonode/resource/models.py), so
+    # anything else is refused here, before a request is built; the canonical
+    # form is what both GeoNode routes below match.
+    try:
+        execution_id = str(uuid.UUID(str(execution_id)))
+    except ValueError:
+        raise ToolError(
+            f"execution_id {execution_id!r} is not a UUID — pass the `execution_id` "
+            "your upload POST to /api/v2/uploads/upload/ returned, verbatim"
+        )
     # GeoNode's route, at the ORIGIN, with NO trailing slash
     # (geonode/resource/api/urls.py:26) — 404 with one.
     status_path = f"/api/v2/resource-service/execution-status/{execution_id}"
 
-    started = time.monotonic()
-    polls = 0
-    while True:
-        execution = await client.get_from_origin(status_path)
-        polls += 1
-        status = execution.get("status") if isinstance(execution, dict) else None
-        if status in EXECUTION_TERMINAL_STATUSES:
-            break
-        remaining = timeout_seconds - (time.monotonic() - started)
-        if remaining <= 0:
-            return json.dumps(
-                {
-                    "outcome": "timed_out",
-                    "kind": kind,
-                    "execution_status": status,
-                    "polls": polls,
-                    "elapsed_seconds": round(time.monotonic() - started, 1),
-                },
-                indent=2,
-            )
-        await asyncio.sleep(min(poll_interval_seconds, remaining))
+    execution, polls, elapsed, timed_out = await _poll_until(
+        lambda: client.get_from_origin(status_path),
+        lambda record: _status_of(record) in EXECUTION_TERMINAL_STATUSES,
+        timeout_seconds,
+        poll_interval_seconds,
+    )
+    status = _status_of(execution)
+    if timed_out:
+        return json.dumps(
+            {
+                "outcome": "timed_out",
+                "kind": kind,
+                "execution_status": status,
+                "polls": polls,
+                "elapsed_seconds": elapsed,
+            },
+            indent=2,
+        )
 
     result: dict = {
         "outcome": None,
@@ -866,7 +909,7 @@ async def attach_input_layer(
         "route": route,
         "execution_status": status,
         "polls": polls,
-        "elapsed_seconds": round(time.monotonic() - started, 1),
+        "elapsed_seconds": elapsed,
     }
     if status == "failed":
         result["outcome"] = "upload_failed"
