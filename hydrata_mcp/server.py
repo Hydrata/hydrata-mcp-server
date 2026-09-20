@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from typing import Annotated
 
+import uvicorn
 from fastmcp import FastMCP
 from starlette.middleware import Middleware
 
@@ -132,8 +133,9 @@ class RequireAuthForToolsCall:
         await self.app(scope, replay_receive, send)
 
 
-# One list, used by BOTH entry points below — an unguarded CLI entry would be a
-# second, anonymous server.
+# One list, baked into the one `app` below, which BOTH entry points serve: prod's
+# unit file (`uvicorn hydrata_mcp.server:app`) and the `hydrata-mcp` CLI. An
+# unguarded CLI entry would be a second, anonymous server.
 MIDDLEWARE = [Middleware(RequireAuthForToolsCall)]
 
 
@@ -357,17 +359,14 @@ app = create_app()
 def main():
     """CLI entry point: `hydrata-mcp`.
 
-    Carries the same middleware and stateless mode as ``app`` (the uvicorn target
-    prod runs) so the CLI is not a second, anonymous server (TASK-3166). It still
-    serves at fastmcp's default path (``/mcp``), as it always has; ``app`` serves at ``/``.
+    Runs uvicorn on the identical ``app`` that prod's unit file runs
+    (``uvicorn hydrata_mcp.server:app``): one server object, one path (``/``),
+    one middleware list. TASK-3181 (W1.0, epic 2467) — fastmcp's own runner
+    built a SECOND app at its default path, so the CLI and prod disagreed on
+    where the endpoint was (pre-existing since 7586f72, which moved ``create_app``
+    to ``/`` only).
     """
-    mcp.run(
-        transport="http",
-        host=config.host,
-        port=config.port,
-        middleware=MIDDLEWARE,
-        stateless_http=True,
-    )
+    uvicorn.run(app, host=config.host, port=config.port)
 
 
 if __name__ == "__main__":

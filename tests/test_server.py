@@ -383,3 +383,45 @@ class TestPassthrough:
             resp = await c.post("/", headers=MCP_HEADERS, content=b"[" * 100_000)
         assert resp.status_code == 400
         assert _parse(resp)["error"]["code"] == -32700
+
+
+# ---------------------------------------------------------------------------
+# TASK-3181 (W1.0, epic 2467) — the CLI entry serves the SAME ASGI app as prod.
+#
+# `hydrata-mcp` (pyproject [project.scripts] -> main()) must run uvicorn on the
+# module-level `app` that prod's unit file targets (`uvicorn hydrata_mcp.server:app`),
+# so there is one server object, one path ("/") and one middleware list. Before
+# this card main() called fastmcp's own runner, which built a SECOND app at
+# fastmcp's default path (/mcp) — pre-existing since 7586f72 (create_app only).
+# ---------------------------------------------------------------------------
+class TestCliEntry:
+    async def test_main_runs_uvicorn_on_the_module_app(self, _server, monkeypatch):
+        import uvicorn
+
+        recorded: dict = {}
+
+        def fake_uvicorn_run(app_obj, **kw):
+            recorded["app"] = app_obj
+            recorded.update(kw)
+
+        # Patched on the uvicorn MODULE object: the server does `import uvicorn`
+        # and calls `uvicorn.run(...)`, so the reloaded module sees the fake.
+        monkeypatch.setattr(uvicorn, "run", fake_uvicorn_run)
+        # fastmcp's own runner never calls uvicorn.run (it builds uvicorn.Server
+        # itself) — left live it would BIND a port and hang the suite. Stub it so
+        # a regression to `mcp.run(...)` fails as an assertion, not a hang.
+        monkeypatch.setattr(
+            _server.mcp, "run", lambda *a, **kw: recorded.__setitem__("mcp_run_called", True)
+        )
+        # Non-default host/port so the forwarding assertions are not tautological
+        # (Config's defaults coincide with uvicorn's own).
+        monkeypatch.setattr(
+            _server, "config", _server.Config(api_url=BASE, host="0.0.0.0", port=18765)
+        )
+
+        _server.main()
+
+        assert recorded.get("app") is _server.app
+        assert recorded.get("host") == "0.0.0.0"
+        assert recorded.get("port") == 18765
+        assert "mcp_run_called" not in recorded
