@@ -5,6 +5,7 @@ Tests each tool via direct invocation of the async tool functions.
 """
 
 import contextlib
+import importlib
 import json
 
 import httpx
@@ -21,7 +22,6 @@ BASE = "https://hydrata.example.com/api/v2/anuga"
 def _server(env_vars):
     """Import server module after env vars are set (Config.from_env runs at import)."""
     # Reload to pick up test env vars
-    import importlib
     import hydrata_mcp.server as srv
     importlib.reload(srv)
     return srv
@@ -338,8 +338,6 @@ class TestPassthrough:
     async def test_upstream_host_is_api_host_when_set(self, _server, monkeypatch):
         """HYDRATA_API_HOST set (prod, via W0.2's env template): Host: hydrata.com goes upstream
         so the internal 127.0.0.1:8081 nginx block matches the right server_name."""
-        import importlib
-
         monkeypatch.setenv("HYDRATA_API_HOST", "hydrata.com")
         importlib.reload(_server)  # Config.from_env() runs at import
         upstream = respx.get(f"{BASE}/projects/").mock(
