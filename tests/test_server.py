@@ -4,6 +4,7 @@ Uses respx to mock httpx requests so no real API calls are made.
 Tests each tool via direct invocation of the async tool functions.
 """
 
+import contextlib
 import json
 
 import httpx
@@ -176,3 +177,201 @@ class TestListRuns:
         )
         await _server.list_runs(project_id=1, status_filter="error")
         assert route.calls[0].request.url.params["status"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# TASK-3166 (W0.1, epic 2467) — credential pass-through.
+#
+# These cases drive the REAL ASGI app (lifespan + httpx.ASGITransport) rather
+# than calling the tool functions directly, so the auth middleware and the
+# fastmcp request context are both exercised. respx mocks only the server's
+# OUTBOUND httpx client, so `route.calls[0].request.headers` is exactly what
+# went upstream. Every case lives in TestPassthrough so the card's stored
+# proof (`pytest -k passthrough`) selects all of them.
+# ---------------------------------------------------------------------------
+MCP_HEADERS = {
+    "Accept": "application/json, text/event-stream",  # 406 without both
+    "Content-Type": "application/json",
+}
+# foo:bar — deliberately NOT the env_vars credential (testuser:testpass). httpx
+# lets a constructor-level BasicAuth overwrite a per-request Authorization
+# header, so a build that still holds a server-side credential could pass the
+# verbatim-forward case by coincidence if the test used the same value.
+CALLER_BASIC = "Basic Zm9vOmJhcg=="
+UPSTREAM_OK = {"count": 0, "results": []}
+
+
+def _rpc(method, params=None, id=1):
+    return {"jsonrpc": "2.0", "id": id, "method": method, "params": params or {}}
+
+
+def _tools_call(name="list_projects", arguments=None, id=1):
+    return _rpc("tools/call", {"name": name, "arguments": arguments or {}}, id=id)
+
+
+def _parse(resp):
+    """Pull the JSON-RPC payload out of an SSE (200) or plain-JSON (401) response."""
+    if resp.headers.get("content-type", "").startswith("text/event-stream"):
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                return json.loads(line[len("data:"):])
+        raise AssertionError(f"no data: line in SSE body: {resp.text!r}")
+    return resp.json()
+
+
+@contextlib.asynccontextmanager
+async def _asgi_client(srv):
+    """Run the app's lifespan (else every request 500s) and yield a client bound to it."""
+    async with srv.app.router.lifespan_context(srv.app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=srv.app), base_url="http://testserver"
+        ) as c:
+            yield c
+
+
+class TestPassthrough:
+    """The MCP server holds no identity of its own: it forwards the caller's."""
+
+    @respx.mock
+    async def test_anon_tools_call_401_with_basic_challenge(self, _server):
+        upstream = respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(200, json=UPSTREAM_OK)
+        )
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_tools_call(id=7))
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == 'Basic realm="hydrata.com"'
+        body = resp.json()
+        assert body["jsonrpc"] == "2.0"
+        assert body["id"] == 7
+        assert body["error"]["code"] == -32001
+        assert "Basic" in body["error"]["message"]
+        # Short-circuited in the middleware: nothing reached the upstream API.
+        assert not upstream.calls
+
+    @pytest.mark.parametrize(
+        "method,params",
+        [
+            ("tools/list", {}),
+            ("ping", {}),
+            (
+                "initialize",
+                {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"},
+                },
+            ),
+        ],
+    )
+    async def test_anon_catalog_methods_stay_200(self, _server, method, params):
+        """Decision D2 (TASK-2467): the catalog is public; only tools/call needs a caller."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc(method, params))
+        assert resp.status_code == 200
+        assert "error" not in _parse(resp)
+
+    async def test_anon_batch_containing_tools_call_401(self, _server):
+        batch = [_rpc("tools/list", id=1), _tools_call(id=2)]
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=batch)
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == 'Basic realm="hydrata.com"'
+        assert resp.json()["id"] == 2
+
+    @respx.mock
+    async def test_basic_header_forwarded_verbatim(self, _server):
+        upstream = respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(200, json={"count": 3, "results": []})
+        )
+        async with _asgi_client(_server) as c:
+            resp = await c.post(
+                "/",
+                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                json=_tools_call(),
+            )
+        assert resp.status_code == 200
+        assert upstream.calls[0].request.headers["authorization"] == CALLER_BASIC
+        # The replayed body reached fastmcp intact: the tool ran and returned the upstream JSON.
+        payload = _parse(resp)
+        assert json.loads(payload["result"]["content"][0]["text"])["count"] == 3
+
+    @respx.mock
+    async def test_bare_get_http_headers_sends_no_authorization(self, _server):
+        """The trap the card names: bare get_http_headers() STRIPS Authorization.
+
+        A tool that forgets include={"authorization"} silently sends an anonymous
+        upstream request. Registered on the reloaded module so it never leaks
+        into other tests.
+        """
+        from fastmcp.server.dependencies import get_http_headers
+
+        upstream = respx.get(f"{BASE}/probe/").mock(return_value=httpx.Response(200, json={}))
+
+        @_server.mcp.tool
+        async def probe_bare() -> str:
+            hdrs = get_http_headers()  # bare — no include={"authorization"}
+            async with httpx.AsyncClient() as hc:
+                await hc.get(f"{BASE}/probe/", headers=hdrs)
+            return "ok"
+
+        async with _asgi_client(_server) as c:
+            resp = await c.post(
+                "/",
+                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                json=_tools_call("probe_bare"),
+            )
+        assert resp.status_code == 200
+        assert upstream.calls
+        assert upstream.calls[0].request.headers.get("authorization") is None
+
+    @respx.mock
+    async def test_direct_tool_call_sends_no_server_held_credential(self, _server):
+        """Outside an HTTP request there is no caller — and no server credential either."""
+        upstream = respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(200, json=UPSTREAM_OK)
+        )
+        await _server.list_projects()
+        assert upstream.calls[0].request.headers.get("authorization") is None
+
+    @respx.mock
+    async def test_upstream_host_is_api_host_when_set(self, _server, monkeypatch):
+        """HYDRATA_API_HOST set (prod, via W0.2's env template): Host: hydrata.com goes upstream
+        so the internal 127.0.0.1:8081 nginx block matches the right server_name."""
+        import importlib
+
+        monkeypatch.setenv("HYDRATA_API_HOST", "hydrata.com")
+        importlib.reload(_server)  # Config.from_env() runs at import
+        upstream = respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(200, json=UPSTREAM_OK)
+        )
+        async with _asgi_client(_server) as c:
+            resp = await c.post(
+                "/",
+                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                json=_tools_call(),
+            )
+        assert resp.status_code == 200
+        assert upstream.calls[0].request.headers["host"] == "hydrata.com"
+
+    @respx.mock
+    async def test_upstream_host_is_url_host_when_unset(self, _server):
+        """HYDRATA_API_HOST unset (localhost): httpx derives Host from the URL."""
+        upstream = respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(200, json=UPSTREAM_OK)
+        )
+        async with _asgi_client(_server) as c:
+            resp = await c.post(
+                "/",
+                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                json=_tools_call(),
+            )
+        assert resp.status_code == 200
+        assert upstream.calls[0].request.headers["host"] == "hydrata.example.com"
+
+    async def test_non_json_body_does_not_500(self, _server):
+        """The middleware replays an unparseable body untouched; fastmcp's own
+        -32700 parse error (400) answers it — never a middleware 500, never a 401."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, content=b"not json")
+        assert resp.status_code == 400

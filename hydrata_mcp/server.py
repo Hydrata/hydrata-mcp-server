@@ -5,12 +5,133 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastmcp import FastMCP
+from starlette.middleware import Middleware
 
 from .client import HydrataClient
 from .config import Config
 
 config = Config.from_env()
 client = HydrataClient(config)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3166 (W0.1, epic 2467) — credential pass-through
+# ---------------------------------------------------------------------------
+class RequireAuthForToolsCall:
+    """Pure-ASGI middleware: 401 an anonymous ``tools/call``; every other method stays open.
+
+    The server holds no identity of its own. A ``tools/call`` must carry the caller's
+    ``Authorization`` header (HTTP Basic for a hydrata.com account), which
+    :class:`HydrataClient` forwards verbatim to the REST API — so GeoNode scopes
+    results by the real user's project permissions and the audit trail names them.
+    Missing it, the request is answered here with ``401`` +
+    ``WWW-Authenticate: Basic realm="hydrata.com"`` and a JSON-RPC-shaped error body
+    (code ``-32001``) that an MCP client can surface, before fastmcp ever runs a tool.
+
+    Why only ``tools/call`` (decision D2 on TASK-2467, a deliberate deviation from
+    TASK-1389's "reject anonymous tools/list"): the tool catalog is public on GitHub
+    anyway, and ``initialize`` / ``tools/list`` / ``ping`` must keep answering
+    anonymously so the MCP registry's liveness check stays true.
+
+    Why this shape and not the built-ins: ``fastmcp.server.auth`` is Bearer-only and
+    gates every method; Starlette's ``BaseHTTPMiddleware`` needs explicit body
+    replay. This reads the body once, decides, and replays it to the app untouched.
+    A body that is not JSON (or not a dict/list) is passed through as-is so fastmcp
+    emits its own ``-32700`` parse error — never a 500 from here. Batches (arrays)
+    are inspected element-wise as defence in depth; the MCP SDK itself rejects
+    them downstream.
+
+    Expected side effect: OAuth-aware MCP clients that see the 401 probe
+    ``/.well-known/oauth-protected-resource`` and get a 404. That is fine — we
+    are not an OAuth resource server; Basic is the credential.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        # Drain the request body (may arrive in chunks); stop on a disconnect.
+        chunks: list[bytes] = []
+        disconnected = False
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                disconnected = True
+                break
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+
+        request_id = None
+        needs_auth = False
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+        for msg in parsed if isinstance(parsed, list) else [parsed]:
+            if isinstance(msg, dict) and msg.get("method") == "tools/call":
+                needs_auth = True
+                request_id = msg.get("id")
+                break
+
+        # ASGI header names are lowercase bytes; a blank value is not a credential.
+        has_auth = any(
+            name == b"authorization" and value.strip()
+            for name, value in scope.get("headers", [])
+        )
+
+        if needs_auth and not has_auth:
+            payload = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32001,
+                        "message": (
+                            "Authentication required: send HTTP Basic credentials "
+                            "for a hydrata.com account"
+                        ),
+                    },
+                }
+            ).encode()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(payload)).encode()),
+                        (b"www-authenticate", b'Basic realm="hydrata.com"'),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": payload, "more_body": False})
+            return
+
+        # Replay the drained body once, then hand the real receive back so a
+        # later disconnect still reaches the app.
+        replayed = False
+
+        async def replay_receive():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                if disconnected:
+                    return {"type": "http.disconnect"}
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+
+# One list, used by BOTH entry points below — an unguarded CLI entry would be a
+# second, anonymous server.
+MIDDLEWARE = [Middleware(RequireAuthForToolsCall)]
 
 
 @asynccontextmanager
@@ -223,7 +344,7 @@ async def list_runs(
 # ---------------------------------------------------------------------------
 def create_app():
     """Create ASGI application for uvicorn."""
-    return mcp.http_app(path="/", stateless_http=True)
+    return mcp.http_app(path="/", stateless_http=True, middleware=MIDDLEWARE)
 
 
 # Module-level ASGI app for `uvicorn hydrata_mcp.server:app`
@@ -231,8 +352,19 @@ app = create_app()
 
 
 def main():
-    """CLI entry point: `hydrata-mcp`."""
-    mcp.run(transport="http", host=config.host, port=config.port)
+    """CLI entry point: `hydrata-mcp`.
+
+    Carries the same middleware and stateless mode as ``app`` (the uvicorn target
+    prod runs) so the CLI is not a second, anonymous server (TASK-3166). It still
+    serves at fastmcp's default path (``/mcp``), as it always has; ``app`` serves at ``/``.
+    """
+    mcp.run(
+        transport="http",
+        host=config.host,
+        port=config.port,
+        middleware=MIDDLEWARE,
+        stateless_http=True,
+    )
 
 
 if __name__ == "__main__":

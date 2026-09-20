@@ -3,6 +3,7 @@
 from typing import Any
 
 import httpx
+from fastmcp.server.dependencies import get_http_headers
 
 from .config import Config
 
@@ -18,23 +19,43 @@ class HydrataAPIError(Exception):
 class HydrataClient:
     """Thin async wrapper around the Hydrata /api/v2/anuga/ endpoints.
 
-    Uses HTTP Basic authentication and returns parsed JSON dicts.
+    Holds NO credential of its own. Each request forwards the calling MCP
+    client's ``Authorization`` header verbatim (TASK-3166, W0.1, epic 2467),
+    so GeoNode scopes results to the real user and the audit trail names them.
+    Returns parsed JSON dicts.
     """
 
     def __init__(self, config: Config) -> None:
         self._base = config.api_url
-        self._auth = httpx.BasicAuth(config.api_username, config.api_password)
+        self._api_host = config.api_host
         self._headers = {"Accept": "application/json"}
         self._client: httpx.AsyncClient | None = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                auth=self._auth,
                 headers=self._headers,
                 timeout=httpx.Timeout(30.0, connect=10.0),
             )
         return self._client
+
+    def _request_headers(self) -> dict[str, str]:
+        """Per-request headers: the caller's Authorization, plus Host when configured.
+
+        TASK-3166 (W0.1, epic 2467) — ``get_http_headers()`` STRIPS ``authorization``
+        (and ``cookie``) unless it is named in ``include``; the bare call would
+        silently send an anonymous upstream request. Outside an HTTP request
+        (direct tool invocation, tests) it returns ``{}`` and nothing is forwarded.
+        Only Authorization is picked out — the rest of the inbound headers
+        (user-agent, accept-language, …) are the MCP client's, not ours to relay.
+        """
+        headers: dict[str, str] = {}
+        auth = get_http_headers(include={"authorization"}).get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        if self._api_host:
+            headers["Host"] = self._api_host
+        return headers
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
@@ -44,7 +65,7 @@ class HydrataClient:
         client = await self._ensure_client()
         url = f"{self._base}{path}"
         try:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, headers=self._request_headers())
             resp.raise_for_status()
         except httpx.ConnectError:
             raise HydrataAPIError(
@@ -70,7 +91,7 @@ class HydrataClient:
         client = await self._ensure_client()
         url = f"{self._base}{path}"
         try:
-            resp = await client.post(url, json=json or {})
+            resp = await client.post(url, json=json or {}, headers=self._request_headers())
             resp.raise_for_status()
         except httpx.ConnectError:
             raise HydrataAPIError(

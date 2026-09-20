@@ -10,6 +10,7 @@ def _clean_env(monkeypatch):
     """Remove Hydrata env vars so tests start clean."""
     for key in (
         "HYDRATA_API_URL",
+        "HYDRATA_API_HOST",  # TASK-3166 (W0.1, epic 2467): a shell export must not leak into tests
         "HYDRATA_API_USERNAME",
         "HYDRATA_API_PASSWORD",
         "HYDRATA_MCP_PORT",
