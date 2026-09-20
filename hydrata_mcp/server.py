@@ -164,6 +164,19 @@ mcp = FastMCP(
 )
 
 
+def _post_result(body, status_code: int) -> str:
+    """Tool text for a POST: the API body plus `http_status`.
+
+    Some endpoints answer 202 (queued) rather than 200/201, and the agent
+    needs to see which; a non-dict body is wrapped as {"response": body}
+    so the status key always has a dict to live in.
+    """
+    if not isinstance(body, dict):
+        body = {"response": body}
+    body["http_status"] = status_code
+    return json.dumps(body, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # Tool 1: list_projects
 # ---------------------------------------------------------------------------
@@ -240,10 +253,7 @@ async def start_simulation(
         f"/scenarios/{scenario_id}/run/",
         json={"compute_backend": compute_backend},
     )
-    if not isinstance(body, dict):
-        body = {"response": body}
-    body["http_status"] = status_code
-    return json.dumps(body, indent=2)
+    return _post_result(body, status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +308,7 @@ async def cancel_run(
     (complete, cancelled, or error).
     """
     body, status_code = await client.post(f"/runs/{run_id}/cancel/")
-    if not isinstance(body, dict):
-        body = {"response": body}
-    body["http_status"] = status_code
-    return json.dumps(body, indent=2)
+    return _post_result(body, status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -318,10 +325,7 @@ async def retry_run(
     status is 'error'. Returns 409 for any other state.
     """
     body, status_code = await client.post(f"/runs/{run_id}/retry/")
-    if not isinstance(body, dict):
-        body = {"response": body}
-    body["http_status"] = status_code
-    return json.dumps(body, indent=2)
+    return _post_result(body, status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -396,10 +400,7 @@ async def create_project(
     body, status_code = await client.post(
         "/projects/", json={"name": name, "projection": projection}
     )
-    if not isinstance(body, dict):
-        body = {"response": body}
-    body["http_status"] = status_code
-    return json.dumps(body, indent=2)
+    return _post_result(body, status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -448,10 +449,7 @@ async def presign_terrain_upload(
     body, status_code = await client.post(
         f"/projects/{project_id}/terrain/upload/presign/", json=payload
     )
-    if not isinstance(body, dict):
-        body = {"response": body}
-    body["http_status"] = status_code
-    return json.dumps(body, indent=2)
+    return _post_result(body, status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -482,10 +480,7 @@ async def finalize_terrain_upload(
         f"/projects/{project_id}/terrain/upload/finalize/",
         json={"staging_key": staging_key, "process_id": process_id, "title": title},
     )
-    if not isinstance(body, dict):
-        body = {"response": body}
-    body["http_status"] = status_code
-    return json.dumps(body, indent=2)
+    return _post_result(body, status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -510,12 +505,16 @@ async def get_terrain(
     """Poll a terrain's import until it is `ready` (or `error`), bounded by timeout_seconds.
 
     Returns `outcome` — exactly one of `ready`, `error`, `timed_out`, `not_found`
-    — plus the last `status` seen (creating → styling → ready | error), `polls`,
-    `elapsed_seconds` and the full `terrain` record (its `gn_layer` is the
-    published elevation dataset pk once ready). An import takes minutes (a 32 MB
-    1 m DEM: ~4.5 min measured), so `timed_out` is normal: just call again with
-    the same arguments. `error` is terminal — the import failed and no default input
-    rows were seeded; upload a corrected GeoTIFF as a new terrain.
+    (the project has no terrain yet; an unknown terrain_id is an API 404 error
+    instead) — plus the last `status` seen (creating → styling → ready | error),
+    `polls`, `elapsed_seconds` and the full `terrain` record (its `gn_layer` is
+    the published elevation dataset pk once ready). An import takes minutes to
+    tens of minutes (the SAME 32 MB 1 m DEM measured 4.5 min once and 26 min
+    once — the worker's S3 download speed dominates), so `timed_out` is normal
+    and NOT a failure: keep calling with the same arguments while `status` is
+    still `creating`/`styling`; several calls in a row is expected. `error` is
+    terminal — the import failed and no default input rows were seeded; upload
+    a corrected GeoTIFF as a new terrain.
 
     `ready` is written by the import task; the project's default input rows
     (Boundary 01, Friction 01, Inflow 01, Rainfall 01, Structure 01,
@@ -551,10 +550,13 @@ async def get_terrain(
         if status in TERRAIN_TERMINAL_STATUSES:
             outcome = status
             break
-        if time.monotonic() - started >= timeout_seconds:
+        remaining = timeout_seconds - (time.monotonic() - started)
+        if remaining <= 0:
             outcome = "timed_out"
             break
-        await asyncio.sleep(poll_interval_seconds)
+        # Never sleep past the bound: an interval longer than what is left
+        # would overshoot timeout_seconds (and prod's 300 s proxy cut).
+        await asyncio.sleep(min(poll_interval_seconds, remaining))
 
     result: dict = {
         "outcome": outcome,

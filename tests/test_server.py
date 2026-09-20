@@ -7,6 +7,7 @@ Tests each tool via direct invocation of the async tool functions.
 import contextlib
 import importlib
 import json
+import time
 
 import httpx
 import pytest
@@ -667,6 +668,43 @@ class TestGetTerrainTool:
         assert data["outcome"] == "timed_out"
         assert data["status"] == "creating"
         assert data["polls"] == 1
+
+    @respx.mock
+    async def test_get_terrain_sleep_is_capped_by_the_remaining_timeout(self, _server):
+        """A poll interval LONGER than the timeout must not overshoot the bound.
+
+        W1a sweep (epic 2467): the docstring promises "bounded by
+        timeout_seconds", but an uncapped `asyncio.sleep(poll_interval_seconds)`
+        made the wall clock ~interval when interval > timeout (interval 600 →
+        one 600 s sleep → prod's 300 s /mcp/ proxy cuts the call and the agent
+        gets nothing back). The sleep is now min(interval, remaining). This is
+        a REAL 1 s wait on purpose: patching asyncio.sleep or time.monotonic
+        would also patch the event loop's clock.
+        """
+        route = respx.get(f"{BASE}/projects/42/terrain/7/").mock(
+            return_value=httpx.Response(200, json=_terrain(7, "creating"))
+        )
+        started = time.monotonic()
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "get_terrain",
+                {
+                    "project_id": 42,
+                    "terrain_id": 7,
+                    "timeout_seconds": 1,
+                    "poll_interval_seconds": 60,
+                },
+            )
+        )
+        wall = time.monotonic() - started
+        assert wall < 5, f"sleep was not capped by the timeout: {wall:.1f}s"
+        assert data["outcome"] == "timed_out"
+        assert data["status"] == "creating"
+        # It DID sleep and re-poll (not an early return), just not for 60 s.
+        assert route.call_count >= 2
+        assert data["polls"] == route.call_count
+        assert data["elapsed_seconds"] < 5
 
     @respx.mock
     async def test_get_terrain_without_id_reads_bare_list_and_picks_newest(self, _server):
