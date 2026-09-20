@@ -375,3 +375,13 @@ class TestPassthrough:
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=MCP_HEADERS, content=b"not json")
         assert resp.status_code == 400
+
+    async def test_deeply_nested_json_body_does_not_500(self, _server):
+        """W0 sweep (epic 2467): a ~100 KB body of '[' makes json.loads raise
+        RecursionError, which is NOT a ValueError. The middleware must treat it
+        like any other unparseable body — replay untouched so the SDK's own
+        -32700 (400) answers — never let it escape as a 500. Reachable anonymously."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, content=b"[" * 100_000)
+        assert resp.status_code == 400
+        assert _parse(resp)["error"]["code"] == -32700

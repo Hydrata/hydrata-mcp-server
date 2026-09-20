@@ -36,10 +36,10 @@ class RequireAuthForToolsCall:
     Why this shape and not the built-ins: ``fastmcp.server.auth`` is Bearer-only and
     gates every method; Starlette's ``BaseHTTPMiddleware`` needs explicit body
     replay. This reads the body once, decides, and replays it to the app untouched.
-    A body that is not JSON (or not a dict/list) is passed through as-is so fastmcp
-    emits its own ``-32700`` parse error — never a 500 from here. Batches (arrays)
-    are inspected element-wise as defence in depth; the MCP SDK itself rejects
-    them downstream.
+    A body that is not JSON (or not a dict/list, or nested too deep to decode) is
+    passed through as-is so fastmcp emits its own ``-32700`` parse error — never
+    a 500 from here. Batches (arrays) are inspected element-wise as defence in
+    depth; the MCP SDK itself rejects them downstream.
 
     Expected side effect: OAuth-aware MCP clients that see the 401 probe
     ``/.well-known/oauth-protected-resource`` and get a 404. That is fine — we
@@ -71,7 +71,10 @@ class RequireAuthForToolsCall:
         needs_auth = False
         try:
             parsed = json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError: a pathologically nested body (~100 KB of '[')
+            # overflows the decoder and is NOT a ValueError; it must be treated
+            # like any other unparseable body, or it escapes as a 500 (W0 sweep).
             parsed = None
         for msg in parsed if isinstance(parsed, list) else [parsed]:
             if isinstance(msg, dict) and msg.get("method") == "tools/call":
