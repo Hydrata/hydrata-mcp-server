@@ -1,4 +1,4 @@
-"""Hydrata MCP Server — 15 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 17 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
 import json
@@ -164,8 +164,11 @@ mcp = FastMCP(
         "input GeoJSON (boundary, friction, inflow, rainfall, structure, mesh_region): "
         "multipart-POST it yourself to <origin>/api/v2/uploads/upload/ with the "
         "same credential, then attach_input_layer with the execution_id → "
-        "create_time_series for each rain gauge / hydrograph. No tool accepts "
-        "file contents; the agent moves the bytes."
+        "create_time_series for each rain gauge / hydrograph → create_scenario "
+        "(reports the mesh-triangle estimate from the detail) → build_scenario "
+        "(polls computed_status to built; asks for confirm=true above 100,000 "
+        "triangles; returns the API's 422 MESH_TOO_LARGE body verbatim) → "
+        "start_simulation. No tool accepts file contents; the agent moves the bytes."
     ),
     lifespan=lifespan,
 )
@@ -186,7 +189,7 @@ def _post_result(body, status_code: int) -> str:
 
 # ---------------------------------------------------------------------------
 # Bounded polling — ONE loop for every tool that waits on the platform
-# (get_terrain, attach_input_layer; W1.3's build_scenario next).
+# (get_terrain, attach_input_layer, build_scenario).
 #
 # Why bounded, and why 240/280: prod's nginx proxies /mcp/ with a 300 s
 # proxy_read_timeout (geonode-https.j2). A tool call cut by the proxy returns
@@ -271,12 +274,16 @@ async def get_scenario(
     project_id: Annotated[int, "The project ID"],
     scenario_id: Annotated[int, "The scenario ID"],
 ) -> str:
-    """Get scenario details including its current status and latest run.
+    """Get scenario details including its `computed_status` and latest run.
 
-    The status field is computed from the latest run and will be one of:
-    created, building, built, queued, computing, processing, complete,
-    error, or cancelled. A scenario must be in 'built' status before
-    it can be run.
+    The `computed_status` field (there is NO `status` key on a scenario) is
+    derived from the latest run and will be one of: created, building, built,
+    queued, computing, processing, complete, error, or cancelled — `created`
+    also means no run exists yet. A scenario must be `built` before it can be
+    run. The detail also carries `mesh_triangle_count_estimate` (+ its
+    `_breakdown`) and `latest_run_is_valid` (false after any edit since the
+    last build). A non-member reading a public project's scenario gets a
+    reduced record with no `computed_status`.
     """
     data = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
     return json.dumps(data, indent=2)
@@ -963,6 +970,339 @@ async def attach_input_layer(
         result["dataset_alternate"] = None
         result["dataset_lookup_error"] = str(exc)
     return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3172 (W1.3, epic 2467) — create_scenario + build_scenario.
+#
+# Building is the step that costs (make_package meshes the boundary on the web
+# box; the 2026-09-06 outage was a 28.7M-triangle mesh built in-process), so
+# the tool shows the number before it spends: create_scenario reports the
+# detail's mesh_triangle_count_estimate, and build_scenario refuses above
+# 100,000 triangles unless the agent passes confirm=true — a client-side
+# courtesy gate, deliberately BELOW the server's own 422 MESH_TOO_LARGE
+# ceiling (estimate.py build_size_refusal; 7.7M at the 28 GiB default), which
+# stays the hard limit and whose body the tool returns verbatim.
+# ---------------------------------------------------------------------------
+
+# Above this estimate build_scenario wants confirm=true. Courtesy, not the
+# ceiling: the server refuses only above gpu_l40s_max_triangles (422).
+BUILD_CONFIRM_ABOVE_TRIANGLES = 100_000
+
+# RunState values (gn_anuga state_machine.py:16-26), as the detail's
+# computed_status echoes them (= latest_run.status, or `created` with no run).
+# A build ends the poll at `built` or `error`/`cancelled`; the four simulation
+# states mean a run already went past built (a re-call after start_simulation)
+# and `complete` is a finished run — none of them is worth waiting on here.
+# `created` is NOT terminal: it is both "no run yet" and "dispatched, no
+# worker has picked it up".
+BUILD_TERMINAL_STATUSES = frozenset(
+    {"built", "error", "cancelled", "queued", "computing", "processing", "complete"}
+)
+# A run in one of these is being built right now (or is about to be): the
+# server's dedup 409 (BUILD_DEDUP_BLOCKING_STATUS_VALUES, api_v2.py:222) covers
+# them, so the tool resumes polling instead of POSTing.
+BUILD_IN_FLIGHT_RUN_STATUSES = frozenset({"created", "building"})
+# A run in one of these HAS a package. A re-POST is not dedup-blocked for
+# `built` or `complete` (services.py:1042-1048 dispatches a NEW Run), so the
+# tool returns the state instead — unless rebuild=true, or latest_run_is_valid
+# is false (every PATCH sets it false, api_v2.py:3095-3101: the package is
+# stale against the scenario's current inputs).
+BUILD_DONE_RUN_STATUSES = frozenset({"built", "queued", "computing", "processing", "complete"})
+
+
+def _computed_status(scenario) -> str | None:
+    """`computed_status` of a scenario detail, or None when it is not a dict.
+
+    Never `status`: ScenarioSerializerV2 has no such key (the round-2 red-team
+    caught the pre-existing get_scenario test mocking one).
+    """
+    return scenario.get("computed_status") if isinstance(scenario, dict) else None
+
+
+def _build_state(detail, **extra) -> dict:
+    """The compact build state: the scenario's status + estimate and the latest
+    run's id/status/error/mesh count — never the whole detail (`latest_run`
+    carries the full build log; the agent has get_run for that)."""
+    run = detail.get("latest_run") if isinstance(detail, dict) else None
+    run = run if isinstance(run, dict) else None
+    state = {
+        "scenario_id": detail.get("id") if isinstance(detail, dict) else None,
+        "computed_status": _computed_status(detail),
+        "mesh_triangle_count_estimate": (
+            detail.get("mesh_triangle_count_estimate") if isinstance(detail, dict) else None
+        ),
+        "latest_run_is_valid": detail.get("latest_run_is_valid") if isinstance(detail, dict) else None,
+        "run_id": run.get("id") if run else None,
+        "run_status": _status_of(run),
+        "error_message": run.get("error_message") if run else None,
+        "user_message": run.get("user_message") if run else None,
+        "status_detail": run.get("status_detail") if run else None,
+        "mesh_triangle_count": run.get("mesh_triangle_count") if run else None,
+    }
+    state.update(extra)
+    return state
+
+
+def _build_refusal(detail, reason: str) -> str:
+    return json.dumps(
+        _build_state(detail, outcome="refused", posted=False, reason=reason), indent=2
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 16: create_scenario
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def create_scenario(
+    project_id: Annotated[int, "The project ID"],
+    name: Annotated[str, "Scenario name"],
+    resolution: Annotated[
+        float,
+        "Mesh resolution as a LENGTH in metres (ANUGA maximum_triangle_area = "
+        "resolution²/2). Coarser (larger) = fewer triangles: on a ~13 km² boundary "
+        "36-40 m gives ~16-20k triangles, 10 m ~255k, 1 m ~25M (refused by the API).",
+    ],
+    duration: Annotated[int, "Simulation duration in seconds (e.g. 43200 = 12 h)"],
+    terrain: Annotated[
+        int | None, "Terrain id (get_terrain → terrain.id); the build fails without one"
+    ] = None,
+    boundary: Annotated[
+        int | None, "Boundary row id (attach_input_layer kind=boundary → row_id)"
+    ] = None,
+    friction: Annotated[int | None, "Friction row id (optional)"] = None,
+    inflow: Annotated[
+        int | None, "Inflow row id (optional; the build needs an inflow OR a rainfall)"
+    ] = None,
+    rainfall: Annotated[
+        int | None, "Rainfall row id (optional; the build needs an inflow OR a rainfall)"
+    ] = None,
+    structure: Annotated[int | None, "Structure row id (optional)"] = None,
+    mesh_region: Annotated[
+        int | None,
+        "MeshRegion row id (optional). Leave UNSET unless you want the regions' "
+        "finer meshing — see the units note: they mesh ~15x more than estimated.",
+    ] = None,
+    description: Annotated[str, "Free-text description (optional)"] = "",
+) -> str:
+    """Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.
+
+    POSTs /projects/<id>/scenarios/ with the write fields, then GETs the
+    scenario detail — the create response carries NO estimate; the detail's
+    `mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact
+    record: id, name, the FK ids as stored, resolution, duration,
+    `computed_status` (`created` = no run yet), the estimate and its
+    breakdown, and http_status. Next step: build_scenario (which asks for
+    confirm=true above 100,000 triangles). Nothing is meshed or queued here.
+
+    Units: `resolution` on the SCENARIO is a LENGTH in metres — ANUGA
+    maximum_triangle_area = resolution²/2 (run_utils.py:227/:290; FloatField
+    default 100, not nullable; 0 makes the estimate None) and the same value
+    becomes the raster cell size; a MeshRegion FEATURE's `resolution` is
+    consumed by the mesher as an AREA (max_triangle_area, m²) while the
+    estimate prices it as a length, so attached regions mesh ~15x more than
+    estimated (Towradgi 100/36/8 m² regions: estimate ~18k, mesh ~283k); the
+    smallest MeshRegion value becomes the raster cell size.
+
+    The server does NOT validate that the FK ids belong to `project_id` —
+    pass the row ids attach_input_layer / get_terrain returned for THIS
+    project. Every FK is nullable at create time, and the build fails later
+    on a scenario with no terrain, or with neither an inflow nor a rainfall.
+    A `boundary` whose row has no features (the default 'Boundary 01' before
+    attach_input_layer) is accepted here and refused by build_scenario. The
+    estimate is None when resolution is 0; an estimate of 0 with a real
+    boundary is a very coarse mesh, not an error.
+    """
+    payload = {
+        "name": name,
+        "description": description,
+        "resolution": resolution,
+        "duration": duration,
+        "terrain": terrain,
+        "boundary": boundary,
+        "friction": friction,
+        "inflow": inflow,
+        "rainfall": rainfall,
+        "structure": structure,
+        "mesh_region": mesh_region,
+    }
+    body, status_code = await client.post(f"/projects/{project_id}/scenarios/", json=payload)
+    scenario_id = body.get("id") if isinstance(body, dict) else None
+    if scenario_id is None:
+        return _post_result(body, status_code)
+    detail = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
+    if not isinstance(detail, dict):
+        return _post_result(body, status_code)
+    keys = (
+        "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
+        "rainfall", "structure", "mesh_region", "resolution", "duration", "computed_status",
+        "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
+        "latest_run_is_valid",
+    )
+    result = {key: detail.get(key) for key in keys}
+    result["http_status"] = status_code
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tool 17: build_scenario
+# ---------------------------------------------------------------------------
+@mcp.tool
+async def build_scenario(
+    project_id: Annotated[int, "The project ID"],
+    scenario_id: Annotated[int, "The scenario ID from create_scenario"],
+    confirm: Annotated[
+        bool,
+        "Required (true) when the estimate is above 100,000 triangles — the tool "
+        "refuses first and tells you the number. Default false.",
+    ] = False,
+    rebuild: Annotated[
+        bool,
+        "true to dispatch a NEW build of a scenario whose latest run is already "
+        "built/complete and still valid (default false: the tool returns that state "
+        "instead of duplicating the build).",
+    ] = False,
+    timeout_seconds: Annotated[
+        int,
+        "How long this call keeps polling before it returns `timed_out` "
+        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "0 = one status read, no waiting.",
+    ] = POLL_DEFAULT_TIMEOUT_SECONDS,
+    poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
+) -> str:
+    """Build a scenario's package (mesh + inputs) after showing what it will cost, and poll until built.
+
+    Order of operations, so the number is shown before anything is spent:
+
+    1. GET the scenario detail. A record with no `boundary`/`computed_status`
+       keys is a non-member's read of a public project → refused: a build
+       needs the EDITOR role.
+    2. Re-call checks on `latest_run` (a re-POST is NOT deduplicated after
+       `built`/`complete` — it would dispatch a duplicate build): no run →
+       proceed; run `created`/`building` → resume polling, no POST; run
+       `built`/`queued`/`computing`/`processing`/`complete` with
+       `latest_run_is_valid` not false → return that state, no POST unless
+       rebuild=true; run `error`/`cancelled`, or `latest_run_is_valid` false
+       (the scenario was edited since the build) → proceed.
+    3. Spend gates, each a refusal with `outcome: "refused"` and no POST: the
+       scenario has no boundary or its boundary row has no features (the
+       server would admit the build and fail it in make_package); the
+       estimate is None (resolution is 0/unset); the estimate is above
+       100,000 triangles and confirm is not true — the refusal states the
+       number; re-call with confirm=true to proceed. An estimate of 0 over a
+       boundary WITH features is buildable and is reported, not refused.
+    4. POST /projects/<id>/scenarios/<pk>/build/. Every 4xx comes back
+       verbatim as a normal result with `http_status`: 422 MESH_TOO_LARGE
+       (`error_code`, `estimate`, `ceiling`, `detail` — the server's hard
+       ceiling; coarsen `resolution` or shrink the boundary; no run was
+       created), 409 COMPUTE_TARGET_UNAVAILABLE, 400/403/404. A 409 WITHOUT
+       an error_code is the dedup body ({status, run_id, detail}: a build is
+       already in flight) — the tool resumes polling that run.
+    5. On 202 poll the detail's `computed_status` (created → building →
+       built | error), bounded by timeout_seconds.
+
+    Returns a COMPACT state, never the whole detail: `outcome` (built, error,
+    cancelled, complete/queued/computing/processing for a run past the build,
+    timed_out, or refused), `computed_status`, `mesh_triangle_count_estimate`,
+    `posted`, the POST's `build` body + `http_status` when one was made, and
+    the latest run's `run_id`, `run_status`, `error_message`, `user_message`,
+    `mesh_triangle_count`. `timed_out` is normal (make_package re-downloads
+    the terrain from S3 every build; minutes): call again with the same
+    arguments — step 2 resumes polling the same run, it never POSTs twice —
+    or cancel_run(run_id) if the run is stuck in `created` with no worker.
+    `error` is terminal: `error_message` says why (fix the inputs, then call
+    again — an errored latest run is rebuilt).
+
+    Units: `resolution` on the SCENARIO is a LENGTH in metres — ANUGA
+    maximum_triangle_area = resolution²/2 (run_utils.py:227/:290; FloatField
+    default 100, not nullable; 0 makes the estimate None) and the same value
+    becomes the raster cell size; a MeshRegion FEATURE's `resolution` is
+    consumed by the mesher as an AREA (max_triangle_area, m²) while the
+    estimate prices it as a length, so attached regions mesh ~15x more than
+    estimated (Towradgi 100/36/8 m² regions: estimate ~18k, mesh ~283k); the
+    smallest MeshRegion value becomes the raster cell size.
+    """
+    path = f"/projects/{project_id}/scenarios/{scenario_id}/"
+    detail = await client.get(path)
+    if not isinstance(detail, dict) or "boundary" not in detail or "computed_status" not in detail:
+        # STRANGER_SCENARIO_FIELDS (serializers_v2.py:395-405): a public
+        # project's scenario read by a non-member has neither key.
+        return _build_refusal(
+            detail if isinstance(detail, dict) else {},
+            f"not a project member; build needs EDITOR on project {project_id} "
+            "(the scenario read carries no boundary/computed_status)",
+        )
+
+    async def poll(**extra):
+        last, polls, elapsed, timed_out = await _poll_until(
+            lambda: client.get(path),
+            lambda record: _computed_status(record) in BUILD_TERMINAL_STATUSES,
+            timeout_seconds,
+            poll_interval_seconds,
+        )
+        state = _build_state(last, polls=polls, elapsed_seconds=elapsed, **extra)
+        if timed_out:
+            state["outcome"] = "timed_out"
+            state["note"] = (
+                "still building: call build_scenario again with the same arguments to "
+                "resume polling this run (it will not POST a second build); if run_id "
+                f"{state['run_id']} stays in `created` no worker has picked it up — "
+                "cancel_run(run_id) releases it"
+            )
+        else:
+            state["outcome"] = state["computed_status"]
+        return json.dumps(state, indent=2)
+
+    # (2) Re-call checks BEFORE the spend gates.
+    latest_run = detail.get("latest_run")
+    run_status = _status_of(latest_run)
+    if run_status in BUILD_IN_FLIGHT_RUN_STATUSES:
+        return await poll(posted=False)
+    package_is_current = detail.get("latest_run_is_valid") is not False
+    if run_status in BUILD_DONE_RUN_STATUSES and package_is_current and not rebuild:
+        state = _build_state(detail, outcome=_computed_status(detail), posted=False)
+        state["note"] = (
+            f"latest run {state['run_id']} is {run_status} and latest_run_is_valid is not "
+            "false — the package is current, nothing was posted; pass rebuild=true to "
+            "dispatch a NEW build"
+        )
+        return json.dumps(state, indent=2)
+
+    # (3) Spend gates.
+    boundary_id = detail.get("boundary")
+    if boundary_id is None:
+        return _build_refusal(
+            detail, "boundary has no features: the scenario has no boundary attached "
+            "(attach_input_layer kind=boundary, then set it on the scenario)"
+        )
+    boundary = await client.get(f"/projects/{project_id}/boundaries/{boundary_id}/")
+    if not (isinstance(boundary, dict) and boundary.get("has_features")):
+        return _build_refusal(
+            detail, f"boundary has no features: Boundary {boundary_id} has_features is false "
+            "(the server would admit the build and fail it in make_package) — upload the "
+            "boundary GeoJSON and attach_input_layer kind=boundary first"
+        )
+    estimate = detail.get("mesh_triangle_count_estimate")
+    if estimate is None:
+        return _build_refusal(detail, "resolution is 0/unset: the mesh estimate is None")
+    if estimate > BUILD_CONFIRM_ABOVE_TRIANGLES and not confirm:
+        return _build_refusal(
+            detail,
+            f"estimate is {estimate:,} triangles, above {BUILD_CONFIRM_ABOVE_TRIANGLES:,}: "
+            "building costs minutes on the web box and the run will need compute — "
+            "coarsen `resolution` (a length in metres; triangles scale ~1/resolution²) "
+            "or call again with confirm=true to build at this size",
+        )
+
+    # (4) POST; every 4xx comes back as a result the agent can read.
+    body, status_code = await client.post(
+        f"/projects/{project_id}/scenarios/{scenario_id}/build/", raise_for_status=False
+    )
+    is_dedup_409 = status_code == 409 and isinstance(body, dict) and "error_code" not in body
+    if status_code >= 400 and not is_dedup_409:
+        return _post_result(body, status_code)
+    # (5) 202 (a new run) or the dedup 409 (someone else's run): poll it.
+    return await poll(posted=True, build=body, http_status=status_code)
 
 
 # ---------------------------------------------------------------------------

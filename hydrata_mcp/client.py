@@ -89,17 +89,31 @@ class HydrataClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def _send(self, method: str, url: str, path: str, **kwargs) -> httpx.Response:
+    async def _send(
+        self, method: str, url: str, path: str, raise_for_status: bool = True, **kwargs
+    ) -> httpx.Response:
         """One request with the caller's headers; every failure becomes a HydrataAPIError.
 
         `path` is only for the message (the part after the base, as the tool
         wrote it). 5xx bodies are deliberately NOT relayed — they are HTML
         tracebacks, not a signal the agent can act on.
+
+        TASK-3172 (W1.3, epic 2467) — ``raise_for_status=False`` hands a 4xx
+        response BACK to the caller instead of raising: build_scenario must
+        return the API's 422 MESH_TOO_LARGE / 409 bodies verbatim as a
+        NON-error result the agent reads (estimate, ceiling, the in-flight
+        run_id), not as an error string. It is not a second error path: a
+        ConnectError, a timeout and every 5xx still map to HydrataAPIError
+        exactly as before, only the 4xx-as-exception step is skipped. httpx
+        does not follow redirects, so a 3xx would also come back under the
+        flag — no tool path can hit one (every path ends in '/', so
+        APPEND_SLASH never redirects).
         """
         client = await self._ensure_client()
         try:
             resp = await client.request(method, url, headers=self._request_headers(), **kwargs)
-            resp.raise_for_status()
+            if raise_for_status or resp.is_server_error:
+                resp.raise_for_status()
         except httpx.ConnectError:
             raise HydrataAPIError(
                 f"Hydrata API is unreachable at {self._base}. The backend may be restarting."
@@ -119,7 +133,19 @@ class HydrataClient:
 
     @staticmethod
     def _body(resp: httpx.Response) -> Any:
-        return resp.json() if resp.content else {}
+        """The JSON body; {} when empty; {"response": text} when it is not JSON.
+
+        TASK-3172 (W1.3, epic 2467) — a 4xx handed back under
+        ``raise_for_status=False`` may be an HTML page (nginx's 413, a proxy
+        403) rather than DRF JSON; decoding it must not turn a legible
+        refusal into a traceback. Clipped like _client_error_message.
+        """
+        if not resp.content:
+            return {}
+        try:
+            return resp.json()
+        except ValueError:
+            return {"response": resp.text.strip()[:1000]}
 
     async def get(self, path: str, params: dict | None = None) -> Any:
         resp = await self._send("GET", f"{self._base}{path}", path, params=params)
@@ -134,9 +160,18 @@ class HydrataClient:
         resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
         return resp.json()
 
-    async def post(self, path: str, json: dict | None = None) -> tuple[Any, int]:
-        """POST request. Returns (body, status_code) since some endpoints return 202."""
-        resp = await self._send("POST", f"{self._base}{path}", path, json=json or {})
+    async def post(
+        self, path: str, json: dict | None = None, raise_for_status: bool = True
+    ) -> tuple[Any, int]:
+        """POST request. Returns (body, status_code) since some endpoints return 202.
+
+        With ``raise_for_status=False`` a 4xx is returned as ``(body, status)``
+        too (TASK-3172: build_scenario surfaces 422/409 bodies verbatim);
+        the default keeps every other tool's raise-on-4xx behaviour.
+        """
+        resp = await self._send(
+            "POST", f"{self._base}{path}", path, raise_for_status=raise_for_status, json=json or {}
+        )
         return self._body(resp), resp.status_code
 
     async def patch(self, path: str, json: dict | None = None) -> tuple[Any, int]:

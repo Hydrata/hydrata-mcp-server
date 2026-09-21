@@ -70,12 +70,12 @@ class TestGetProject:
 class TestGetScenario:
     @respx.mock
     async def test_returns_scenario(self, _server):
-        scenario = {"id": 5, "status": "built"}
+        scenario = {"id": 5, "computed_status": "built"}
         respx.get(f"{BASE}/projects/1/scenarios/5/").mock(
             return_value=httpx.Response(200, json=scenario)
         )
         result = await _server.get_scenario(project_id=1, scenario_id=5)
-        assert json.loads(result)["status"] == "built"
+        assert json.loads(result)["computed_status"] == "built"
 
 
 class TestStartSimulation:
@@ -1325,3 +1325,502 @@ class TestAttachInputLayerTool:
                 assert forbidden not in props, (name, forbidden)
         series_props = tools["create_time_series"]["inputSchema"]["properties"]
         assert "series_type" in series_props and "units" in series_props
+
+
+# ---------------------------------------------------------------------------
+# TASK-3172 (W1.3, epic 2467) — create_scenario + build_scenario.
+#
+# create_scenario POSTs the WRITE serializer's fields (ScenarioCreateSerializerV2,
+# serializers_v2.py:819 — its response carries NO estimate) and then GETs the
+# detail, whose READ serializer carries mesh_triangle_count_estimate (+ the
+# _breakdown) and `computed_status` — NEVER `status`: the round-2 red-team found
+# the pre-existing get_scenario test mocking a key the API does not return.
+# build_scenario shows the number before it spends: the re-call checks on
+# latest_run come FIRST (a re-POST after `built` dispatches a NEW Run,
+# services.py:1042-1048; the dedup 409 blocks only in-flight + created), then
+# the boundary / resolution / 100k-confirm gates, then POST /build/ with
+# raise_for_status=False so a 422 MESH_TOO_LARGE (or a 409) body reaches the
+# agent VERBATIM as a non-error result, then a bounded poll of the detail's
+# computed_status. Every case asserts whether /build/ was hit. The stored proof
+# selects on `-k "create_scenario or build_scenario"`: every test NAME carries
+# one of those tokens.
+# ---------------------------------------------------------------------------
+SCENARIO_URL = f"{BASE}/projects/42/scenarios/5/"
+BUILD_URL = f"{BASE}/projects/42/scenarios/5/build/"
+BOUNDARY_URL = f"{BASE}/projects/42/boundaries/27497/"
+ESTIMATE_BREAKDOWN = {"base": 19_729, "mesh_regions": 0, "structures": 0, "total": 19_729}
+MESH_TOO_LARGE = {
+    "error_code": "MESH_TOO_LARGE",
+    "estimate": 25_568_180,
+    "ceiling": 7_737_436,
+    "detail": (
+        "This mesh would be ~25,568,180 triangles, above the 7,737,436-triangle "
+        "limit. Coarsen the resolution or reduce the extent."
+    ),
+}
+DEDUP_409 = {"status": "building", "run_id": 501, "detail": "A build is already in progress for this scenario."}
+
+
+def _run(pk, status, **extra):
+    return {
+        "id": pk,
+        "project": 42,
+        "scenario": 5,
+        "status": status,
+        "error_message": None,
+        "user_message": None,
+        "status_detail": None,
+        "mesh_triangle_count": None,
+        "log": "…the full build log…",
+        **extra,
+    }
+
+
+def _scenario(computed_status="created", estimate=19_729, latest_run=None, **overrides):
+    """A member's ScenarioSerializerV2 detail: boundary + computed_status present."""
+    row = {
+        "id": 5,
+        "project": 42,
+        "name": "mcp-w1-3172-t",
+        "description": "",
+        "boundary": 27497,
+        "terrain": 110533,
+        "friction": 124557,
+        "inflow": 124555,
+        "rainfall": 124556,
+        "structure": 124558,
+        "mesh_region": None,
+        "network": None,
+        "resolution": 36.0,
+        "duration": 43200,
+        "computed_status": computed_status,
+        "latest_run": latest_run,
+        "latest_complete_run": None,
+        "mesh_triangle_count_estimate": estimate,
+        "mesh_triangle_count_estimate_breakdown": (
+            None if estimate is None else {**ESTIMATE_BREAKDOWN, "total": estimate}
+        ),
+        "latest_run_is_valid": None,
+        "perms": ["view", "change"],
+    }
+    row.update(overrides)
+    return row
+
+
+def _mock_boundary(has_features=True):
+    return respx.get(BOUNDARY_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 27497, "title": "Boundary 01", "project": 42, "gn_layer": 1524, "has_features": has_features},
+        )
+    )
+
+
+def _mock_build(status=202, body=None):
+    body = {"status": "created", "run_id": 501, "scenario_id": 5} if body is None else body
+    return respx.post(BUILD_URL).mock(return_value=httpx.Response(status, json=body))
+
+
+def _detail_to_built(first_detail):
+    """Detail GETs: the pre-check read, then the poll sees created → building → built."""
+    return respx.get(SCENARIO_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=first_detail),
+            httpx.Response(200, json=_scenario("created", latest_run=_run(501, "created"))),
+            httpx.Response(200, json=_scenario("building", latest_run=_run(501, "building"))),
+            httpx.Response(
+                200,
+                json=_scenario(
+                    "built",
+                    latest_run=_run(501, "built", mesh_triangle_count=19_812),
+                    latest_run_is_valid=True,
+                ),
+            ),
+        ]
+    )
+
+
+async def _build(srv, **overrides):
+    args = {"project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}
+    args.update(overrides)
+    return await _call_as_caller(srv, "build_scenario", args)
+
+
+class TestCreateScenarioTool:
+    @respx.mock
+    async def test_create_scenario_posts_the_write_fields_and_reports_the_estimate_from_the_detail_get(
+        self, _server
+    ):
+        created = {
+            "id": 5, "name": "mcp-w1-3172-t", "description": "", "terrain": 110533,
+            "boundary": 27497, "friction": 124557, "inflow": 124555, "rainfall": 124556,
+            "structure": 124558, "mesh_region": None, "network": None,
+            "resolution": 36.0, "duration": 43200,
+        }
+        post_route = respx.post(f"{BASE}/projects/42/scenarios/").mock(
+            return_value=httpx.Response(201, json=created)
+        )
+        detail_route = respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        result = await _call_as_caller(
+            _server,
+            "create_scenario",
+            {
+                "project_id": 42, "name": "mcp-w1-3172-t", "resolution": 36, "duration": 43200,
+                "terrain": 110533, "boundary": 27497, "friction": 124557, "inflow": 124555,
+                "rainfall": 124556, "structure": 124558,
+            },
+        )
+        assert post_route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert detail_route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        # Exactly ScenarioCreateSerializerV2's writable fields the tool exposes
+        # (network is not offered); an unset FK travels as null.
+        assert json.loads(post_route.calls[0].request.content) == {
+            "name": "mcp-w1-3172-t", "description": "", "resolution": 36, "duration": 43200,
+            "terrain": 110533, "boundary": 27497, "friction": 124557, "inflow": 124555,
+            "rainfall": 124556, "structure": 124558, "mesh_region": None,
+        }
+        data = _tool_json(result)
+        assert data["id"] == 5
+        assert data["http_status"] == 201
+        # The estimate comes from the DETAIL — the create response has none.
+        assert "mesh_triangle_count_estimate" not in created
+        assert data["mesh_triangle_count_estimate"] == 19_729
+        assert data["mesh_triangle_count_estimate_breakdown"]["total"] == 19_729
+        assert data["computed_status"] == "created"
+        assert data["mesh_region"] is None
+        assert "latest_run" not in data and "perms" not in data
+
+
+class TestBuildScenarioTool:
+    @respx.mock
+    async def test_build_scenario_under_cap_posts_build_then_polls_computed_status_to_built(self, _server):
+        detail_route = _detail_to_built(_scenario())
+        boundary_route = _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert build_route.call_count == 1
+        assert build_route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert boundary_route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        for call in detail_route.calls:
+            assert call.request.headers["authorization"] == CALLER_BASIC
+        assert detail_route.call_count == 4  # pre-check, then created → building → built
+        assert data["outcome"] == "built"
+        assert data["computed_status"] == "built"
+        assert data["posted"] is True
+        assert data["http_status"] == 202
+        assert data["build"] == {"status": "created", "run_id": 501, "scenario_id": 5}
+        assert data["run_id"] == 501
+        assert data["run_status"] == "built"
+        assert data["mesh_triangle_count"] == 19_812
+        assert data["mesh_triangle_count_estimate"] == 19_729
+        assert data["polls"] == 3
+        # Compact: never the whole detail (latest_run carries the full build log).
+        assert "latest_run" not in data and "log" not in data
+
+    @respx.mock
+    async def test_build_scenario_over_100k_without_confirm_refuses_and_never_posts(self, _server):
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(estimate=255_412)))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called
+        assert data["outcome"] == "refused"
+        assert data["posted"] is False
+        assert data["mesh_triangle_count_estimate"] == 255_412
+        assert "255,412" in data["reason"] and "confirm=true" in data["reason"]
+
+    @respx.mock
+    async def test_build_scenario_over_100k_with_confirm_true_posts(self, _server):
+        _detail_to_built(_scenario(estimate=255_412))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server, confirm=True))
+        assert build_route.call_count == 1
+        assert data["outcome"] == "built"
+
+    @respx.mock
+    async def test_build_scenario_refuses_a_null_boundary_without_posting(self, _server):
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(200, json=_scenario(boundary=None, estimate=0))
+        )
+        boundary_route = _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called and not boundary_route.called
+        assert data["outcome"] == "refused"
+        assert "boundary has no features" in data["reason"]
+
+    @respx.mock
+    async def test_build_scenario_refuses_a_boundary_without_features_without_posting(self, _server):
+        """The default 'Boundary 01' row before attach_input_layer: the server ADMITS
+        the build and errors at make_package — refuse here, naming the row."""
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(estimate=0)))
+        boundary_route = _mock_boundary(False)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert boundary_route.called
+        assert not build_route.called
+        assert data["outcome"] == "refused"
+        assert "boundary has no features" in data["reason"] and "27497" in data["reason"]
+
+    @respx.mock
+    async def test_build_scenario_estimate_zero_with_features_proceeds_to_post(self, _server):
+        """Estimate 0 is NOT 'no boundary': int(round(...)) of a coarse resolution over
+        a real boundary is 0 and BUILDS (localhost scenario 86955: 8 triangles)."""
+        _detail_to_built(_scenario(estimate=0))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert build_route.call_count == 1
+        assert data["outcome"] == "built"
+
+    @respx.mock
+    async def test_build_scenario_refuses_when_the_estimate_is_none_without_posting(self, _server):
+        """resolution 0 (FloatField default 100, not nullable) → estimate None."""
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(200, json=_scenario(estimate=None, resolution=0.0))
+        )
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called
+        assert data["outcome"] == "refused"
+        assert "resolution is 0/unset" in data["reason"]
+
+    @respx.mock
+    async def test_build_scenario_returns_the_422_mesh_too_large_body_verbatim_as_a_non_error(
+        self, _server
+    ):
+        detail_route = respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(200, json=_scenario(estimate=25_568_180, resolution=1.0))
+        )
+        _mock_boundary(True)
+        build_route = _mock_build(422, MESH_TOO_LARGE)
+        result = await _build(_server, confirm=True)
+        assert result.get("isError") is not True, result["content"][0]["text"]
+        data = _tool_json(result)
+        assert build_route.call_count == 1
+        assert data == {**MESH_TOO_LARGE, "http_status": 422}
+        assert detail_route.call_count == 1  # nothing to poll: no Run was created
+
+    @respx.mock
+    async def test_build_scenario_returns_a_409_with_error_code_verbatim_and_does_not_poll(self, _server):
+        unavailable = {
+            "error_code": "COMPUTE_TARGET_UNAVAILABLE",
+            "detail": "ANUGA_BATCH_GPU_L40S_MEMORY_LIMIT_MIB is not a positive integer",
+        }
+        detail_route = respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        _mock_boundary(True)
+        _mock_build(409, unavailable)
+        data = _tool_json(await _build(_server))
+        assert data == {**unavailable, "http_status": 409}
+        assert detail_route.call_count == 1
+
+    @respx.mock
+    async def test_build_scenario_non_json_4xx_body_becomes_response_text(self, _server):
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        _mock_boundary(True)
+        respx.post(BUILD_URL).mock(
+            return_value=httpx.Response(403, text="<html>Forbidden</html>", headers={"content-type": "text/html"})
+        )
+        data = _tool_json(await _build(_server))
+        assert data == {"response": "<html>Forbidden</html>", "http_status": 403}
+
+    @respx.mock
+    async def test_build_scenario_5xx_on_build_is_still_a_tool_error(self, _server):
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        _mock_boundary(True)
+        respx.post(BUILD_URL).mock(return_value=httpx.Response(502, text="<html>Bad Gateway</html>"))
+        text = _tool_error_text(await _build(_server))
+        assert "502" in text
+        assert "Bad Gateway" not in text  # 5xx bodies are HTML, never relayed
+
+    @pytest.mark.parametrize("in_flight", ["created", "building"])
+    @respx.mock
+    async def test_build_scenario_resumes_polling_when_latest_run_is_in_flight_without_posting(
+        self, _server, in_flight
+    ):
+        detail_route = respx.get(SCENARIO_URL).mock(
+            side_effect=[
+                httpx.Response(200, json=_scenario(in_flight, latest_run=_run(501, in_flight))),
+                httpx.Response(200, json=_scenario("building", latest_run=_run(501, "building"))),
+                httpx.Response(
+                    200, json=_scenario("built", latest_run=_run(501, "built"), latest_run_is_valid=True)
+                ),
+            ]
+        )
+        boundary_route = _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called
+        assert not boundary_route.called  # the re-call checks run BEFORE the spend gates
+        assert detail_route.call_count == 3
+        assert data["outcome"] == "built"
+        assert data["posted"] is False
+        assert data["run_id"] == 501
+
+    @respx.mock
+    async def test_build_scenario_resumes_polling_on_the_409_dedup_body_without_a_second_post(
+        self, _server
+    ):
+        """The pre-check saw no run but a build was dispatched before the POST landed:
+        the dedup body has NO error_code — poll THAT run, never POST again."""
+        detail_route = respx.get(SCENARIO_URL).mock(
+            side_effect=[
+                httpx.Response(200, json=_scenario()),
+                httpx.Response(200, json=_scenario("building", latest_run=_run(501, "building"))),
+                httpx.Response(
+                    200, json=_scenario("built", latest_run=_run(501, "built"), latest_run_is_valid=True)
+                ),
+            ]
+        )
+        _mock_boundary(True)
+        build_route = _mock_build(409, DEDUP_409)
+        data = _tool_json(await _build(_server))
+        assert build_route.call_count == 1
+        assert detail_route.call_count == 3
+        assert data["outcome"] == "built"
+        assert data["http_status"] == 409
+        assert data["build"] == DEDUP_409
+        assert data["run_id"] == 501
+
+    @pytest.mark.parametrize("done", ["built", "complete"])
+    @respx.mock
+    async def test_build_scenario_built_or_complete_without_rebuild_returns_the_state_and_never_posts(
+        self, _server, done
+    ):
+        """`complete` is NOT dedup-blocked server-side (BUILD_DEDUP_BLOCKING_STATUS_VALUES =
+        in-flight + created): a blind re-POST would dispatch a duplicate build."""
+        detail_route = respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_scenario(
+                    done, latest_run=_run(501, done, mesh_triangle_count=19_812), latest_run_is_valid=True
+                ),
+            )
+        )
+        boundary_route = _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called and not boundary_route.called
+        assert detail_route.call_count == 1
+        assert data["outcome"] == done
+        assert data["computed_status"] == done
+        assert data["posted"] is False
+        assert data["run_id"] == 501
+        assert data["mesh_triangle_count"] == 19_812
+        assert "rebuild=true" in data["note"]
+
+    @respx.mock
+    async def test_build_scenario_built_with_rebuild_true_posts_a_new_build(self, _server):
+        _detail_to_built(_scenario("built", latest_run=_run(500, "built"), latest_run_is_valid=True))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server, rebuild=True))
+        assert build_route.call_count == 1
+        assert data["outcome"] == "built"
+        assert data["run_id"] == 501
+
+    @respx.mock
+    async def test_build_scenario_built_but_latest_run_is_valid_false_posts_a_rebuild(self, _server):
+        """Every PATCH sets latest_run_is_valid False (api_v2.py:3095-3101): the built
+        package is stale against the current inputs — rebuild without rebuild=true."""
+        _detail_to_built(_scenario("built", latest_run=_run(500, "built"), latest_run_is_valid=False))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert build_route.call_count == 1
+        assert data["outcome"] == "built"
+        assert data["run_id"] == 501
+
+    @pytest.mark.parametrize("dead", ["error", "cancelled"])
+    @respx.mock
+    async def test_build_scenario_after_an_error_or_cancelled_run_posts_a_rebuild(self, _server, dead):
+        _detail_to_built(_scenario(dead, latest_run=_run(500, dead, error_message="boom")))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert build_route.call_count == 1
+        assert data["outcome"] == "built"
+        assert data["run_id"] == 501
+
+    @respx.mock
+    async def test_build_scenario_refuses_a_stranger_read_without_posting(self, _server):
+        """A public project's scenario read by a non-member is 200 with ONLY
+        STRANGER_SCENARIO_FIELDS (serializers_v2.py:395-405): no boundary, no
+        computed_status. The build needs EDITOR — say so instead of guessing."""
+        stranger = {
+            "id": 5, "name": "mcp-w1-3172-t", "description": "", "resolution": 36.0, "duration": 43200,
+            "mesh_triangle_count_estimate": 19_729, "mesh_triangle_count_estimate_breakdown": ESTIMATE_BREAKDOWN,
+            "latest_run": None, "latest_complete_run": None,
+        }
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=stranger))
+        boundary_route = _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called and not boundary_route.called
+        assert data["outcome"] == "refused"
+        assert "not a project member" in data["reason"] and "EDITOR" in data["reason"]
+
+    @respx.mock
+    async def test_build_scenario_timeout_is_bounded_and_names_the_run_id(self, _server):
+        """timeout_seconds=0 → the POST, then exactly ONE poll, then `timed_out` naming
+        the run so the agent can cancel_run one stuck in `created`; a re-call resumes."""
+        detail_route = respx.get(SCENARIO_URL).mock(
+            side_effect=[
+                httpx.Response(200, json=_scenario()),
+                httpx.Response(200, json=_scenario("created", latest_run=_run(501, "created"))),
+                httpx.Response(500),
+            ]
+        )
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server, timeout_seconds=0))
+        assert build_route.call_count == 1
+        assert detail_route.call_count == 2
+        assert data["outcome"] == "timed_out"
+        assert data["computed_status"] == "created"
+        assert data["run_id"] == 501
+        assert data["polls"] == 1
+        assert "cancel_run" in data["note"]
+
+    @respx.mock
+    async def test_build_scenario_error_end_state_carries_the_run_error_message(self, _server):
+        respx.get(SCENARIO_URL).mock(
+            side_effect=[
+                httpx.Response(200, json=_scenario()),
+                httpx.Response(
+                    200,
+                    json=_scenario(
+                        "error", latest_run=_run(501, "error", error_message="Could not find Boundary data")
+                    ),
+                ),
+            ]
+        )
+        _mock_boundary(True)
+        _mock_build()
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "error"
+        assert data["run_id"] == 501
+        assert data["error_message"] == "Could not find Boundary data"
+
+    async def test_build_scenario_and_create_scenario_listed_with_computed_status_metres_and_confirm(
+        self, _server
+    ):
+        """The docstring ACs, made provable: the units trap (a LENGTH in metres on the
+        scenario; an AREA on a MeshRegion feature), the poll key and the confirm gate
+        are on the tools' OWN descriptions; get_scenario's names computed_status."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        build = tools["build_scenario"]["description"]
+        for token in ("computed_status", "resolution", "metres", "confirm", "100,000", "MESH_TOO_LARGE"):
+            assert token in build, token
+        create = tools["create_scenario"]["description"]
+        for token in ("resolution", "metres", "m²", "resolution²/2", "computed_status", "MeshRegion"):
+            assert token in create, token
+        get_scenario = tools["get_scenario"]["description"]
+        assert "computed_status" in get_scenario
+        props = tools["build_scenario"]["inputSchema"]["properties"]
+        assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
+        assert len(tools) == 17  # the module docstring's count
