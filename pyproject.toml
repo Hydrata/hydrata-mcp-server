@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hydrata-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Hydrata hydraulic modeling platform"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-    "fastmcp>=2.0",
+    "fastmcp==4.0.5",  # TASK-3166: prod ran 3.0.2 under >=2.0; pass-through needs 4.0.5 get_http_headers(include=)
     "httpx>=0.27",
     "uvicorn>=0.30",
 ]
