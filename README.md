@@ -22,7 +22,7 @@ Version 0.2.0 exposes seventeen tools: nine that read projects and scenarios and
 |------|-------------|
 | `list_projects` | List ANUGA simulation projects (paginated) |
 | `get_project` | Get project details including scenarios |
-| `get_scenario` | Get scenario status and latest run |
+| `get_scenario` | Get a scenario's `computed_status`, mesh-triangle estimate and latest run |
 | `start_simulation` | Start a flood simulation (local/EC2/Batch backends) |
 | `get_run_status` | Lightweight status poll (<50ms) |
 | `get_run` | Full run details with timing and results |
@@ -31,12 +31,12 @@ Version 0.2.0 exposes seventeen tools: nine that read projects and scenarios and
 | `list_runs` | List runs across a project (with status filter) |
 | `create_project` | Create an ANUGA project with a name and EPSG projection |
 | `presign_terrain_upload` | Return a presigned URL + key so the agent PUTs the terrain GeoTIFF itself (no file bytes pass through MCP) |
-| `finalize_terrain_upload` | Register the uploaded terrain; creates the project's default boundary/friction/inflow/rainfall/mesh-region rows |
-| `get_terrain` | Poll the terrain until it is ready |
-| `create_time_series` | Create a time series from `{"rowData": [...]}` for an inflow or rainfall |
+| `finalize_terrain_upload` | Register the uploaded terrain; the import chain seeds the project's six default boundary/friction/inflow/rainfall/structure/mesh-region rows |
+| `get_terrain` | Poll the terrain until it is ready (bounded; `timed_out` means call again) |
+| `create_time_series` | Create a time series (rain gauge, hydrograph or tide/stage — `series_type` and `units` are top-level fields) from `{"rowData": [...]}`; a rainfall polygon binds to its gauge by the series name |
 | `attach_input_layer` | Attach a GeoJSON dataset the agent already uploaded as the project's boundary/friction/inflow/rainfall/structure or mesh-region layer; breakline and culvert are refused (culvert flow is not conveyed) |
-| `create_scenario` | Create a scenario and return its mesh-triangle estimate |
-| `build_scenario` | Build the scenario mesh; reports the estimate first and needs `confirm=true` above 100,000 triangles; surfaces the server's 422 MESH_TOO_LARGE verbatim |
+| `create_scenario` | Create a draft scenario and return its mesh-triangle estimate (`resolution` is a length in metres) |
+| `build_scenario` | Build the scenario package; shows the estimate first and needs `confirm=true` above 100,000 triangles; polls `computed_status` to built; never re-posts a build that is in flight or already built (`rebuild=true` to force one); surfaces the server's 422 MESH_TOO_LARGE verbatim |
 
 No tool accepts file contents inline. The agent moves the bytes itself — the terrain GeoTIFF to the presigned URL, a GeoJSON layer to the REST API upload endpoint — and hands the server the resulting key or upload id.
 

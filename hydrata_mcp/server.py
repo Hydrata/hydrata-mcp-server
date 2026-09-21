@@ -991,17 +991,11 @@ BUILD_CONFIRM_ABOVE_TRIANGLES = 100_000
 
 # RunState values (gn_anuga state_machine.py:16-26), as the detail's
 # computed_status echoes them (= latest_run.status, or `created` with no run).
-# A build ends the poll at `built` or `error`/`cancelled`; the four simulation
-# states mean a run already went past built (a re-call after start_simulation)
-# and `complete` is a finished run — none of them is worth waiting on here.
-# `created` is NOT terminal: it is both "no run yet" and "dispatched, no
-# worker has picked it up".
-BUILD_TERMINAL_STATUSES = frozenset(
-    {"built", "error", "cancelled", "queued", "computing", "processing", "complete"}
-)
+#
 # A run in one of these is being built right now (or is about to be): the
 # server's dedup 409 (BUILD_DEDUP_BLOCKING_STATUS_VALUES, api_v2.py:222) covers
-# them, so the tool resumes polling instead of POSTing.
+# them, so the tool resumes polling instead of POSTing. `created` is both "no
+# run yet" and "dispatched, no worker has picked it up".
 BUILD_IN_FLIGHT_RUN_STATUSES = frozenset({"created", "building"})
 # A run in one of these HAS a package. A re-POST is not dedup-blocked for
 # `built` or `complete` (services.py:1042-1048 dispatches a NEW Run), so the
@@ -1009,6 +1003,11 @@ BUILD_IN_FLIGHT_RUN_STATUSES = frozenset({"created", "building"})
 # is false (every PATCH sets it false, api_v2.py:3095-3101: the package is
 # stale against the scenario's current inputs).
 BUILD_DONE_RUN_STATUSES = frozenset({"built", "queued", "computing", "processing", "complete"})
+# Where a build poll stops: a package exists (the four simulation states mean a
+# run already went past built — a re-call after start_simulation — and
+# `complete` is a finished run; none is worth waiting on) or the run died.
+# Everything in flight is, by construction, NOT terminal.
+BUILD_TERMINAL_STATUSES = BUILD_DONE_RUN_STATUSES | {"error", "cancelled"}
 
 
 def _computed_status(scenario) -> str | None:
@@ -1024,21 +1023,21 @@ def _build_state(detail, **extra) -> dict:
     """The compact build state: the scenario's status + estimate and the latest
     run's id/status/error/mesh count — never the whole detail (`latest_run`
     carries the full build log; the agent has get_run for that)."""
-    run = detail.get("latest_run") if isinstance(detail, dict) else None
-    run = run if isinstance(run, dict) else None
+    # A non-dict detail (or latest_run) reads as empty: every field is None.
+    detail = detail if isinstance(detail, dict) else {}
+    run = detail.get("latest_run")
+    run = run if isinstance(run, dict) else {}
     state = {
-        "scenario_id": detail.get("id") if isinstance(detail, dict) else None,
+        "scenario_id": detail.get("id"),
         "computed_status": _computed_status(detail),
-        "mesh_triangle_count_estimate": (
-            detail.get("mesh_triangle_count_estimate") if isinstance(detail, dict) else None
-        ),
-        "latest_run_is_valid": detail.get("latest_run_is_valid") if isinstance(detail, dict) else None,
-        "run_id": run.get("id") if run else None,
+        "mesh_triangle_count_estimate": detail.get("mesh_triangle_count_estimate"),
+        "latest_run_is_valid": detail.get("latest_run_is_valid"),
+        "run_id": run.get("id"),
         "run_status": _status_of(run),
-        "error_message": run.get("error_message") if run else None,
-        "user_message": run.get("user_message") if run else None,
-        "status_detail": run.get("status_detail") if run else None,
-        "mesh_triangle_count": run.get("mesh_triangle_count") if run else None,
+        "error_message": run.get("error_message"),
+        "user_message": run.get("user_message"),
+        "status_detail": run.get("status_detail"),
+        "mesh_triangle_count": run.get("mesh_triangle_count"),
     }
     state.update(extra)
     return state
@@ -1228,7 +1227,7 @@ async def build_scenario(
         # STRANGER_SCENARIO_FIELDS (serializers_v2.py:395-405): a public
         # project's scenario read by a non-member has neither key.
         return _build_refusal(
-            detail if isinstance(detail, dict) else {},
+            detail,
             f"not a project member; build needs EDITOR on project {project_id} "
             "(the scenario read carries no boundary/computed_status)",
         )
