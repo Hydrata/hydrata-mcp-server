@@ -2226,3 +2226,59 @@ class TestElidePresignedPerTool:
         result = await _server.presign_terrain_upload(project_id=42, filename=DEM_NAME)
         assert json.loads(result)["upload_url"] == upload_url
         assert "X-Amz-Signature" in result
+
+
+# ---------------------------------------------------------------------------
+# W0 simplify-pass (Phase 1.7 cumulative sweep, epic 3200) — the elision lives
+# in `_build_state`, so EVERY tool that answers with a run's state is covered
+# once: get_scenario (TASK-3187), build_scenario's poll/short-circuit returns
+# and `_build_refusal`. Before this, get_scenario elided and build_scenario —
+# which composes the SAME helper from the SAME detail, and additionally folds
+# the raw build POST body in under `build=` — did not.
+# ---------------------------------------------------------------------------
+class TestBuildScenarioElidesPresignedUrls:
+    @respx.mock
+    async def test_build_scenario_elides_a_presigned_url_quoted_in_the_run_error_message(
+        self, _server
+    ):
+        """`_build_state` copies the run's `error_message` / `user_message` /
+        `status_detail` verbatim. They are server-composed free text, so a
+        future line quoting a signed URL would reach the transcript through
+        build_scenario even though get_scenario elides the same field."""
+        signed = _signed_url("runs/67181/package.zip")
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_scenario(
+                    "built",
+                    latest_run=_run(
+                        501, "built", error_message=f"package upload failed for {signed}"
+                    ),
+                    latest_run_is_valid=True,
+                ),
+            )
+        )
+        data = _tool_json(await _build(_server))
+        assert "X-Amz" not in json.dumps(data)
+        assert data["error_message"] == f"package upload failed for {ELIDED}"
+        assert data["posted"] is False
+
+    @respx.mock
+    async def test_build_scenario_refusal_elides_a_presigned_url_it_echoes(self, _server):
+        """The refusal path (`_build_refusal`) goes through the same helper."""
+        signed = _signed_url("runs/67181/package.zip")
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_scenario(
+                    "created",
+                    estimate=None,
+                    latest_run=_run(501, "error", status_detail=f"gate: {signed}"),
+                ),
+            )
+        )
+        _mock_boundary(True)
+        data = _tool_json(await _build(_server))
+        assert "X-Amz" not in json.dumps(data)
+        assert data["outcome"] == "refused"
+        assert data["status_detail"] == f"gate: {ELIDED}"

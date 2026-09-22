@@ -408,9 +408,11 @@ async def get_scenario(
     # TASK-3187 (W0, epic 3200) — the compact state, not the 52 KB detail: the
     # two run blocks carry TEN presigned S3 URLs and a ~17 KB build log, and
     # get_run is the tool for a run. `_build_state` UNFORKED + the shared
-    # scenario whitelist through its `**extra` kwarg; elided last, because the
-    # whitelist copies free text (`description`) the caller does not control.
-    return json.dumps(_elide_presigned(_build_state(detail, **_scenario_record(detail))), indent=2)
+    # scenario whitelist through its `**extra` kwarg. `_build_state` elides its
+    # whole return (including this `**extra`, which copies free text such as
+    # `description` that the caller does not control), so there is no second
+    # elision call here — W0 simplify pass.
+    return json.dumps(_build_state(detail, **_scenario_record(detail)), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1175,7 +1177,15 @@ def _build_state(detail, **extra) -> dict:
         "mesh_triangle_count": run.get("mesh_triangle_count"),
     }
     state.update(extra)
-    return state
+    # W0 simplify pass (epic 3200, Phase 1.7) — ONE elision site for every tool
+    # that answers with a run's state, instead of get_scenario eliding and
+    # build_scenario not. `error_message` / `user_message` / `status_detail`
+    # are server-composed free text, and build_scenario additionally folds the
+    # raw build POST body in under `build=`. Safe here and NOT in
+    # `_post_result`: nothing that must keep a signed URL (presign) goes
+    # through `_build_state`. Applied after `state.update(extra)` so the
+    # caller's `**extra` is covered too.
+    return _elide_presigned(state)
 
 
 def _build_refusal(detail, reason: str) -> str:
