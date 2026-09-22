@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -188,6 +189,107 @@ def _post_result(body, status_code: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# TASK-3187 (W0, epic 3200) — presigned-URL elision.
+#
+# A run record carries five `s3_*_url` keys, each a presigned S3 URL: a 6-hour
+# capability (`X-Amz-Expires=21600`) carrying an STS token. A scenario detail
+# carries TEN of them — `latest_run` and `latest_complete_run` are both full
+# run dicts — and the read tools relayed every one of them verbatim into a
+# transcript the client persists. That widens what a leaked transcript is worth
+# beyond what the caller asked for, against decision D7 (epic 2467): the agent
+# moves bytes only through URLs it explicitly asked for.
+#
+# Applied PER TOOL and NEVER inside `_post_result`: that helper is shared with
+# presign_terrain_upload, whose signed `upload_url` IS what the caller asked
+# for (the sole documented exception), plus finalize_terrain_upload,
+# create_project, create_time_series, attach_input_layer, cancel_run and
+# retry_run.
+#
+# Two rules, applied RECURSIVELY so a key the API adds tomorrow is covered by
+# default (the six read tools' bodies are nested: list_runs is
+# `{count, results: [...]}`, get_terrain composes its own envelope):
+#   * KEY NAME — an `s3_*_url` key's string value is replaced outright.
+#   * VALUE SHAPE — any string carrying `X-Amz-Signature` or
+#     `X-Amz-Security-Token` has the signed URL REDACTED IN PLACE. In place,
+#     because a run's `log` is ~17 KB of build output (clean today, but one
+#     future line quoting a signed URL would otherwise silently nuke get_run's
+#     whole log). The entire whitespace-delimited token goes, not just the
+#     matched parameter: a presigned URL carries SIX `X-Amz-*` params, so
+#     redacting only the signature would leave `X-Amz-Credential=…` behind.
+# ---------------------------------------------------------------------------
+ELIDED_PRESIGNED = "[presigned-url-elided]"
+# Detection is the two capability-bearing params ONLY — an unsigned S3 link is
+# just a link, and `bbox_stats_url` / a layer's `catalogURL` must survive.
+PRESIGNED_MARKERS = ("X-Amz-Signature", "X-Amz-Security-Token")
+# The whole non-whitespace run around any `X-Amz-*` param. Greedy, so one
+# substitution swallows scheme, host, key and every parameter of the URL.
+PRESIGNED_URL_TOKEN = re.compile(r"\S*X-Amz-\S*")
+
+
+def _is_s3_url_key(key) -> bool:
+    """`s3_package_url`, `s3_depth_max_url`, … — the key-name rule."""
+    return isinstance(key, str) and key.startswith("s3_") and key.endswith("_url")
+
+
+def _elide_presigned(value):
+    """Recursively return `value` with every presigned S3 URL elided.
+
+    Returns a new structure; the caller's body is never mutated. Non-string
+    values under an `s3_*_url` key (a `null` package URL on a run that has no
+    package yet) are left alone — "not there" is information the agent needs.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                ELIDED_PRESIGNED
+                if _is_s3_url_key(key) and isinstance(item, str) and item
+                else _elide_presigned(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_elide_presigned(item) for item in value]
+    if isinstance(value, str) and any(marker in value for marker in PRESIGNED_MARKERS):
+        return PRESIGNED_URL_TOKEN.sub(ELIDED_PRESIGNED, value)
+    return value
+
+
+# TASK-3187 (W0, epic 3200) — the scenario fields a COMPACT read keeps, on top
+# of `_build_state`'s ten flat state keys. ONE tuple shared by get_scenario and
+# create_scenario so the two cannot drift: there is no `list_scenarios` tool
+# among the 17 and no other read path to a scenario record, so a session that
+# did not create the scenario would otherwise be blind to what it is about to
+# build (`resolution`, `duration`, the six input FKs, the terrain) and what it
+# will cost (`compute_cost_estimate`, `vcpu_hours_estimate`) — the inverse of
+# "show your work before build and spend". `inflow_anchor_mismatch` is the
+# record's only pre-build correctness warning (a timeseries inflow starting
+# after model_start has its first value ffilled backwards) and has no other
+# MCP path at all.
+SCENARIO_RECORD_KEYS = (
+    "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
+    "rainfall", "structure", "mesh_region", "resolution", "duration", "computed_status",
+    "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
+    "latest_run_is_valid", "compute_cost_estimate", "vcpu_hours_estimate",
+    "inflow_anchor_mismatch",
+)
+
+
+def _scenario_record(detail) -> dict:
+    """The whitelisted scenario fields PRESENT on `detail` — absent stays absent.
+
+    Never `detail.get(key)`: STRANGER_SCENARIO_FIELDS (hydrata
+    serializers_v2.py:381-400) DROPS the input FKs, both estimates,
+    `inflow_anchor_mismatch` and `perms` from a non-member's read of a public
+    project, and a fabricated `null` would read as "no terrain, no cost"
+    instead of "withheld". A non-dict detail reads as empty, exactly as
+    `_build_state` tolerates one.
+    """
+    if not isinstance(detail, dict):
+        return {}
+    return {key: detail[key] for key in SCENARIO_RECORD_KEYS if key in detail}
+
+
+# ---------------------------------------------------------------------------
 # Bounded polling — ONE loop for every tool that waits on the platform
 # (get_terrain, attach_input_layer, build_scenario).
 #
@@ -247,7 +349,7 @@ async def list_projects(
     and base map references.
     """
     data = await client.get("/projects/", params={"page": page, "page_size": page_size})
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +365,7 @@ async def get_project(
     and configuration.
     """
     data = await client.get(f"/projects/{project_id}/")
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -274,19 +376,41 @@ async def get_scenario(
     project_id: Annotated[int, "The project ID"],
     scenario_id: Annotated[int, "The scenario ID"],
 ) -> str:
-    """Get scenario details including its `computed_status` and latest run.
+    """Get a scenario's COMPACT state: its `computed_status`, inputs, estimate and price.
+
+    Returns a compact record, never the raw ~50 KB detail: `scenario_id`,
+    `computed_status`, `mesh_triangle_count_estimate` and its `_breakdown`,
+    `latest_run_is_valid`, the latest run's `run_id`, `run_status`,
+    `error_message`, `user_message`, `status_detail` and `mesh_triangle_count`
+    — plus what the scenario IS and what it will cost: `name`, `description`,
+    `project`, `resolution`, `duration`, the input row ids (`terrain`,
+    `boundary`, `friction`, `inflow`, `rainfall`, `structure`, `mesh_region`),
+    `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
+    `inflow_anchor_mismatch` (null unless an inflow series starts after the
+    model does, whose first value is then held backwards).
 
     The `computed_status` field (there is NO `status` key on a scenario) is
     derived from the latest run and will be one of: created, building, built,
     queued, computing, processing, complete, error, or cancelled — `created`
     also means no run exists yet. A scenario must be `built` before it can be
-    run. The detail also carries `mesh_triangle_count_estimate` (+ its
-    `_breakdown`) and `latest_run_is_valid` (false after any edit since the
-    last build). A non-member reading a public project's scenario gets a
-    reduced record with no `computed_status`.
+    run. `latest_run_is_valid` is false after any edit since the last build.
+    A non-member reading a public project's scenario gets a reduced record:
+    the fields the server withholds (the input ids, the price,
+    `inflow_anchor_mismatch`) are ABSENT here rather than reported as null —
+    "withheld" is not "no terrain, no cost" — while the run-state keys,
+    `computed_status` among them, read null.
+
+    No presigned S3 URL is returned by any read tool (each is a 6-hour
+    capability): results stay viewable through a run's `gn_layer_*` WMS
+    entries — use get_run for the full run record.
     """
-    data = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
-    return json.dumps(data, indent=2)
+    detail = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
+    # TASK-3187 (W0, epic 3200) — the compact state, not the 52 KB detail: the
+    # two run blocks carry TEN presigned S3 URLs and a ~17 KB build log, and
+    # get_run is the tool for a run. `_build_state` UNFORKED + the shared
+    # scenario whitelist through its `**extra` kwarg; elided last, because the
+    # whitelist copies free text (`description`) the caller does not control.
+    return json.dumps(_elide_presigned(_build_state(detail, **_scenario_record(detail))), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -307,13 +431,17 @@ async def start_simulation(
     The run transitions through: built → queued → computing → processing → complete.
 
     After starting, poll get_run_status to track progress. Returns 409
-    if the scenario is not in the correct state.
+    if the scenario is not in the correct state. The returned run record has
+    its presigned `s3_*_url` links elided (6-hour capabilities).
     """
     body, status_code = await client.post(
         f"/scenarios/{scenario_id}/run/",
         json={"compute_backend": compute_backend},
     )
-    return _post_result(body, status_code)
+    # TASK-3187 — the 202 relays RunSerializerV2 for a run that is already
+    # `built`, so it ALREADY holds the signed package URL: elide here, never in
+    # `_post_result` (presign_terrain_upload shares it and must keep its URL).
+    return _post_result(_elide_presigned(body), status_code)
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +459,7 @@ async def get_run_status(
     Poll every 5-10 seconds. Terminal states: complete, error, cancelled.
     """
     data = await client.get(f"/runs/{run_id}/status/")
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -347,9 +475,13 @@ async def get_run(
     timestamps, duration), compute details (backend, instance type, cost),
     mesh info, error messages, and result log. Use get_run_status for
     lightweight polling; use this for final results.
+
+    The presigned `s3_*_url` download links are ELIDED — each is a 6-hour
+    capability and no tool relays one. The results stay viewable through the
+    `gn_layer_*` entries (published WMS layers on the project's map).
     """
     data = await client.get(f"/runs/{run_id}/")
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -405,13 +537,14 @@ async def list_runs(
     """List all simulation runs across all scenarios in a project.
 
     Returns a paginated list of runs. Optionally filter by status
-    to find active, completed, or failed runs.
+    to find active, completed, or failed runs. Each row's presigned
+    `s3_*_url` download links are elided (6-hour capabilities).
     """
     params: dict = {"page": page, "page_size": page_size}
     if status_filter:
         params["status"] = status_filter
     data = await client.get(f"/projects/{project_id}/runs/", params=params)
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -614,7 +747,9 @@ async def get_terrain(
     }
     if terrain_id is None:
         result["terrain_count"] = terrain_count
-    return json.dumps(result, indent=2)
+    # TASK-3187 — this tool composes its own envelope, so elide the COMPOSED
+    # result; the terrain record carries no signed key today (future-proofing).
+    return json.dumps(_elide_presigned(result), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1089,9 +1224,11 @@ async def create_scenario(
     POSTs /projects/<id>/scenarios/ with the write fields, then GETs the
     scenario detail — the create response carries NO estimate; the detail's
     `mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact
-    record: id, name, the FK ids as stored, resolution, duration,
-    `computed_status` (`created` = no run yet), the estimate and its
-    breakdown, and http_status. Next step: build_scenario (which asks for
+    record (the same fields get_scenario answers with): id, name, the FK ids
+    as stored, resolution, duration, `computed_status` (`created` = no run
+    yet), the estimate and its breakdown, the price (`compute_cost_estimate`
+    in USD, `vcpu_hours_estimate`), `inflow_anchor_mismatch`, and
+    http_status. Next step: build_scenario (which asks for
     confirm=true above 100,000 triangles). Nothing is meshed or queued here.
 
     Units: `resolution` on the SCENARIO is a LENGTH in metres — ANUGA
@@ -1132,13 +1269,11 @@ async def create_scenario(
     detail = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
     if not isinstance(detail, dict):
         return _post_result(body, status_code)
-    keys = (
-        "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
-        "rainfall", "structure", "mesh_region", "resolution", "duration", "computed_status",
-        "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
-        "latest_run_is_valid",
-    )
-    result = {key: detail.get(key) for key in keys}
+    # TASK-3187 (W0, epic 3200) — this tuple moved to SCENARIO_RECORD_KEYS so
+    # get_scenario answers with the SAME fields (+ the two cost keys and
+    # inflow_anchor_mismatch); a field withheld by the serializer stays absent
+    # rather than being fabricated as null.
+    result = _scenario_record(detail)
     result["http_status"] = status_code
     return json.dumps(result, indent=2)
 

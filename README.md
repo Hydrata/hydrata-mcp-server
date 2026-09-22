@@ -22,13 +22,13 @@ Version 0.2.0 exposes seventeen tools: nine that read projects and scenarios and
 |------|-------------|
 | `list_projects` | List ANUGA simulation projects (paginated) |
 | `get_project` | Get project details including scenarios |
-| `get_scenario` | Get a scenario's `computed_status`, mesh-triangle estimate and latest run |
-| `start_simulation` | Start a flood simulation (local/EC2/Batch backends) |
+| `get_scenario` | Get a scenario's compact state — `computed_status`, its inputs (terrain, boundary, friction, inflow, rainfall, structure, mesh region, resolution, duration), the mesh-triangle estimate + breakdown, the price (`compute_cost_estimate`, `vcpu_hours_estimate`) and the latest run's id/status/error — never the raw detail |
+| `start_simulation` | Start a flood simulation (local/EC2/Batch backends); the returned run record has its presigned download links elided |
 | `get_run_status` | Lightweight status poll (<50ms) |
-| `get_run` | Full run details with timing and results |
+| `get_run` | Full run details with timing, log and result layers; presigned `s3_*_url` download links are elided |
 | `cancel_run` | Cancel an in-flight simulation |
 | `retry_run` | Retry a failed simulation |
-| `list_runs` | List runs across a project (with status filter) |
+| `list_runs` | List runs across a project (with status filter); presigned `s3_*_url` download links are elided from every row |
 | `create_project` | Create an ANUGA project with a name and EPSG projection |
 | `presign_terrain_upload` | Return a presigned URL + key so the agent PUTs the terrain GeoTIFF itself (no file bytes pass through MCP) |
 | `finalize_terrain_upload` | Register the uploaded terrain; the import chain seeds the project's six default boundary/friction/inflow/rainfall/structure/mesh-region rows |
@@ -39,6 +39,8 @@ Version 0.2.0 exposes seventeen tools: nine that read projects and scenarios and
 | `build_scenario` | Build the scenario package; shows the estimate first and needs `confirm=true` above 100,000 triangles; polls `computed_status` to built; never re-posts a build that is in flight or already built (`rebuild=true` to force one); surfaces the server's 422 MESH_TOO_LARGE verbatim |
 
 No tool accepts file contents inline. The agent moves the bytes itself — the terrain GeoTIFF to the presigned URL, a GeoJSON layer to the REST API upload endpoint — and hands the server the resulting key or upload id.
+
+No read tool relays a presigned S3 URL. A run's result links are 6-hour capabilities carrying a temporary AWS credential, and the server forwards the caller's own credential rather than holding one, so a tool that echoed such a link would widen what an agent transcript is worth beyond what the caller asked for. Every read tool (and `start_simulation`) elides them, recursively, by key name (`s3_*_url`) and by value shape (any string carrying `X-Amz-Signature` / `X-Amz-Security-Token`, redacted in place so the rest of a log line survives); results stay viewable through the `gn_layer_*` WMS entries. `presign_terrain_upload` is the sole exception: its `upload_url` is the URL the caller explicitly asked for.
 
 ### Typical workflow
 

@@ -1824,3 +1824,405 @@ class TestBuildScenarioTool:
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
         assert len(tools) == 17  # the module docstring's count
+
+
+# ---------------------------------------------------------------------------
+# TASK-3187 (W0, epic 3200) — presigned-URL elision + the compact get_scenario.
+#
+# A remote MCP with credential pass-through must not widen what a transcript
+# can leak beyond what the caller asked for. A live scenario detail carries TEN
+# presigned S3 URLs (five `s3_*_url` keys on `latest_run` and five more on
+# `latest_complete_run`), each a 6-hour capability with an STS token; the read
+# tools relayed them verbatim into the agent transcript. One recursive helper
+# elides them for every read tool + start_simulation; `presign_terrain_upload`
+# is the SOLE documented exception (the caller asked for that URL).
+#
+# The stored proof selects on `-k "presigned or elide or get_scenario"`, so
+# every test NAME below carries one of those LITERAL tokens — `pytest -k` is
+# case-sensitive and does not match a class name, so `TestGetScenario` is not
+# a selection (that is why the proof was RED at HEAD: `116 deselected`).
+# ---------------------------------------------------------------------------
+# A fake SigV4 query with all six X-Amz-* params a real presigned URL carries:
+# redacting only the matched param would leave X-Amz-Credential behind.
+SIGNED_QUERY = (
+    "X-Amz-Algorithm=AWS4-HMAC-SHA256"
+    "&X-Amz-Credential=FAKEKEYIDNOTREAL%2F20260922%2Fus-west-2%2Fs3%2Faws4_request"
+    "&X-Amz-Date=20260922T000000Z&X-Amz-Expires=21600&X-Amz-SignedHeaders=host"
+    "&X-Amz-Security-Token=fake-sts-token-for-tests&X-Amz-Signature=deadbeefdeadbeef"
+)
+# What an elided value (or an elided substring of a log line) reads as.
+ELIDED = "[presigned-url-elided]"
+# The five signed keys on a run record (serializers_v2.py RunSerializerV2).
+RUN_S3_URL_KEYS = (
+    "s3_package_url",
+    "s3_result_package_url",
+    "s3_depth_max_url",
+    "s3_velocity_max_url",
+    "s3_depth_integrated_velocity_max_url",
+)
+# A run's WMS dict, shaped like the live one on run 67181: its NAME matches
+# neither `*_url` nor `s3_*`, but it NESTS a `url` (GeoServer OWS) and a
+# `catalogURL` (catalogue CSW) that a case-insensitive "url in key" rule eats.
+GN_LAYER_DEPTH_MAX = {
+    "pk": 1538,
+    "name": "dep_67181_depth_max",
+    "title": "Depth max",
+    "alternate": "geonode:dep_67181_depth_max",
+    "url": "http://localhost:8080/geoserver/ows",
+    "catalogURL": (
+        "http://localhost:8081/catalogue/csw?outputschema="
+        "http%3A%2F%2Fwww.isotc211.org%2F2005%2Fgmd&service=CSW&request=GetRecordById"
+        "&version=2.0.2&elementsetname=full&id=dep-67181-depth-max"
+    ),
+    "visibility": True,
+}
+# Unsigned, relative — the only genuine top-level survivor on a terrain record.
+BBOX_STATS_URL = "/api/v2/anuga/projects/16132/terrain/110535/bbox-stats/"
+
+
+def _signed_url(key):
+    return f"https://anuga-test-storage.s3.amazonaws.com/{key}?{SIGNED_QUERY}"
+
+
+def _presigned_run(pk=67181, status="complete", **extra):
+    """A run record as RunSerializerV2 serialises it: five signed `s3_*_url`
+    keys, the WMS dicts, and a build log."""
+    run = _run(pk, status, **extra)
+    run.update({key: _signed_url(f"runs/{pk}/{key}") for key in RUN_S3_URL_KEYS})
+    run["gn_layer_depth_max"] = dict(GN_LAYER_DEPTH_MAX)
+    return run
+
+
+class TestElidePresignedUrls:
+    """One recursive helper, applied per tool — never inside `_post_result`."""
+
+    async def test_elide_presigned_walks_dicts_lists_and_leaves_plain_values_alone(self, _server):
+        body = {
+            "count": 1,
+            "results": [
+                {
+                    "id": 67181,
+                    "s3_package_url": _signed_url("runs/67181/package.zip"),
+                    "nested": {"deep": [{"handoff": _signed_url("x")}]},
+                    "gn_layer_depth_max": dict(GN_LAYER_DEPTH_MAX),
+                    "bbox_stats_url": BBOX_STATS_URL,
+                    "mesh_triangle_count": 256_869,
+                    "error_message": None,
+                    "flag": True,
+                }
+            ],
+        }
+        out = _server._elide_presigned(body)
+        row = out["results"][0]
+        assert out["count"] == 1
+        assert row["s3_package_url"] == ELIDED
+        assert row["nested"]["deep"][0]["handoff"] == ELIDED
+        # Untouched: not a capability.
+        assert row["gn_layer_depth_max"] == GN_LAYER_DEPTH_MAX
+        assert row["bbox_stats_url"] == BBOX_STATS_URL
+        assert row["mesh_triangle_count"] == 256_869
+        assert row["error_message"] is None
+        assert row["flag"] is True
+        # The input is not mutated — the helper returns a new structure.
+        assert "X-Amz-Signature" in body["results"][0]["s3_package_url"]
+
+    async def test_elide_presigned_redacts_a_signed_url_in_place_inside_a_log_line(self, _server):
+        log = (
+            "2026-09-21 09:00:01 INFO downloading package from "
+            + _signed_url("runs/67181/package.zip")
+            + " to /tmp/anuga\n2026-09-21 09:04:12 INFO mesh has 256869 triangles"
+        )
+        out = _server._elide_presigned({"log": log})["log"]
+        assert "X-Amz" not in out
+        # Redacted IN PLACE: only the URL token went, the rest of the log survives.
+        assert out.startswith("2026-09-21 09:00:01 INFO downloading package from " + ELIDED)
+        assert "256869 triangles" in out
+        assert "/tmp/anuga" in out
+
+    async def test_elide_presigned_leaves_an_unsigned_s3_style_string_alone(self, _server):
+        """Only a SIGNED string is a capability; an unsigned URL is just a link."""
+        plain = "https://anuga-test-storage.s3.amazonaws.com/runs/67181/package.zip"
+        assert _server._elide_presigned({"note": plain})["note"] == plain
+
+
+class TestGetScenarioCompactState:
+    """AC1: the compact state, and never a presigned URL."""
+
+    @staticmethod
+    def _detail():
+        return _scenario(
+            "complete",
+            latest_run=_presigned_run(67181, "complete", mesh_triangle_count=256_869),
+            latest_complete_run=_presigned_run(67181, "complete", mesh_triangle_count=256_869),
+            latest_run_is_valid=True,
+            resolution=35.0,
+            terrain=110535,
+            boundary=27499,
+            compute_cost_estimate=0.52,
+            vcpu_hours_estimate=3.071667015,
+            inflow_anchor_mismatch=None,
+        )
+
+    @respx.mock
+    async def test_get_scenario_elides_the_ten_presigned_urls_of_both_run_blocks(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=self._detail())
+        )
+        result = await _server.get_scenario(project_id=42, scenario_id=5)
+        assert "X-Amz" not in result
+        for key in RUN_S3_URL_KEYS:
+            assert key not in result, key
+        data = json.loads(result)
+        # The compact state replaces the detail wholesale: no run blocks, no log.
+        assert "latest_run" not in data and "latest_complete_run" not in data
+        assert "log" not in result and "perms" not in data
+
+    @respx.mock
+    async def test_get_scenario_carries_the_state_the_inputs_and_the_price(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=self._detail())
+        )
+        data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
+        # _build_state's ten flat keys (UNFORKED).
+        assert data["scenario_id"] == 5
+        assert data["computed_status"] == "complete"
+        assert data["latest_run_is_valid"] is True
+        assert data["run_id"] == 67181
+        assert data["run_status"] == "complete"
+        assert data["mesh_triangle_count"] == 256_869
+        assert data["error_message"] is None
+        assert data["user_message"] is None
+        assert data["status_detail"] is None
+        assert data["mesh_triangle_count_estimate"] == 19_729
+        # …plus the estimate breakdown, the inputs and the price: without them a
+        # session that did not create the scenario would be blind to what it is
+        # about to build and what it will cost (there is no list_scenarios tool).
+        assert data["mesh_triangle_count_estimate_breakdown"]["total"] == 19_729
+        assert data["name"] == "mcp-w1-3172-t"
+        assert data["project"] == 42
+        assert data["resolution"] == 35.0
+        assert data["duration"] == 43200
+        assert data["terrain"] == 110535
+        assert data["boundary"] == 27499
+        assert data["friction"] == 124557
+        assert data["inflow"] == 124555
+        assert data["rainfall"] == 124556
+        assert data["structure"] == 124558
+        assert data["mesh_region"] is None
+        assert data["description"] == ""
+        assert data["compute_cost_estimate"] == 0.52
+        assert data["vcpu_hours_estimate"] == 3.071667015
+        # The scenario's only pre-build correctness warning: present even when None.
+        assert "inflow_anchor_mismatch" in data
+
+    @respx.mock
+    async def test_get_scenario_redacts_a_presigned_url_quoted_in_the_description(self, _server):
+        """The compact shape alone would hide a leak: the whitelist copies the
+        scenario's own text through, so get_scenario must ALSO go through the
+        elision helper (the description is free text a user can paste into)."""
+        detail = _scenario(
+            "built",
+            description="rebuilt from " + _signed_url("runs/67179/package.zip") + " on 2026-09-21",
+        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=detail)
+        )
+        result = await _server.get_scenario(project_id=42, scenario_id=5)
+        assert "X-Amz" not in result
+        assert json.loads(result)["description"] == f"rebuilt from {ELIDED} on 2026-09-21"
+
+    @respx.mock
+    async def test_get_scenario_does_not_fabricate_nulls_for_a_non_member_record(self, _server):
+        """STRANGER_SCENARIO_FIELDS (hydrata serializers_v2.py:381-400) DROPS the
+        FKs, the estimates and the perms from a non-member's read. `.get(key)`
+        would turn "withheld" into "terrain: null, compute_cost_estimate: null" —
+        i.e. "no terrain, no cost". Absent stays absent."""
+        stranger = {"id": 5, "name": "mcp-w1-3172-t", "project": 42, "description": ""}
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=stranger)
+        )
+        data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
+        assert data["scenario_id"] == 5 and data["name"] == "mcp-w1-3172-t"
+        for withheld in ("terrain", "boundary", "compute_cost_estimate", "vcpu_hours_estimate",
+                         "resolution", "duration", "inflow_anchor_mismatch"):
+            assert withheld not in data, withheld
+
+    @respx.mock
+    async def test_get_scenario_tolerates_a_non_dict_detail(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json="gone")
+        )
+        data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
+        assert data["scenario_id"] is None and data["computed_status"] is None
+
+
+class TestElidePresignedPerTool:
+    """AC2: every read tool + start_simulation, asserted on the TOOL's output."""
+
+    @respx.mock
+    async def test_get_run_elides_the_five_presigned_urls_and_keeps_the_log(self, _server):
+        run = _presigned_run(
+            67181,
+            "complete",
+            log=(
+                "2026-09-21 09:00:01 INFO uploading results to "
+                + _signed_url("runs/67181/results.zip")
+                + "\n2026-09-21 09:31:44 INFO run complete"
+            ),
+        )
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        result = await _server.get_run(run_id=67181)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        for key in RUN_S3_URL_KEYS:
+            assert data[key] == ELIDED, key
+        # AC6: the log is redacted in place, not dropped.
+        assert "run complete" in data["log"] and ELIDED in data["log"]
+
+    @respx.mock
+    async def test_get_run_elide_keeps_the_gn_layer_dict_byte_equal(self, _server):
+        """AC3 (over-elision guard): the nested `url`/`catalogURL` of a WMS dict
+        are how results stay VIEWABLE after this card — assert by VALUE, because
+        a "key is present" assertion on a dict cannot fail."""
+        respx.get(f"{BASE}/runs/67181/").mock(
+            return_value=httpx.Response(200, json=_presigned_run())
+        )
+        data = json.loads(await _server.get_run(run_id=67181))
+        assert data["gn_layer_depth_max"] == GN_LAYER_DEPTH_MAX
+
+    @respx.mock
+    async def test_list_runs_elides_presigned_urls_nested_in_every_results_row(self, _server):
+        """list_runs is the biggest leak by volume: five signed keys per row,
+        default page_size 100 — and the body is a {count, results} DICT, so the
+        helper has to RECURSE into the list to reach them."""
+        respx.get(f"{BASE}/projects/42/runs/").mock(
+            return_value=httpx.Response(
+                200, json={"count": 2, "results": [_presigned_run(67180), _presigned_run(67181)]}
+            )
+        )
+        result = await _server.list_runs(project_id=42)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["count"] == 2
+        assert [row["id"] for row in data["results"]] == [67180, 67181]
+        assert all(row["s3_package_url"] == ELIDED for row in data["results"])
+
+    @respx.mock
+    async def test_start_simulation_elides_the_presigned_package_url_of_the_built_run(self, _server):
+        """A `built` run ALREADY holds a signed package URL, and that is exactly
+        the state start_simulation is called in — so every dispatch relayed a
+        6-hour capability back into the transcript."""
+        respx.post(f"{BASE}/scenarios/5/run/").mock(
+            return_value=httpx.Response(202, json=_presigned_run(67182, "queued"))
+        )
+        result = await _server.start_simulation(scenario_id=5)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["http_status"] == 202
+        assert data["status"] == "queued"
+        assert data["s3_package_url"] == ELIDED
+
+    @respx.mock
+    async def test_get_run_status_elides_a_presigned_url_under_an_unknown_key(self, _server):
+        """get_run_status carries no signed key TODAY — the value-shape rule is
+        what makes a key added server-side tomorrow safe by default."""
+        respx.get(f"{BASE}/runs/67181/status/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 67181,
+                    "status": "computing",
+                    "progress_pct": 45,
+                    "artifact_handoff": _signed_url("runs/67181/partial.zip"),
+                },
+            )
+        )
+        result = await _server.get_run_status(run_id=67181)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["progress_pct"] == 45
+        assert data["artifact_handoff"] == ELIDED
+
+    @respx.mock
+    async def test_get_project_elides_a_presigned_url_nested_under_an_unknown_key(self, _server):
+        respx.get(f"{BASE}/projects/42/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 42,
+                    "name": "Towradgi",
+                    "base_map": 1525,
+                    "exports": [{"handoff": _signed_url("exports/42.zip")}],
+                },
+            )
+        )
+        result = await _server.get_project(project_id=42)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["name"] == "Towradgi" and data["base_map"] == 1525
+        assert data["exports"][0]["handoff"] == ELIDED
+
+    @respx.mock
+    async def test_list_projects_elides_a_presigned_url_in_a_project_row(self, _server):
+        respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [{"id": 42, "name": "Towradgi",
+                                 "handoff": _signed_url("exports/42.zip")}],
+                },
+            )
+        )
+        result = await _server.list_projects()
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["results"][0]["name"] == "Towradgi"
+        assert data["results"][0]["handoff"] == ELIDED
+
+    @respx.mock
+    async def test_get_terrain_elides_a_presigned_url_in_the_composed_result(self, _server):
+        """get_terrain does NOT relay the body verbatim — it composes
+        {outcome, status, polls, elapsed_seconds, terrain}: elide the COMPOSED
+        result. AC3's other half rides here: `bbox_stats_url` is unsigned and
+        relative and must survive EXACTLY."""
+        terrain = _terrain(
+            110535,
+            "ready",
+            bbox_stats_url=BBOX_STATS_URL,
+            download_handoff=_signed_url("terrain/110535.tif"),
+        )
+        respx.get(f"{BASE}/projects/42/terrain/110535/").mock(
+            return_value=httpx.Response(200, json=terrain)
+        )
+        result = await _server.get_terrain(
+            project_id=42, terrain_id=110535, timeout_seconds=0, poll_interval_seconds=0
+        )
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["outcome"] == "ready" and data["status"] == "ready"
+        assert data["terrain"]["bbox_stats_url"] == BBOX_STATS_URL
+        assert data["terrain"]["download_handoff"] == ELIDED
+
+    @respx.mock
+    async def test_presign_terrain_upload_still_returns_its_presigned_url_intact(self, _server):
+        """PRE-DECIDED #4 — the SOLE documented exception: the caller asked for
+        this URL, so the helper must never be wired into `_post_result` (which
+        presign/finalize/create_project/create_time_series/attach_input_layer/
+        cancel_run/retry_run all share)."""
+        upload_url = _signed_url("terrain_uploads/staging/dem.tif")
+        respx.post(f"{BASE}/projects/42/terrain/upload/presign/").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "upload_url": upload_url,
+                    "staging_key": STAGING_KEY,
+                    "process_id": PROCESS_ID,
+                    "method": "PUT",
+                    "expires_in": 3600,
+                },
+            )
+        )
+        result = await _server.presign_terrain_upload(project_id=42, filename=DEM_NAME)
+        assert json.loads(result)["upload_url"] == upload_url
+        assert "X-Amz-Signature" in result
