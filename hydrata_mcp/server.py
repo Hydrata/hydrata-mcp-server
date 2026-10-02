@@ -1,4 +1,4 @@
-"""Hydrata MCP Server — 17 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 19 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
 import json
@@ -13,6 +13,7 @@ from urllib.parse import quote, urlencode
 import uvicorn
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from mcp_types import ToolAnnotations
 from starlette.middleware import Middleware
 
 from .client import HydrataAPIError, HydrataClient
@@ -158,6 +159,7 @@ mcp = FastMCP(
     instructions=(
         "Hydrata is a geospatial hydraulic modeling platform. Use these tools to "
         "manage ANUGA flood simulation projects, scenarios, and runs. "
+        "To see what a project already holds, use list_inputs and list_time_series. "
         "A typical workflow is: list_projects → get_scenario → start_simulation → "
         "poll get_run_status until complete → get_run for results. "
         "To author a project from your own files: create_project → "
@@ -183,6 +185,45 @@ mcp = FastMCP(
     ),
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# TASK-3204 (W1, epic 3200) — ToolAnnotations on every tool. Hints only:
+# Claude Code's permission engine ignores them today, but hosted surfaces use
+# readOnlyHint for "Allow always". destructiveHint defaults to TRUE in the
+# spec, so every write that is not cancel_run says false explicitly.
+# (title, read_only, destructive, idempotent)
+# ---------------------------------------------------------------------------
+TOOL_ANNOTATIONS = {
+    "list_projects": ("List projects", True, False, True),
+    "get_project": ("Get a project and its map link", True, False, True),
+    "get_scenario": ("Get a scenario's state, inputs and price", True, False, True),
+    "get_run_status": ("Poll a run's status", True, False, True),
+    "get_run": ("Get a run's full record", True, False, True),
+    "list_runs": ("List a project's runs", True, False, True),
+    "get_terrain": ("Wait for a terrain import", True, False, True),
+    "list_inputs": ("List a project's input layers", True, False, True),
+    "list_time_series": ("List a project's time series", True, False, True),
+    "start_simulation": ("Start a simulation run (spends compute)", False, False, False),
+    "cancel_run": ("Cancel a run", False, True, True),
+    "retry_run": ("Retry a failed run", False, False, False),
+    "create_project": ("Create a project", False, False, False),
+    "presign_terrain_upload": ("Get a terrain upload URL", False, False, False),
+    "finalize_terrain_upload": ("Register an uploaded terrain", False, False, False),
+    "create_time_series": ("Create a time series", False, False, False),
+    "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, True),
+    "create_scenario": ("Create a draft scenario", False, False, False),
+    "build_scenario": ("Build a scenario's mesh and package", False, False, False),
+}
+
+
+def _tool(name: str):
+    """`@mcp.tool` with this tool's annotations (TOOL_ANNOTATIONS is the one table)."""
+    title, read_only, destructive, idempotent = TOOL_ANNOTATIONS[name]
+    return mcp.tool(annotations=ToolAnnotations(
+        title=title, read_only_hint=read_only, destructive_hint=destructive,
+        idempotent_hint=idempotent, open_world_hint=False,
+    ))
 
 
 def _post_result(body, status_code: int) -> str:
@@ -422,17 +463,7 @@ async def _layer_summary(alternate) -> dict:
     summary: dict = {"layer": alternate, "feature_count": None, "bbox_wgs84": None}
     if not alternate:
         return summary
-    try:
-        xml = await client.get_text_from_origin("/gs/ows", params={
-            "service": "WFS", "version": "2.0.0", "request": "GetFeature",
-            "typeNames": alternate, "resultType": "hits",
-        })
-        match = re.search(r'numberMatched="(\d+)"', xml)
-        summary["feature_count"] = int(match.group(1)) if match else None
-        if match is None:
-            summary["feature_count_error"] = "WFS hits answer carried no numberMatched"
-    except Exception as exc:
-        summary["feature_count_error"] = str(exc)
+    summary["feature_count"] = await _feature_count(alternate)
     try:
         listing = await client.get_from_origin(
             "/api/v2/datasets/", params={"filter{alternate}": alternate}
@@ -451,7 +482,7 @@ async def _layer_summary(alternate) -> dict:
 # ---------------------------------------------------------------------------
 # Tool 1: list_projects
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("list_projects")
 async def list_projects(
     page: Annotated[int, "Page number (default 1)"] = 1,
     page_size: Annotated[int, "Results per page, max 100 (default 100)"] = 100,
@@ -468,7 +499,7 @@ async def list_projects(
 # ---------------------------------------------------------------------------
 # Tool 2: get_project
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_project")
 async def get_project(
     project_id: Annotated[int, "The project ID"],
 ) -> str:
@@ -490,7 +521,7 @@ async def get_project(
 # ---------------------------------------------------------------------------
 # Tool 3: get_scenario
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_scenario")
 async def get_scenario(
     project_id: Annotated[int, "The project ID"],
     scenario_id: Annotated[int, "The scenario ID"],
@@ -537,7 +568,7 @@ async def get_scenario(
 # ---------------------------------------------------------------------------
 # Tool 4: start_simulation
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("start_simulation")
 async def start_simulation(
     scenario_id: Annotated[int, "The scenario ID to run"],
     compute_backend: Annotated[
@@ -579,25 +610,41 @@ async def start_simulation(
 # ---------------------------------------------------------------------------
 # Tool 5: get_run_status
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_run_status")
 async def get_run_status(
     run_id: Annotated[int, "The run ID"],
 ) -> str:
     """Lightweight status check for a simulation run (fast, <50ms).
 
     Use this for polling instead of get_run. Returns only: id, status,
-    progress_pct (0-100), eta_seconds, error_message, and compute_backend.
+    `phase`, progress_pct (0-100), eta_seconds, error_message, and
+    compute_backend.
 
+    `phase` is never empty: it is `status`, except `preparing_inputs` while a
+    `computing` run has no progress yet (it is downloading its input package
+    and building the domain — minutes on a big model; this is NOT a stall).
     Poll every 5-10 seconds. Terminal states: complete, error, cancelled.
     """
     data = await client.get(f"/runs/{run_id}/status/")
+    if isinstance(data, dict):
+        data = dict(data, phase=_run_phase(data))
     return json.dumps(_elide_presigned(data), indent=2)
+
+
+def _run_phase(status_record: dict) -> str:
+    """TASK-3204 — the 09-21 drive read a blank progress poll as a stall. Mirrors
+    gmc TASK-2392's 'Preparing inputs…': a computing run with no progress yet is
+    still downloading its package. Never empty ('unknown' if the API sends none)."""
+    status = status_record.get("status") or "unknown"
+    if status == "computing" and status_record.get("progress_pct") is None:
+        return "preparing_inputs"
+    return status
 
 
 # ---------------------------------------------------------------------------
 # Tool 6: get_run
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_run")
 async def get_run(
     run_id: Annotated[int, "The run ID"],
 ) -> str:
@@ -619,7 +666,7 @@ async def get_run(
 # ---------------------------------------------------------------------------
 # Tool 7: cancel_run
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("cancel_run")
 async def cancel_run(
     run_id: Annotated[int, "The run ID to cancel"],
 ) -> str:
@@ -647,7 +694,7 @@ async def cancel_run(
 # ---------------------------------------------------------------------------
 # Tool 8: retry_run
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("retry_run")
 async def retry_run(
     run_id: Annotated[int, "The run ID to retry"],
 ) -> str:
@@ -689,7 +736,7 @@ async def _run_project_and_scenario(run_id, body) -> tuple:
 # ---------------------------------------------------------------------------
 # Tool 9: list_runs
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("list_runs")
 async def list_runs(
     project_id: Annotated[int, "The project ID"],
     status_filter: Annotated[
@@ -734,7 +781,7 @@ TERRAIN_TERMINAL_STATUSES = frozenset({"ready", "error"})
 # ---------------------------------------------------------------------------
 # Tool 10: create_project
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("create_project")
 async def create_project(
     name: Annotated[str, "Project name"],
     projection: Annotated[
@@ -777,7 +824,7 @@ async def create_project(
 # ---------------------------------------------------------------------------
 # Tool 11: presign_terrain_upload
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("presign_terrain_upload")
 async def presign_terrain_upload(
     project_id: Annotated[int, "The project ID"],
     filename: Annotated[str, "Base name of the GeoTIFF, e.g. 'dem.tif' (a name only — never contents)"],
@@ -826,7 +873,7 @@ async def presign_terrain_upload(
 # ---------------------------------------------------------------------------
 # Tool 12: finalize_terrain_upload
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("finalize_terrain_upload")
 async def finalize_terrain_upload(
     project_id: Annotated[int, "The project ID"],
     staging_key: Annotated[str, "`staging_key` returned by presign_terrain_upload"],
@@ -866,7 +913,7 @@ async def finalize_terrain_upload(
 # ---------------------------------------------------------------------------
 # Tool 13: get_terrain
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_terrain")
 async def get_terrain(
     project_id: Annotated[int, "The project ID"],
     terrain_id: Annotated[
@@ -886,7 +933,8 @@ async def get_terrain(
 
     Returns `outcome` — exactly one of `ready`, `error`, `timed_out`, `not_found`
     (the project has no terrain yet; an unknown terrain_id is an API 404 error
-    instead) — plus the last `status` seen (creating → styling → ready | error),
+    instead) — plus the last `status` seen (creating → styling → ready | error)
+    and `phase` (that status, or `not_found`; never empty),
     `polls`, `elapsed_seconds` and the full `terrain` record (its `gn_layer` is
     the published elevation dataset pk once ready). An import takes minutes to
     tens of minutes (the SAME 32 MB 1 m DEM measured 4.5 min once and 26 min
@@ -935,6 +983,8 @@ async def get_terrain(
     result: dict = {
         "outcome": outcome,
         "status": status,
+        # TASK-3204 — never empty: the import stage, or `not_found`.
+        "phase": status or ("not_found" if terrain is None else "unknown"),
         "polls": polls,
         "elapsed_seconds": elapsed,
         "terrain": terrain,
@@ -1066,7 +1116,7 @@ def _validate_row_data(data) -> int:
 # ---------------------------------------------------------------------------
 # Tool 14: create_time_series
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("create_time_series")
 async def create_time_series(
     project_id: Annotated[int, "The project ID"],
     name: Annotated[
@@ -1175,7 +1225,7 @@ def _pick_default_row(rows: list, kind: str) -> dict:
 # ---------------------------------------------------------------------------
 # Tool 15: attach_input_layer
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("attach_input_layer")
 async def attach_input_layer(
     project_id: Annotated[int, "The project ID"],
     kind: Annotated[
@@ -1398,6 +1448,128 @@ async def _map_carries_layer(project_id, alternate) -> bool | None:
 
 
 # ---------------------------------------------------------------------------
+# TASK-3204 (W1, epic 3200) — the two listing primitives. The 09-21 drive made
+# 17 `file://` probes because nothing listed what a project already holds.
+# ---------------------------------------------------------------------------
+# WFS feature-count lookups list_inputs may make for the kinds whose wrapper
+# serializer carries no has_features (friction, inflow, structure): one GET per
+# row, so bounded. Rows past the bound report has_features null.
+LIST_INPUTS_MAX_FEATURE_LOOKUPS = 24
+# list_time_series follows the paginated list at most this many pages.
+LIST_TIME_SERIES_MAX_PAGES = 20
+
+
+async def _feature_count(alternate) -> int | None:
+    """WFS resultType=hits for one layer, or None (best effort)."""
+    try:
+        xml = await client.get_text_from_origin("/gs/ows", params={
+            "service": "WFS", "version": "2.0.0", "request": "GetFeature",
+            "typeNames": alternate, "resultType": "hits",
+        })
+    except Exception:
+        return None
+    match = re.search(r'numberMatched="(\d+)"', xml)
+    return int(match.group(1)) if match else None
+
+
+@_tool("list_inputs")
+async def list_inputs(
+    project_id: Annotated[int, "The project ID"],
+) -> str:
+    """List every input layer row of a project, per kind, with whether it has features.
+
+    For each of boundary, friction, inflow, rainfall, structure and mesh_region:
+    the rows (`row_id`, `title`, `gn_layer` — the dataset pk — and
+    `dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.
+    `has_features` comes from the API for boundary, rainfall and mesh_region;
+    for friction, inflow and structure (whose records do not carry it) it is a
+    WFS feature count, at most 24 lookups per call — past that, or when a
+    lookup fails, it is null (unknown, not false). A row with no `gn_layer`
+    has no layer yet (`has_features` false). Use the row ids with
+    create_scenario; this is the listing primitive — no need to probe files.
+    """
+    lookups = 0
+    kinds: dict = {}
+    for kind, route in INPUT_LAYER_ROUTES.items():
+        listing = await client.get(f"/projects/{project_id}/{route}/")
+        rows = listing if isinstance(listing, list) else (listing or {}).get("results", [])
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            alternate = _alternate(row.get("gn_layer_name")) if row.get("gn_layer") else None
+            entry = {
+                "row_id": row.get("id"),
+                "title": row.get("title"),
+                "gn_layer": row.get("gn_layer"),
+                "dataset_alternate": alternate,
+            }
+            if "has_features" in row:
+                entry["has_features"] = row.get("has_features")
+            elif alternate is None:
+                entry["has_features"] = False
+            elif lookups < LIST_INPUTS_MAX_FEATURE_LOOKUPS:
+                lookups += 1
+                count = await _feature_count(alternate)
+                entry["feature_count"] = count
+                entry["has_features"] = None if count is None else count > 0
+            else:
+                entry["has_features"] = None
+            if kind == "boundary" and "has_external_feature" in row:
+                entry["has_external_feature"] = row.get("has_external_feature")
+            out.append(entry)
+        kinds[kind] = out
+    return json.dumps({"project_id": project_id, "inputs": kinds}, indent=2)
+
+
+@_tool("list_time_series")
+async def list_time_series(
+    project_id: Annotated[int, "The project ID"],
+) -> str:
+    """List a project's time series (rain gauges, hydrographs, tides) — never their rows.
+
+    Each series: `id`, `name` (a rainfall polygon binds to its gauge by this
+    exact name), `series_type`, `units`, `timezone`, `row_count`,
+    `first_timestamp` and `last_timestamp`. The data rows themselves are
+    dropped (a project's list is megabytes); fetch one series with the REST API
+    (GET /projects/<id>/time-series/<id>/) if you need its values.
+    """
+    series: list = []
+    params: dict = {"page": 1, "page_size": 100}
+    total = None
+    for _ in range(LIST_TIME_SERIES_MAX_PAGES):
+        page = await client.get(f"/projects/{project_id}/time-series/", params=params)
+        rows = page if isinstance(page, list) else (page or {}).get("results", [])
+        if isinstance(page, dict):
+            total = page.get("count", total)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            row_data = data.get("rowData") if isinstance(data.get("rowData"), list) else []
+            first = row_data[0] if row_data and isinstance(row_data[0], dict) else {}
+            last = row_data[-1] if row_data and isinstance(row_data[-1], dict) else {}
+            series.append({
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "series_type": row.get("series_type"),
+                "units": row.get("units"),
+                "timezone": row.get("timezone"),
+                "row_count": len(row_data),
+                "first_timestamp": first.get("timestamp"),
+                "last_timestamp": last.get("timestamp"),
+            })
+        if not isinstance(page, dict) or not page.get("next"):
+            break
+        params = dict(params, page=params["page"] + 1)
+    result = {"project_id": project_id, "count": total if total is not None else len(series),
+              "series": series}
+    if total is not None and total > len(series):
+        result["truncated"] = True
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # TASK-3172 (W1.3, epic 2467) — create_scenario + build_scenario.
 #
 # Building is the step that costs (make_package meshes the boundary on the web
@@ -1555,7 +1727,7 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
 # ---------------------------------------------------------------------------
 # Tool 16: create_scenario
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("create_scenario")
 async def create_scenario(
     project_id: Annotated[int, "The project ID"],
     name: Annotated[str, "Scenario name"],
@@ -1668,7 +1840,7 @@ def _fmt_usd(value) -> str:
 # ---------------------------------------------------------------------------
 # Tool 17: build_scenario
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("build_scenario")
 async def build_scenario(
     project_id: Annotated[int, "The project ID"],
     scenario_id: Annotated[int, "The scenario ID from create_scenario"],

@@ -16,7 +16,7 @@ The server is **not yet open to external accounts**: there is no self-serve way 
 
 ## Tools
 
-Version 0.2.0 exposes seventeen tools: nine that read projects and scenarios and drive a run, and eight that build a model from terrain and input layers the agent has already uploaded.
+Version 0.2.0 exposes nineteen tools: eleven that read projects, inputs and scenarios and drive a run, and eight that build a model from terrain and input layers the agent has already uploaded. Every tool carries MCP annotations (a `title`; `readOnlyHint` on the nine read tools; `destructiveHint` only on `cancel_run`).
 
 | Tool | Description |
 |------|-------------|
@@ -24,15 +24,17 @@ Version 0.2.0 exposes seventeen tools: nine that read projects and scenarios and
 | `get_project` | Get one project — name, projection, visibility, your role, `base_map` — plus `ui_url`, the link that opens its map |
 | `get_scenario` | Get a scenario's compact state — `computed_status`, its inputs (terrain, boundary, friction, inflow, rainfall, structure, mesh region, resolution, duration), the mesh-triangle estimate + breakdown, the price (`compute_cost_estimate`, `vcpu_hours_estimate`) and the latest run's id/status/error — never the raw detail |
 | `start_simulation` | Start a flood simulation (local/EC2/Batch backends); the returned run record has its presigned download links elided; hand-back link opens the run |
-| `get_run_status` | Lightweight status poll (<50ms) |
+| `get_run_status` | Lightweight status poll (<50ms); `phase` is never empty (`preparing_inputs` while a computing run has no progress yet) |
 | `get_run` | Full run details with timing, log and result layers; presigned `s3_*_url` download links are elided |
 | `cancel_run` | Cancel an in-flight simulation; hand-back link opens the scenario |
 | `retry_run` | Retry a failed simulation (rebuilds the scenario as a new run); hand-back link opens the scenario |
 | `list_runs` | List runs across a project (with status filter); presigned `s3_*_url` download links are elided from every row |
+| `list_inputs` | Every input row of a project per kind — row id, title, dataset, WFS typename and whether it has features — so the agent never has to probe files |
+| `list_time_series` | A project's time series — id, name, type, units, row count and first/last timestamp; the data rows are never returned |
 | `create_project` | Create an ANUGA project with a name and EPSG projection; returns its `base_map` and the `ui_url` of its map |
 | `presign_terrain_upload` | Return a presigned URL + key so the agent PUTs the terrain GeoTIFF itself (no file bytes pass through MCP) |
 | `finalize_terrain_upload` | Register the uploaded terrain; the import chain seeds the project's six default boundary/friction/inflow/rainfall/structure/mesh-region rows |
-| `get_terrain` | Poll the terrain until it is ready (bounded; `timed_out` means call again); summary = WGS84 bbox, elevation min/max, nodata fraction, native CRS; the link frames the DEM |
+| `get_terrain` | Poll the terrain until it is ready (bounded; `timed_out` means call again); `phase` is never empty; summary = WGS84 bbox, elevation min/max, nodata fraction, native CRS; the link frames the DEM |
 | `create_time_series` | Create a time series (rain gauge, hydrograph or tide/stage — `series_type` and `units` are top-level fields) from `{"rowData": [...]}`; a rainfall polygon binds to its gauge by the series name; summary = row count + first/last timestamp; the link opens the Hydrology panel |
 | `attach_input_layer` | Attach a GeoJSON dataset the agent already uploaded as the project's boundary/friction/inflow/rainfall/structure or mesh-region layer; breakline and culvert are refused (culvert flow is not conveyed); summary = feature count (WFS hits) + WGS84 bbox + whether the map now shows the layer; the link opens Inputs and frames the layer |
 | `create_scenario` | Create a draft scenario and return its mesh-triangle estimate and price (`resolution` — scenario and mesh-region — is a length in metres); the link opens the scenario |

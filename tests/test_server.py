@@ -1846,7 +1846,7 @@ class TestBuildScenarioTool:
         assert "computed_status" in get_scenario
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
-        assert len(tools) == 17  # the module docstring's count
+        assert len(tools) == 19  # the module docstring's count (TASK-3204 added list_inputs + list_time_series)
 
 
 # ---------------------------------------------------------------------------
@@ -2609,3 +2609,138 @@ class TestClientHeaders:
         values = {r.request.headers.get("x-hydrata-session") for r in respx.calls}
         assert len(values) == 1, values
         _uuid.UUID(values.pop())
+
+
+# ---------------------------------------------------------------------------
+# TASK-3204 (W1, epic 3200) — annotations, never-null phase, the list tools.
+# Stored proof: -k "annotations or list_inputs or list_time_series or phase".
+# ---------------------------------------------------------------------------
+READ_TOOLS = {"list_projects", "get_project", "get_scenario", "get_run_status", "get_run",
+              "list_runs", "get_terrain", "list_inputs", "list_time_series"}
+
+
+class TestToolAnnotations:
+    async def test_annotations_on_all_19_tools_read_hints_and_cancel_destructive(self, _server):
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        assert len(tools) == 19
+        for name, tool in tools.items():
+            ann = tool.get("annotations") or {}
+            assert ann.get("title"), name
+            assert ann.get("readOnlyHint") is (name in READ_TOOLS), (name, ann)
+            if name not in READ_TOOLS:
+                assert ann.get("destructiveHint") is (name == "cancel_run"), (name, ann)
+        assert tools["cancel_run"]["annotations"]["destructiveHint"] is True
+        assert tools["cancel_run"]["annotations"]["idempotentHint"] is True
+        assert tools["start_simulation"]["annotations"]["destructiveHint"] is False
+
+
+class TestPhase:
+    @pytest.mark.parametrize("status,progress,phase", [
+        ("computing", None, "preparing_inputs"),
+        ("computing", 12, "computing"),
+        ("queued", None, "queued"),
+        ("complete", 100, "complete"),
+        (None, None, "unknown"),
+    ])
+    @respx.mock
+    async def test_phase_get_run_status_is_never_empty(self, _server, status, progress, phase):
+        respx.get(f"{BASE}/runs/9/status/").mock(return_value=httpx.Response(200, json={
+            "id": 9, "status": status, "progress_pct": progress, "eta_seconds": None,
+            "error_message": None, "compute_backend": "batch"}))
+        data = json.loads(await _server.get_run_status(run_id=9))
+        assert data["phase"] == phase
+        assert data["progress_pct"] == progress  # upstream fields untouched
+
+    @pytest.mark.parametrize("status", ["creating", "styling", "ready", "error"])
+    @respx.mock
+    async def test_phase_get_terrain_is_the_import_stage(self, _server, status):
+        respx.get(f"{BASE}/projects/42/terrain/110540/").mock(
+            return_value=httpx.Response(200, json=_terrain(110540, status)))
+        data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110540, timeout_seconds=0))
+        assert data["phase"] == status
+
+    @respx.mock
+    async def test_phase_get_terrain_not_found_and_null_status_never_empty(self, _server):
+        respx.get(f"{BASE}/projects/42/terrain/").mock(return_value=httpx.Response(200, json=[]))
+        data = json.loads(await _server.get_terrain(project_id=42, timeout_seconds=0))
+        assert data["phase"] == "not_found"
+        respx.get(f"{BASE}/projects/42/terrain/110541/").mock(
+            return_value=httpx.Response(200, json=_terrain(110541, None)))
+        data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110541, timeout_seconds=0))
+        assert data["phase"] == "unknown"
+
+
+def _wrapper_rows(route):
+    rows = {
+        "boundaries": [{"id": 1, "title": "Boundary 01", "gn_layer": 11, "gn_layer_name": "bdy_42_boundary_01",
+                        "has_features": True, "has_external_feature": True}],
+        "frictions": [{"id": 2, "title": "Friction 01", "gn_layer": 12, "gn_layer_name": "fri_42_friction_01"}],
+        "inflows": [{"id": 3, "title": "Inflow 01", "gn_layer": None, "gn_layer_name": None}],
+        "rainfalls": [{"id": 4, "title": "Rainfall 01", "gn_layer": 14, "gn_layer_name": "rai_42_rainfall_01",
+                       "has_features": False}],
+        "structures": [{"id": 5, "title": "Structure 01", "gn_layer": 15, "gn_layer_name": "str_42_structure_01"}],
+        "mesh-regions": [{"id": 6, "title": "MeshRegion 01", "gn_layer": 16, "gn_layer_name": "mes_42_meshregion_01",
+                          "has_features": True}],
+    }
+    return rows[route]
+
+
+class TestListInputs:
+    @respx.mock
+    async def test_list_inputs_every_kind_with_alternate_and_has_features(self, _server):
+        for route in INPUT_LAYER_ROUTES.values():
+            respx.get(f"{BASE}/projects/42/{route}/").mock(
+                return_value=httpx.Response(200, json=_wrapper_rows(route)))
+
+        def hits(request):
+            name = request.url.params["typeNames"]
+            n = {"geonode:fri_42_friction_01": 3, "geonode:str_42_structure_01": 0}[name]
+            return httpx.Response(200, text=f'<wfs:FeatureCollection numberMatched="{n}"/>')
+        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(side_effect=hits)
+        data = json.loads(await _server.list_inputs(project_id=42))
+        inputs = data["inputs"]
+        assert set(inputs) == set(INPUT_LAYER_ROUTES)
+        assert inputs["boundary"][0] == {"row_id": 1, "title": "Boundary 01", "gn_layer": 11,
+                                         "dataset_alternate": "geonode:bdy_42_boundary_01",
+                                         "has_features": True, "has_external_feature": True}
+        assert inputs["friction"][0]["has_features"] is True and inputs["friction"][0]["feature_count"] == 3
+        assert inputs["structure"][0]["has_features"] is False
+        assert inputs["inflow"][0] == {"row_id": 3, "title": "Inflow 01", "gn_layer": None,
+                                       "dataset_alternate": None, "has_features": False}
+        assert inputs["rainfall"][0]["has_features"] is False  # from the API, no WFS
+        assert wfs.call_count == 2  # only the two kinds without has_features, with a layer
+
+    @respx.mock
+    async def test_list_inputs_feature_lookups_are_bounded(self, _server, monkeypatch):
+        monkeypatch.setattr(_server, "LIST_INPUTS_MAX_FEATURE_LOOKUPS", 1)
+        for route in INPUT_LAYER_ROUTES.values():
+            respx.get(f"{BASE}/projects/42/{route}/").mock(
+                return_value=httpx.Response(200, json=_wrapper_rows(route)))
+        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(
+            return_value=httpx.Response(200, text='<x numberMatched="5"/>'))
+        inputs = json.loads(await _server.list_inputs(project_id=42))["inputs"]
+        assert wfs.call_count == 1
+        assert inputs["friction"][0]["has_features"] is True
+        assert inputs["structure"][0]["has_features"] is None  # past the bound: unknown, not false
+
+
+class TestListTimeSeries:
+    @respx.mock
+    async def test_list_time_series_follows_pages_and_drops_the_rows(self, _server):
+        page1 = {"count": 2, "next": "…?page=2", "previous": None, "results": [_series_row(77)]}
+        page2 = {"count": 2, "next": None, "previous": "…", "results": [
+            _series_row(78, name="tide", series_type="stage", units="m", data={"rowData": []})]}
+        route = respx.get(f"{BASE}/projects/42/time-series/").mock(
+            side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)])
+        data = json.loads(await _server.list_time_series(project_id=42))
+        assert route.call_count == 2
+        assert route.calls[1].request.url.params["page"] == "2"
+        assert data["count"] == 2 and "truncated" not in data
+        first, tide = data["series"]
+        assert first == {"id": 77, "name": "rain_gauge_200", "series_type": "hyetograph", "units": "mm/hr",
+                         "timezone": "Australia/Sydney", "row_count": 3,
+                         "first_timestamp": ROW_DATA[0]["timestamp"], "last_timestamp": ROW_DATA[-1]["timestamp"]}
+        assert tide["row_count"] == 0 and tide["first_timestamp"] is None
+        assert "rowData" not in json.dumps(data)
