@@ -24,6 +24,12 @@ class Config:
     # though the URL host is 127.0.0.1. Unset on localhost: httpx derives Host
     # from the URL.
     api_host: str = ""
+    # TASK-3203 (W1, epic 3200) — the origin a HUMAN opens a ui_url hand-back
+    # link on. Unset: https://<api_host> when api_host is set (prod: the API URL
+    # is the loopback 127.0.0.1:8081 listener, which no browser can reach), else
+    # the API URL's own origin. Localhost's hot-reload dev server sets
+    # HYDRATA_UI_ORIGIN=http://localhost:8081.
+    ui_origin: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -36,4 +42,5 @@ class Config:
             port=int(os.environ.get("HYDRATA_MCP_PORT", "8001")),
             host=os.environ.get("HYDRATA_MCP_HOST", "127.0.0.1"),
             api_host=os.environ.get("HYDRATA_API_HOST", ""),
+            ui_origin=os.environ.get("HYDRATA_UI_ORIGIN", "").rstrip("/"),
         )

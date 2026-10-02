@@ -465,6 +465,15 @@ def _tool_json(result):
     return json.loads(result["content"][0]["text"])
 
 
+HAND_BACK_KEYS = {"ui_url", "summary", "say_to_user", "hand_back_error"}
+
+
+def _without_hand_back(data):
+    """The API body a tool relays, minus TASK-3203's hand-back keys (which must be present)."""
+    assert {"ui_url", "summary", "say_to_user"} <= set(data), sorted(data)
+    return {k: v for k, v in data.items() if k not in HAND_BACK_KEYS}
+
+
 def _terrain(pk, status, **extra):
     return {"id": pk, "title": "mcp-w1-2469-dem", "status": status, "gn_layer": None, **extra}
 
@@ -476,6 +485,11 @@ class TestCreateProjectTool:
             return_value=httpx.Response(
                 201, json={"id": 42, "name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
             )
+        )
+        # TASK-3203 — the create body's base_map is null (the map is made async):
+        # the tool re-reads the detail once.
+        respx.get(f"{BASE}/projects/42/").mock(
+            return_value=httpx.Response(200, json={"id": 42, "base_map": 1525})
         )
         result = await _call_as_caller(
             _server, "create_project", {"name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
@@ -489,6 +503,7 @@ class TestCreateProjectTool:
         data = _tool_json(result)
         assert data["id"] == 42
         assert data["http_status"] == 201
+        assert data["base_map"] == 1525
 
 
 class TestPresignTerrainUploadTool:
@@ -889,7 +904,7 @@ class TestCreateTimeSeriesTool:
         data = _tool_json(result)
         # Compact record: the API echoes the whole row incl. `data` (~100 KB for
         # a 1447-row gauge); 50 of those would drown the driving agent's context.
-        assert data == {
+        compact = {
             "id": 77,
             "name": "rain_gauge_200",
             "series_type": "hyetograph",
@@ -898,6 +913,9 @@ class TestCreateTimeSeriesTool:
             "row_count": 3,
             "http_status": 201,
         }
+        # TASK-3203 adds only the hand-back keys on top of the compact record.
+        assert {k: data[k] for k in compact} == compact
+        assert set(data) - set(compact) <= {"ui_url", "summary", "say_to_user", "hand_back_error"}
         assert "data" not in data
 
     @respx.mock
@@ -1064,9 +1082,11 @@ class TestAttachInputLayerTool:
 
     @pytest.mark.parametrize("kind", ["breakline", "culvert"])
     @respx.mock
-    async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_http(
+    async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_write(
         self, _server, kind
     ):
+        # TASK-3203: the refusal now reads the project once (unmocked here, so
+        # its link is null) to hand the human a ui_url; it still writes nothing.
         status_route = respx.get(EXEC_STATUS_URL).mock(
             return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
         )
@@ -1600,7 +1620,7 @@ class TestBuildScenarioTool:
         assert result.get("isError") is not True, result["content"][0]["text"]
         data = _tool_json(result)
         assert build_route.call_count == 1
-        assert data == {**MESH_TOO_LARGE, "http_status": 422}
+        assert _without_hand_back(data) == {**MESH_TOO_LARGE, "http_status": 422}
         assert detail_route.call_count == 1  # nothing to poll: no Run was created
 
     @respx.mock
@@ -1613,7 +1633,7 @@ class TestBuildScenarioTool:
         _mock_boundary(True)
         _mock_build(409, unavailable)
         data = _tool_json(await _build(_server))
-        assert data == {**unavailable, "http_status": 409}
+        assert _without_hand_back(data) == {**unavailable, "http_status": 409}
         assert detail_route.call_count == 1
 
     @respx.mock
@@ -1624,7 +1644,7 @@ class TestBuildScenarioTool:
             return_value=httpx.Response(403, text="<html>Forbidden</html>", headers={"content-type": "text/html"})
         )
         data = _tool_json(await _build(_server))
-        assert data == {"response": "<html>Forbidden</html>", "http_status": 403}
+        assert _without_hand_back(data) == {"response": "<html>Forbidden</html>", "http_status": 403}
 
     @respx.mock
     async def test_build_scenario_5xx_on_build_is_still_a_tool_error(self, _server):
@@ -1807,9 +1827,10 @@ class TestBuildScenarioTool:
     async def test_build_scenario_and_create_scenario_listed_with_computed_status_metres_and_confirm(
         self, _server
     ):
-        """The docstring ACs, made provable: the units trap (a LENGTH in metres on the
-        scenario; an AREA on a MeshRegion feature), the poll key and the confirm gate
-        are on the tools' OWN descriptions; get_scenario's names computed_status."""
+        """The docstring ACs, made provable: the units rule (a LENGTH in metres on the
+        scenario AND on a MeshRegion feature since TASK-3186, with the marker the
+        build requires), the poll key and the confirm gate are on the tools' OWN
+        descriptions; get_scenario's names computed_status."""
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
@@ -1817,8 +1838,10 @@ class TestBuildScenarioTool:
         for token in ("computed_status", "resolution", "metres", "confirm", "100,000", "MESH_TOO_LARGE"):
             assert token in build, token
         create = tools["create_scenario"]["description"]
-        for token in ("resolution", "metres", "m²", "resolution²/2", "computed_status", "MeshRegion"):
+        for token in ("resolution", "metres", "resolution²/2", "computed_status", "MeshRegion",
+                      "resolution_units = m", "MESH_REGION_UNITS_UNMARKED"):
             assert token in create, token
+        assert "AREA" not in create and "AREA" not in build  # the pre-3186 split is gone
         get_scenario = tools["get_scenario"]["description"]
         assert "computed_status" in get_scenario
         props = tools["build_scenario"]["inputSchema"]["properties"]
@@ -2282,3 +2305,307 @@ class TestBuildScenarioElidesPresignedUrls:
         assert "X-Amz" not in json.dumps(data)
         assert data["outcome"] == "refused"
         assert data["status_detail"] == f"gate: {ELIDED}"
+
+
+# ---------------------------------------------------------------------------
+# TASK-3203 (W1, epic 3200) — the hand-back: ui_url + summary + say_to_user on
+# every mutating tool, refusals that route the human to the map, and the
+# informational X-Hydrata-Client / X-Hydrata-Session headers.
+#
+# The stored proof selects on `-k "ui_url or say_to_user or client_header"`, so
+# every test NAME below carries one of those literal tokens.
+# ---------------------------------------------------------------------------
+UI_URL_RE = r"^https?://.+/catalogue/#/map/\d+"
+BASE_MAP = 1525
+BOUNDARY_ALTERNATE = "geonode:bdy_42_boundary_01"
+WFS_HITS = (
+    '<?xml version="1.0" encoding="UTF-8"?><wfs:FeatureCollection '
+    'numberMatched="4" numberReturned="0" timeStamp="2026-10-02T00:00:00Z"/>'
+)
+
+
+def _mock_project(base_map=BASE_MAP):
+    return respx.get(f"{BASE}/projects/42/").mock(
+        return_value=httpx.Response(200, json={"id": 42, "name": "p", "base_map": base_map})
+    )
+
+
+def _assert_hand_back(data, **params):
+    import re as _re
+    assert _re.match(UI_URL_RE, data["ui_url"] or ""), data.get("ui_url")
+    assert f"/catalogue/#/map/{BASE_MAP}" in data["ui_url"]
+    for key, value in params.items():
+        assert f"{key}={value}" in data["ui_url"], (key, value, data["ui_url"])
+    assert isinstance(data["summary"], dict) and data["summary"], data["summary"]
+    assert isinstance(data["say_to_user"], str) and data["say_to_user"].strip()
+
+
+def _mock_layer_summary(alternate, count=4, on_map=True):
+    respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(return_value=httpx.Response(200, text=WFS_HITS))
+    respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/?").mock(
+        return_value=httpx.Response(200, json={"datasets": [{"alternate": alternate, "ll_bbox_polygon": {
+            "type": "Polygon",
+            "coordinates": [[[150.89, -34.38], [150.89, -34.37], [150.91, -34.37], [150.91, -34.38], [150.89, -34.38]]],
+        }}]})
+    )
+    respx.get(url__startswith=f"{ORIGIN}/api/v2/maps/{BASE_MAP}/").mock(
+        return_value=httpx.Response(200, json={"map": {"maplayers": [
+            {"name": alternate if on_map else "geonode:bdy_42_boundary_old"},
+        ]}})
+    )
+
+
+class TestHandBackUiUrl:
+    @respx.mock
+    async def test_ui_url_get_project_carries_base_map_and_link(self, _server):
+        _mock_project()
+        data = json.loads(await _server.get_project(project_id=42))
+        assert data["base_map"] == BASE_MAP
+        assert data["ui_url"] == f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}"
+
+    @respx.mock
+    async def test_ui_url_create_project_rereads_a_null_base_map(self, _server):
+        respx.post(f"{BASE}/projects/").mock(return_value=httpx.Response(
+            201, json={"id": 42, "name": "n", "projection": "EPSG:32756", "base_map": None}))
+        detail = _mock_project()
+        data = json.loads(await _server.create_project(name="n", projection="EPSG:32756"))
+        assert detail.call_count >= 1
+        assert data["base_map"] == BASE_MAP
+        _assert_hand_back(data)
+        assert data["summary"]["base_map"] == BASE_MAP
+
+    @respx.mock
+    async def test_ui_url_finalize_terrain_upload(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/projects/42/terrain/upload/finalize/").mock(
+            return_value=httpx.Response(202, json=_terrain(110540, "creating")))
+        data = json.loads(await _server.finalize_terrain_upload(project_id=42, staging_key=STAGING_KEY))
+        _assert_hand_back(data, panel="inputs")
+        assert data["summary"]["terrain_id"] == 110540
+
+    @respx.mock
+    async def test_ui_url_get_terrain_ready_frames_the_dem_with_its_numbers(self, _server):
+        _mock_project()
+        ready = _terrain(110540, "ready", gn_layer=1530, gn_layer_name="ele_42_utm_dem",
+                         bbox_wgs84=[150.85, -34.42, 150.92, -34.36], dem_elev_min=-1.2,
+                         dem_elev_max=310.5, nodata_fraction=0.0, native_crs="EPSG:28356")
+        respx.get(f"{BASE}/projects/42/terrain/110540/").mock(return_value=httpx.Response(200, json=ready))
+        data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110540, timeout_seconds=0))
+        _assert_hand_back(data, panel="inputs", layer="geonode:ele_42_utm_dem")
+        assert data["summary"]["dem_elev_max"] == 310.5
+        assert data["summary"]["bbox_wgs84"] == [150.85, -34.42, 150.92, -34.36]
+        assert "310.5" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_create_time_series_opens_hydrology_with_row_count_and_span(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(201, json=_series_row(77)))
+        data = json.loads(await _server.create_time_series(**_series_args()))
+        _assert_hand_back(data, panel="hydrology")
+        assert data["summary"]["row_count"] == 3
+        assert data["summary"]["first_timestamp"] == ROW_DATA[0]["timestamp"]
+        assert data["summary"]["last_timestamp"] == ROW_DATA[-1]["timestamp"]
+
+    @respx.mock
+    async def test_ui_url_attach_input_layer_frames_the_layer_with_feature_count(self, _server):
+        _mock_project()
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+        _mock_layer_summary(BOUNDARY_ALTERNATE)
+        data = json.loads(await _server.attach_input_layer(
+            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
+        assert data["summary"]["feature_count"] == 4
+        assert data["summary"]["bbox_wgs84"] == [150.89, -34.38, 150.91, -34.37]
+        assert data["summary"]["map_updated"] is True
+        assert "4 feature" in data["say_to_user"] and "sign it off" in data["say_to_user"]
+        assert "WARNING" not in data["say_to_user"]
+
+    @respx.mock
+    async def test_say_to_user_attach_warns_when_the_map_still_shows_the_old_layer(self, _server):
+        """TASK-3188's swallowed MapLayer-swap failure (handover §7c) made client-visible."""
+        _mock_project()
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+        _mock_layer_summary(BOUNDARY_ALTERNATE, on_map=False)
+        data = json.loads(await _server.attach_input_layer(
+            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        assert data["outcome"] == "attached"
+        assert data["summary"]["map_updated"] is False
+        assert "WARNING" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_create_scenario_opens_the_scenario_with_estimate_and_price(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 5}))
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(
+            200, json=_scenario(compute_cost_estimate=1.23, vcpu_hours_estimate=0.4)))
+        data = json.loads(await _server.create_scenario(project_id=42, name="s", resolution=36.0, duration=3600))
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+        assert data["summary"]["mesh_triangle_count_estimate"] == 19_729
+        assert data["summary"]["compute_cost_estimate"] == 1.23
+        assert "19,729" in data["say_to_user"] and "US$1.23" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_build_scenario_built_reports_mesh_and_actual_cost(self, _server):
+        _mock_project()
+        _detail_to_built(_scenario())
+        _mock_boundary(True)
+        _mock_build()
+        respx.get(f"{BASE}/runs/501/").mock(return_value=httpx.Response(
+            200, json=_run(501, "built", mesh_triangle_count=20_480, mesh_actual_cost_estimate=2.5)))
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "built"
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+        assert data["summary"]["mesh_actual_cost_estimate"] == 2.5
+        assert "start the simulation" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_start_simulation_opens_the_run(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(202, json=_run(502, "queued")))
+        data = json.loads(await _server.start_simulation(scenario_id=5))
+        _assert_hand_back(data, run=502)
+        assert data["summary"]["run_id"] == 502
+
+    @respx.mock
+    async def test_ui_url_cancel_run_reads_the_run_for_its_project(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/runs/502/cancel/").mock(return_value=httpx.Response(200, json={"id": 502, "status": "cancelled"}))
+        respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "cancelled")))
+        data = json.loads(await _server.cancel_run(run_id=502))
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+
+    @respx.mock
+    async def test_ui_url_retry_run_opens_the_rebuilding_scenario(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/runs/502/retry/").mock(
+            return_value=httpx.Response(202, json={"id": 502, "status": "created", "rebuilding": True}))
+        respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "created")))
+        data = json.loads(await _server.retry_run(run_id=502))
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+        assert data["summary"]["rebuilding"] is True
+
+    @respx.mock
+    async def test_ui_url_lookup_failure_never_hides_the_change(self, _server):
+        """Best effort: the create landed; a failed base-map read leaves ui_url null and says so."""
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(202, json=_run(502, "queued")))
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(500))
+        data = json.loads(await _server.start_simulation(scenario_id=5))
+        assert data["id"] == 502 and data["ui_url"] is None
+        assert "hand_back_error" in data and "No map link" in data["say_to_user"]
+
+    async def test_ui_url_origin_is_the_public_host_not_the_loopback_api(self, _server, monkeypatch):
+        """Prod's API URL is the loopback 127.0.0.1:8081 listener; the human needs https://<host>."""
+        monkeypatch.setattr(_server, "config", _server.Config(
+            api_url="http://127.0.0.1:8081/api/v2/anuga", api_host="hydrata.com"))
+        assert _server._ui_url(7, panel="inputs", layer="geonode:a_b") == (
+            "https://hydrata.com/catalogue/#/map/7?panel=inputs&layer=geonode:a_b")
+        monkeypatch.setattr(_server, "config", _server.Config(
+            api_url="http://localhost/api/v2/anuga", ui_origin="http://localhost:8081"))
+        assert _server._ui_url(7, run=9) == "http://localhost:8081/catalogue/#/map/7?run=9"
+        assert _server._ui_url(None, panel="inputs") is None
+
+
+class TestHandBackRefusals:
+    @respx.mock
+    async def test_say_to_user_no_boundary_refusal_routes_to_the_map(self, _server):
+        _mock_project()
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(boundary=None)))
+        build = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "refused" and not build.called
+        _assert_hand_back(data, panel="inputs")
+        assert "draw it in the map" in data["say_to_user"]
+
+    @respx.mock
+    async def test_say_to_user_boundary_without_features_frames_that_boundary(self, _server):
+        _mock_project()
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        respx.get(BOUNDARY_URL).mock(return_value=httpx.Response(200, json={
+            "id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": False}))
+        build = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "refused" and not build.called
+        _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
+        assert "draw it in the map" in data["say_to_user"]
+
+    @respx.mock
+    async def test_say_to_user_relayed_422_boundary_no_external_says_fix_it_in_the_map(self, _server):
+        _mock_project()
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        respx.get(BOUNDARY_URL).mock(return_value=httpx.Response(200, json={
+            "id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": True}))
+        refusal = {"error_code": "BOUNDARY_NO_EXTERNAL",
+                   "detail": "Every boundary line is Location=Internal: features 1 (…), 2 (…)."}
+        _mock_build(422, refusal)
+        data = _tool_json(await _build(_server))
+        assert data["error_code"] == "BOUNDARY_NO_EXTERNAL" and data["http_status"] == 422
+        assert data["detail"] == refusal["detail"]  # the body is still relayed verbatim
+        _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
+        assert "fix it in the map" in data["say_to_user"]
+
+    @pytest.mark.parametrize("kind", ["breakline", "culvert"])
+    @respx.mock
+    async def test_say_to_user_breakline_culvert_refusal_has_ui_url_but_no_draw_hint(self, _server, kind):
+        project = _mock_project()
+        writes = [respx.post(url__startswith=BASE).mock(return_value=httpx.Response(201, json={})),
+                  respx.patch(url__startswith=BASE).mock(return_value=httpx.Response(200, json={}))]
+        with pytest.raises(_server.ToolError) as exc_info:
+            await _server.attach_input_layer(project_id=42, kind=kind, execution_id=EXEC_ID)
+        text = str(exc_info.value)
+        assert project.called and not any(w.called for w in writes)  # one read, no write
+        assert f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}?panel=inputs" in text
+        assert "not supported" in text
+        assert "draw it in the map" not in text
+
+
+class TestClientHeaders:
+    @respx.mock
+    async def test_client_header_and_session_on_every_forwarded_request(self, _server):
+        """Two tool calls carrying one client Mcp-Session-Id: every upstream request
+        carries X-Hydrata-Client mcp/<version> and the SAME UUID X-Hydrata-Session."""
+        import uuid as _uuid
+        route = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        session = "6f1c2b9e-3d4a-4b5c-8d6e-7f8091a2b3c4"
+        async with _asgi_client(_server) as c:
+            for call_id in (1, 2):
+                resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_BASIC,
+                                                  "mcp-session-id": session},
+                                    json=_tools_call("list_projects", {}, id=call_id))
+                assert resp.status_code == 200, resp.text
+        assert route.call_count == 2
+        sessions = set()
+        for call in route.calls:
+            assert call.request.headers["x-hydrata-client"].startswith("mcp/")
+            sessions.add(str(_uuid.UUID(call.request.headers["x-hydrata-session"])))
+        assert sessions == {session}
+
+    @respx.mock
+    async def test_client_header_session_is_a_uuid_without_an_inbound_session(self, _server):
+        """stateless_http: no server-issued session; one tool call's requests still share one UUID."""
+        import uuid as _uuid
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+        _mock_layer_summary(BOUNDARY_ALTERNATE)
+        _mock_project()
+        _tool_json(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "boundary", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        values = {r.request.headers.get("x-hydrata-session") for r in respx.calls}
+        assert len(values) == 1, values
+        _uuid.UUID(values.pop())

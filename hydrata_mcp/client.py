@@ -1,12 +1,53 @@
 """Async HTTP client wrapper for Hydrata REST API."""
 
+import uuid
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.dependencies import get_context, get_http_headers
 
 from .config import Config
+
+try:
+    PACKAGE_VERSION = version("hydrata-mcp-server")
+except PackageNotFoundError:  # a source checkout run without an install
+    PACKAGE_VERSION = "0.0.0"
+# TASK-3203 (W1, epic 3200) — who is calling, sent on every forwarded request.
+# INFORMATIONAL only: both headers are client-asserted on the public 443 hop,
+# so Django must never stamp authorship from them (agent authorship comes from
+# the nginx loopback listener, W2.1).
+CLIENT_HEADER = "X-Hydrata-Client"
+SESSION_HEADER = "X-Hydrata-Session"
+CLIENT_HEADER_VALUE = f"mcp/{PACKAGE_VERSION}"
+
+
+def session_header_value() -> str:
+    """A UUID naming the MCP session the current tool call belongs to.
+
+    The server runs ``stateless_http=True``: it issues no ``Mcp-Session-Id``,
+    so a session is only identifiable when the CLIENT sends one (a stateful
+    client or proxy). That header is reused when present — normalised to a
+    UUID (uuid5 of a non-UUID token) so the value is always UUID-shaped.
+    Otherwise fastmcp's per-request session id (one UUID for the whole tool
+    call, so every upstream request of one call shares it); outside any
+    request (direct invocation, tests) a fresh UUID.
+    """
+    inbound = get_http_headers(include={"mcp-session-id"}).get("mcp-session-id", "").strip()
+    if inbound:
+        try:
+            return str(uuid.UUID(inbound))
+        except ValueError:
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mcp-session:{inbound}"))
+    try:
+        candidate = get_context().session_id
+    except RuntimeError:
+        return str(uuid.uuid4())
+    try:
+        return str(uuid.UUID(str(candidate)))
+    except ValueError:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mcp-session:{candidate}"))
 
 
 class HydrataAPIError(Exception):
@@ -68,7 +109,8 @@ class HydrataClient:
         return self._client
 
     def _request_headers(self) -> dict[str, str]:
-        """Per-request headers: the caller's Authorization, plus Host when configured.
+        """Per-request headers: the caller's Authorization, Host when configured,
+        and the informational X-Hydrata-Client / X-Hydrata-Session (TASK-3203).
 
         TASK-3166 (W0.1, epic 2467) — ``get_http_headers()`` STRIPS ``authorization``
         (and ``cookie``) unless it is named in ``include``; the bare call would
@@ -77,7 +119,10 @@ class HydrataClient:
         Only Authorization is picked out — the rest of the inbound headers
         (user-agent, accept-language, …) are the MCP client's, not ours to relay.
         """
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = {
+            CLIENT_HEADER: CLIENT_HEADER_VALUE,
+            SESSION_HEADER: session_header_value(),
+        }
         auth = get_http_headers(include={"authorization"}).get("authorization")
         if auth:
             headers["Authorization"] = auth
@@ -159,6 +204,11 @@ class HydrataClient:
         """
         resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
         return resp.json()
+
+    async def get_text_from_origin(self, path: str, params: dict | None = None) -> str:
+        """get_from_origin for a NON-JSON body (a WFS ``resultType=hits`` XML answer)."""
+        resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
+        return resp.text
 
     async def post(
         self, path: str, json: dict | None = None, raise_for_status: bool = True
