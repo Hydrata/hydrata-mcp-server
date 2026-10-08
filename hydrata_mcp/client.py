@@ -230,7 +230,7 @@ class HydrataClient:
         TASK-3171 (W1.2, epic 2467) — attach_input_layer sets ONE field
         (``gn_layer``) on one of the SIX default input rows. It is the only
         safe write: the four list+retrieve+update viewsets accept nothing
-        else, and a POST to the two create-capable ones (structures,
+        else, and a POST to the two create-capable ones (buildings,
         mesh-regions) has its gn_layer overwritten by the async layer factory.
         """
         resp = await self._send("PATCH", f"{self._base}{path}", path, json=json or {})

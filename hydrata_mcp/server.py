@@ -167,7 +167,7 @@ mcp = FastMCP(
         "To author a project from your own files: create_project → "
         "presign_terrain_upload → PUT the GeoTIFF yourself (curl --upload-file) → "
         "finalize_terrain_upload → get_terrain (polls until ready) → for each "
-        "input GeoJSON (boundary, friction, inflow, rainfall, structure, mesh_region): "
+        "input GeoJSON (boundary, friction, inflow, rainfall, building, mesh_region): "
         "multipart-POST it yourself to <origin>/api/v2/uploads/upload/ with the "
         "same credential, then attach_input_layer with the execution_id → "
         "create_time_series for each rain gauge / hydrograph → create_scenario "
@@ -354,7 +354,7 @@ def _elide_presigned(value):
 # MCP path at all.
 SCENARIO_RECORD_KEYS = (
     "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
-    "rainfall", "structure", "mesh_region", "resolution", "duration", "computed_status",
+    "rainfall", "building", "mesh_region", "resolution", "duration", "computed_status",
     "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
     "latest_run_is_valid", "compute_cost_estimate", "vcpu_hours_estimate",
     "inflow_anchor_mismatch",
@@ -570,7 +570,7 @@ async def get_scenario(
     `error_message`, `user_message`, `status_detail` and `mesh_triangle_count`
     — plus what the scenario IS and what it will cost: `name`, `description`,
     `project`, `resolution`, `duration`, the input row ids (`terrain`,
-    `boundary`, `friction`, `inflow`, `rainfall`, `structure`, `mesh_region`),
+    `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`),
     `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
     `inflow_anchor_mismatch` (null unless an inflow series starts after the
     model does, whose first value is then held backwards).
@@ -806,7 +806,7 @@ async def list_runs(
 # and no Terrain row exists until finalize. finalize kicks the SAME Celery
 # chain as a multipart upload — create_terrain_gn_layer → create_supporting_models —
 # which also seeds the project's SIX default Boundary/Friction/Inflow/Rainfall/
-# Structure/MeshRegion rows that W1.2's attach_input_layer PATCHes.
+# Building/MeshRegion rows that W1.2's attach_input_layer PATCHes.
 # ---------------------------------------------------------------------------
 
 # Terrain.status runs creating → styling → ready | error (gn_anuga tasks.py
@@ -925,7 +925,7 @@ async def finalize_terrain_upload(
     Call this only after the presigned PUT returned 200. Creates the Terrain row
     (status `creating`) and queues the import chain — reproject to UTM, publish
     the layer + hillshade, style — which also seeds the project's six default
-    boundary, friction, inflow, rainfall, structure and mesh-region rows.
+    boundary, friction, inflow, rainfall, building and mesh-region rows.
     Returns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND
     means no object is at `staging_key`: the PUT did not land (check its status
     code and Content-Type) — do not retry finalize until it has.
@@ -981,7 +981,7 @@ async def get_terrain(
     a corrected GeoTIFF as a new terrain.
 
     `ready` is written by the import task; the project's default input rows
-    (Boundary 01, Friction 01, Inflow 01, Rainfall 01, Structure 01,
+    (Boundary 01, Friction 01, Inflow 01, Rainfall 01, Building 01,
     MeshRegion 01, one GeoNode layer each) are seeded by the NEXT task in the
     chain and appear over the following ~30 s. Poll the input-layer list until
     it is non-empty before attaching your own layer to a default row.
@@ -1077,7 +1077,7 @@ SERIES_TYPES = ("hyetograph", "hydrograph", "stage", "generic")
 # kind → the plural V2 route (gn_anuga urls.py :141-:225). ALL SIX are handled
 # the same way — GET the list, PATCH the default row's gn_layer — because the
 # terrain chain seeds all six (tasks.py create_supporting_models :2802-2809)
-# and a POST to /structures/ or /mesh-regions/ carrying gn_layer is silently
+# and a POST to /buildings/ or /mesh-regions/ carrying gn_layer is silently
 # OVERWRITTEN: perform_create (api_v2.py :5247-5261) unconditionally queues
 # create_layer_for_model, which makes an empty dataset and re-saves gn_layer
 # moments after the 201.
@@ -1086,9 +1086,18 @@ INPUT_LAYER_ROUTES = {
     "friction": "frictions",
     "inflow": "inflows",
     "rainfall": "rainfalls",
-    "structure": "structures",
+    "building": "buildings",
     "mesh_region": "mesh-regions",
 }
+# TASK-3586: the building-footprint layer was called 'structure' before the
+# Structure -> Building rename. The tool is an external contract, so the old
+# kind keeps working for one release and answers with a deprecation note.
+LEGACY_INPUT_LAYER_KINDS = {"structure": "building"}
+LEGACY_KIND_DEPRECATION = (
+    "kind 'structure' is deprecated and will be removed next release: the "
+    "building-footprint layer is kind 'building' (Structures now means hydraulic "
+    "structures such as culverts)."
+)
 # The title create_supporting_models gives each default row; used to pick the
 # row deterministically when a project has more than one (the list has no
 # declared ordering).
@@ -1097,9 +1106,11 @@ INPUT_LAYER_DEFAULT_TITLES = {
     "friction": "Friction 01",
     "inflow": "Inflow 01",
     "rainfall": "Rainfall 01",
-    "structure": "Structure 01",
+    "building": "Building 01",
     "mesh_region": "MeshRegion 01",
 }
+# TASK-3586: a pre-rename project's default building row is titled 'Structure 01'.
+LEGACY_DEFAULT_TITLES = {"building": ("Structure 01",)}
 # No REST create path exists for either at HEAD (api_v2.py:3392: "no create
 # path exists today (TASK-3040 AC6)"), and run_anuga does not convey culvert
 # flow — so the tool refuses up front rather than pretending the layer landed.
@@ -1252,9 +1263,11 @@ def _first_resource_id(record) -> int | str | None:
 
 def _pick_default_row(rows: list, kind: str) -> dict:
     """The '<Kind> 01' row if present, else the lowest id — the list has no declared ordering."""
-    for row in rows:
-        if isinstance(row, dict) and row.get("title") == INPUT_LAYER_DEFAULT_TITLES[kind]:
-            return row
+    titles = (INPUT_LAYER_DEFAULT_TITLES[kind], *LEGACY_DEFAULT_TITLES.get(kind, ()))
+    for title in titles:
+        for row in rows:
+            if isinstance(row, dict) and row.get("title") == title:
+                return row
     return min(rows, key=lambda row: row.get("id", 0) if isinstance(row, dict) else 0)
 
 
@@ -1267,7 +1280,8 @@ async def attach_input_layer(
     kind: Annotated[
         str,
         "Which input the uploaded layer is: boundary, friction, inflow, rainfall, "
-        "structure or mesh_region. breakline and culvert are refused (see below).",
+        "building or mesh_region ('structure' is a deprecated alias of building). "
+        "breakline and culvert are refused (see below).",
     ],
     execution_id: Annotated[
         str,
@@ -1281,7 +1295,7 @@ async def attach_input_layer(
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
-    """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, structure or mesh_region layer.
+    """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building or mesh_region layer.
 
     The agent moves the bytes: first upload the GeoJSON yourself, with the
     same credential, to GeoNode's upload endpoint at the site origin:
@@ -1314,6 +1328,9 @@ async def attach_input_layer(
     gauge with create_time_series under the exact same name.
     """
     kind = kind.strip().lower().replace("-", "_")
+    deprecation = None
+    if kind in LEGACY_INPUT_LAYER_KINDS:
+        kind, deprecation = LEGACY_INPUT_LAYER_KINDS[kind], LEGACY_KIND_DEPRECATION
     if kind in UNSUPPORTED_INPUT_LAYER_KINDS:
         # TASK-3203 (RE-REVIEW AC2) — the link, but NOT "draw it in the map": the
         # map has no breakline/culvert tool either (TASK-3040 AC6 retired it).
@@ -1360,6 +1377,8 @@ async def attach_input_layer(
     label = kind.replace("_", " ")
 
     async def handed_back(result, summary, say, **params):
+        if deprecation:
+            result["deprecation"] = deprecation
         await _hand_back(result, project_id, dict({"kind": kind}, **summary), say,
                          panel="inputs", **params)
         return json.dumps(result, indent=2)
@@ -1488,7 +1507,7 @@ async def _map_carries_layer(project_id, alternate) -> bool | None:
 # 17 `file://` probes because nothing listed what a project already holds.
 # ---------------------------------------------------------------------------
 # WFS feature-count lookups list_inputs may make for the kinds whose wrapper
-# serializer carries no has_features (friction, inflow, structure): one GET per
+# serializer carries no has_features (friction, inflow, building): one GET per
 # row, so bounded. Rows past the bound report has_features null.
 LIST_INPUTS_MAX_FEATURE_LOOKUPS = 24
 # list_time_series follows the paginated list at most this many pages.
@@ -1514,11 +1533,11 @@ async def list_inputs(
 ) -> str:
     """List every input layer row of a project, per kind, with whether it has features.
 
-    For each of boundary, friction, inflow, rainfall, structure and mesh_region:
+    For each of boundary, friction, inflow, rainfall, building and mesh_region:
     the rows (`row_id`, `title`, `gn_layer` — the dataset pk — and
     `dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.
     `has_features` comes from the API for boundary, rainfall and mesh_region;
-    for friction, inflow and structure (whose records do not carry it) it is a
+    for friction, inflow and building (whose records do not carry it) it is a
     WFS feature count, at most 24 lookups per call — past that, or when a
     lookup fails, it is null (unknown, not false). A row with no `gn_layer`
     has no layer yet (`has_features` false). Use the row ids with
@@ -1787,13 +1806,17 @@ async def create_scenario(
     rainfall: Annotated[
         int | None, "Rainfall row id (optional; the build needs an inflow OR a rainfall)"
     ] = None,
-    structure: Annotated[int | None, "Structure row id (optional)"] = None,
+    building: Annotated[int | None, "Building row id (optional)"] = None,
     mesh_region: Annotated[
         int | None,
         "MeshRegion row id (optional): finer meshing inside its polygons, each "
         "feature's `resolution` a LENGTH in metres (see the units note).",
     ] = None,
     description: Annotated[str, "Free-text description (optional)"] = "",
+    structure: Annotated[
+        int | None,
+        "Deprecated alias of `building` (TASK-3586); ignored when `building` is given.",
+    ] = None,
 ) -> str:
     """Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.
 
@@ -1834,7 +1857,7 @@ async def create_scenario(
         "friction": friction,
         "inflow": inflow,
         "rainfall": rainfall,
-        "structure": structure,
+        "building": building if building is not None else structure,
         "mesh_region": mesh_region,
     }
     body, status_code = await client.post(f"/projects/{project_id}/scenarios/", json=payload)

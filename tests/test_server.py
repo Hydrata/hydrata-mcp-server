@@ -778,8 +778,8 @@ class TestGetTerrainTool:
 # TimeSeries.clean() client-side, because a bad row is an UNHANDLED 500 on the
 # API (full_clean's ValidationError is not an APIException), whose body the
 # client masks. attach_input_layer PATCHes the project's DEFAULT row for all
-# SIX kinds — the terrain chain seeds Structure 01 / MeshRegion 01 too, and a
-# POST to /structures/ or /mesh-regions/ with gn_layer is silently overwritten
+# SIX kinds — the terrain chain seeds Building 01 / MeshRegion 01 too, and a
+# POST to /buildings/ or /mesh-regions/ with gn_layer is silently overwritten
 # by the async layer factory (api_v2.py perform_create :5247-5261) — so the
 # suite registers those POST routes and asserts they are NEVER called. The
 # execution-status route is GeoNode's, outside /api/v2/anuga, so its URL is
@@ -795,7 +795,7 @@ INPUT_LAYER_ROUTES = {
     "friction": "frictions",
     "inflow": "inflows",
     "rainfall": "rainfalls",
-    "structure": "structures",
+    "building": "buildings",
     "mesh_region": "mesh-regions",
 }
 DEFAULT_TITLES = {
@@ -803,7 +803,7 @@ DEFAULT_TITLES = {
     "friction": "Friction 01",
     "inflow": "Inflow 01",
     "rainfall": "Rainfall 01",
-    "structure": "Structure 01",
+    "building": "Building 01",
     "mesh_region": "MeshRegion 01",
 }
 ROW_DATA = [
@@ -866,7 +866,7 @@ def _dataset(pk, alternate):
 def _mock_no_wrapper_posts():
     """The two routes attach_input_layer must NEVER hit (see the block comment)."""
     return (
-        respx.post(f"{BASE}/projects/42/structures/").mock(return_value=httpx.Response(201, json={})),
+        respx.post(f"{BASE}/projects/42/buildings/").mock(return_value=httpx.Response(201, json={})),
         respx.post(f"{BASE}/projects/42/mesh-regions/").mock(return_value=httpx.Response(201, json={})),
     )
 
@@ -1028,6 +1028,42 @@ class TestCreateTimeSeriesTool:
 
 
 class TestAttachInputLayerTool:
+    @respx.mock
+    async def test_attach_input_layer_legacy_structure_kind_patches_buildings_with_a_deprecation_note(
+        self, _server
+    ):
+        """TASK-3586: kind 'structure' (the pre-rename name) still attaches — to the
+        BUILDINGS route — and the result carries a deprecation note; kind
+        'building' is the same call without the note."""
+        respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        list_route = respx.get(f"{BASE}/projects/42/buildings/").mock(
+            return_value=httpx.Response(200, json=[_row(7, "Building 01", gn_layer=1400)])
+        )
+        patch_route = respx.patch(f"{BASE}/projects/42/buildings/7/").mock(
+            return_value=httpx.Response(200, json=_row(7, "Building 01", gn_layer=1502))
+        )
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:str_42_building_01"))
+        )
+        legacy_route = respx.get(f"{BASE}/projects/42/structures/").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        args = {"project_id": 42, "execution_id": EXEC_ID, "poll_interval_seconds": 0}
+
+        legacy = _tool_json(await _call_as_caller(_server, "attach_input_layer", {**args, "kind": "structure"}))
+        assert legacy["outcome"] == "attached"
+        assert legacy["kind"] == "building" and legacy["route"] == "buildings"
+        assert "deprecated" in legacy["deprecation"] and "building" in legacy["deprecation"]
+        assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
+        assert not legacy_route.called  # the old plural route is never hit
+
+        current = _tool_json(await _call_as_caller(_server, "attach_input_layer", {**args, "kind": "building"}))
+        assert current["outcome"] == "attached" and current["route"] == "buildings"
+        assert "deprecation" not in current
+        assert list_route.call_count == 2 and patch_route.call_count == 2
+
     @pytest.mark.parametrize("kind", list(INPUT_LAYER_ROUTES))
     @respx.mock
     async def test_attach_input_layer_patches_the_default_row_and_forwards_basic(
@@ -1048,7 +1084,7 @@ class TestAttachInputLayerTool:
         dataset_route = respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
             return_value=httpx.Response(200, json=_dataset(1502, "geonode:rai_42_rainfall_01"))
         )
-        structures_post, mesh_regions_post = _mock_no_wrapper_posts()
+        buildings_post, mesh_regions_post = _mock_no_wrapper_posts()
 
         data = _tool_json(
             await _call_as_caller(
@@ -1066,7 +1102,7 @@ class TestAttachInputLayerTool:
         assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
         # NEVER a POST to the two wrapper routes (the async layer factory would
         # overwrite gn_layer moments after the 201).
-        assert not structures_post.called
+        assert not buildings_post.called
         assert not mesh_regions_post.called
         assert data["outcome"] == "attached"
         assert data["kind"] == kind
@@ -1094,7 +1130,7 @@ class TestAttachInputLayerTool:
             respx.get(f"{BASE}/projects/42/{r}/").mock(return_value=httpx.Response(200, json=[]))
             for r in INPUT_LAYER_ROUTES.values()
         ]
-        structures_post, mesh_regions_post = _mock_no_wrapper_posts()
+        buildings_post, mesh_regions_post = _mock_no_wrapper_posts()
         text = _tool_error_text(
             await _call_as_caller(
                 _server, "attach_input_layer", {"project_id": 42, "kind": kind, "execution_id": EXEC_ID}
@@ -1102,7 +1138,7 @@ class TestAttachInputLayerTool:
         )
         assert not status_route.called
         assert not any(r.called for r in list_routes)
-        assert not structures_post.called and not mesh_regions_post.called
+        assert not buildings_post.called and not mesh_regions_post.called
         assert "TASK-3040" in text
         assert "not conveyed" in text
         assert kind in text
@@ -1325,6 +1361,34 @@ class TestAttachInputLayerTool:
         assert data["row_id"] == 5
         assert data["row_ids"] == [9, 5, 2]
 
+    @respx.mock
+    async def test_attach_building_picks_a_pre_rename_structure_01_row(self, _server):
+        """TASK-3586: an existing project's default building row is titled
+        'Structure 01'. It is the default row even when a user-added building
+        has a lower id."""
+        respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        respx.get(f"{BASE}/projects/42/buildings/").mock(
+            return_value=httpx.Response(200, json=[_row(9, "Structure 01"), _row(3, "Garage")])
+        )
+        patch_route = respx.patch(f"{BASE}/projects/42/buildings/9/").mock(
+            return_value=httpx.Response(200, json=_row(9, "Structure 01", gn_layer=1502))
+        )
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:str"))
+        )
+        _mock_no_wrapper_posts()
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "building", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+        assert patch_route.called
+        assert data["row_id"] == 9
+
     async def test_attach_input_layer_and_time_series_listed_not_conveyed_no_file_inputs(
         self, _server
     ):
@@ -1368,7 +1432,7 @@ class TestAttachInputLayerTool:
 SCENARIO_URL = f"{BASE}/projects/42/scenarios/5/"
 BUILD_URL = f"{BASE}/projects/42/scenarios/5/build/"
 BOUNDARY_URL = f"{BASE}/projects/42/boundaries/27497/"
-ESTIMATE_BREAKDOWN = {"base": 19_729, "mesh_regions": 0, "structures": 0, "total": 19_729}
+ESTIMATE_BREAKDOWN = {"base": 19_729, "mesh_regions": 0, "buildings": 0, "total": 19_729}
 MESH_TOO_LARGE = {
     "error_code": "MESH_TOO_LARGE",
     "estimate": 25_568_180,
@@ -1408,7 +1472,7 @@ def _scenario(computed_status="created", estimate=19_729, latest_run=None, **ove
         "friction": 124557,
         "inflow": 124555,
         "rainfall": 124556,
-        "structure": 124558,
+        "building": 124558,
         "mesh_region": None,
         "network": None,
         "resolution": 36.0,
@@ -1474,7 +1538,7 @@ class TestCreateScenarioTool:
         created = {
             "id": 5, "name": "mcp-w1-3172-t", "description": "", "terrain": 110533,
             "boundary": 27497, "friction": 124557, "inflow": 124555, "rainfall": 124556,
-            "structure": 124558, "mesh_region": None, "network": None,
+            "building": 124558, "mesh_region": None, "network": None,
             "resolution": 36.0, "duration": 43200,
         }
         post_route = respx.post(f"{BASE}/projects/42/scenarios/").mock(
@@ -1487,7 +1551,7 @@ class TestCreateScenarioTool:
             {
                 "project_id": 42, "name": "mcp-w1-3172-t", "resolution": 36, "duration": 43200,
                 "terrain": 110533, "boundary": 27497, "friction": 124557, "inflow": 124555,
-                "rainfall": 124556, "structure": 124558,
+                "rainfall": 124556, "building": 124558,
             },
         )
         assert post_route.calls[0].request.headers["authorization"] == CALLER_BASIC
@@ -1497,7 +1561,7 @@ class TestCreateScenarioTool:
         assert json.loads(post_route.calls[0].request.content) == {
             "name": "mcp-w1-3172-t", "description": "", "resolution": 36, "duration": 43200,
             "terrain": 110533, "boundary": 27497, "friction": 124557, "inflow": 124555,
-            "rainfall": 124556, "structure": 124558, "mesh_region": None,
+            "rainfall": 124556, "building": 124558, "mesh_region": None,
         }
         data = _tool_json(result)
         assert data["id"] == 5
@@ -2030,7 +2094,7 @@ class TestGetScenarioCompactState:
         assert data["friction"] == 124557
         assert data["inflow"] == 124555
         assert data["rainfall"] == 124556
-        assert data["structure"] == 124558
+        assert data["building"] == 124558
         assert data["mesh_region"] is None
         assert data["description"] == ""
         assert data["compute_cost_estimate"] == 0.52
@@ -2680,7 +2744,7 @@ def _wrapper_rows(route):
         "inflows": [{"id": 3, "title": "Inflow 01", "gn_layer": None, "gn_layer_name": None}],
         "rainfalls": [{"id": 4, "title": "Rainfall 01", "gn_layer": 14, "gn_layer_name": "rai_42_rainfall_01",
                        "has_features": False}],
-        "structures": [{"id": 5, "title": "Structure 01", "gn_layer": 15, "gn_layer_name": "str_42_structure_01"}],
+        "buildings": [{"id": 5, "title": "Building 01", "gn_layer": 15, "gn_layer_name": "str_42_building_01"}],
         "mesh-regions": [{"id": 6, "title": "MeshRegion 01", "gn_layer": 16, "gn_layer_name": "mes_42_meshregion_01",
                           "has_features": True}],
     }
@@ -2696,7 +2760,7 @@ class TestListInputs:
 
         def hits(request):
             name = request.url.params["typeNames"]
-            n = {"geonode:fri_42_friction_01": 3, "geonode:str_42_structure_01": 0}[name]
+            n = {"geonode:fri_42_friction_01": 3, "geonode:str_42_building_01": 0}[name]
             return httpx.Response(200, text=f'<wfs:FeatureCollection numberMatched="{n}"/>')
         wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(side_effect=hits)
         data = json.loads(await _server.list_inputs(project_id=42))
@@ -2706,7 +2770,7 @@ class TestListInputs:
                                          "dataset_alternate": "geonode:bdy_42_boundary_01",
                                          "has_features": True, "has_external_feature": True}
         assert inputs["friction"][0]["has_features"] is True and inputs["friction"][0]["feature_count"] == 3
-        assert inputs["structure"][0]["has_features"] is False
+        assert inputs["building"][0]["has_features"] is False
         assert inputs["inflow"][0] == {"row_id": 3, "title": "Inflow 01", "gn_layer": None,
                                        "dataset_alternate": None, "has_features": False}
         assert inputs["rainfall"][0]["has_features"] is False  # from the API, no WFS
@@ -2723,7 +2787,7 @@ class TestListInputs:
         inputs = json.loads(await _server.list_inputs(project_id=42))["inputs"]
         assert wfs.call_count == 1
         assert inputs["friction"][0]["has_features"] is True
-        assert inputs["structure"][0]["has_features"] is None  # past the bound: unknown, not false
+        assert inputs["building"][0]["has_features"] is None  # past the bound: unknown, not false
 
 
 class TestListTimeSeries:
