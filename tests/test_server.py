@@ -2744,3 +2744,77 @@ class TestListTimeSeries:
                          "first_timestamp": ROW_DATA[0]["timestamp"], "last_timestamp": ROW_DATA[-1]["timestamp"]}
         assert tide["row_count"] == 0 and tide["first_timestamp"] is None
         assert "rowData" not in json.dumps(data)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3449 (W1b, epic 3200) — structuredContent on every tool. Each tool's
+# registered wrapper (not the module function the direct-call tests use) hands
+# back the parsed JSON text as structuredContent, and tools/list advertises an
+# object outputSchema to match. Stored proof: -k structured_content.
+# ---------------------------------------------------------------------------
+def _schema_args(schema):
+    """Minimal valid arguments for a tool's inputSchema (required params only)."""
+    def value(prop):
+        types = [prop.get("type")] + [p.get("type") for p in prop.get("anyOf", [])]
+        if "integer" in types:
+            return 1
+        if "number" in types:
+            return 0.01
+        if "boolean" in types:
+            return False
+        if "object" in types:
+            return {}
+        if "array" in types:
+            return []
+        return "x"
+    props = schema.get("properties", {})
+    args = {name: value(props[name]) for name in schema.get("required", [])}
+    for poll_knob, knob in (("timeout_seconds", 0), ("poll_interval_seconds", 0.01)):
+        if poll_knob in props:
+            args[poll_knob] = knob  # the polling tools return after one read
+    return args
+
+
+class TestStructuredContent:
+    async def test_structured_content_output_schema_is_an_object_on_every_tool(self, _server):
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = _parse(resp)["result"]["tools"]
+        assert len(tools) == len(_server.TOOL_ANNOTATIONS)
+        for tool in tools:
+            schema = tool.get("outputSchema") or {}
+            assert schema.get("type") == "object", (tool["name"], schema)
+            assert "x-fastmcp-wrap-result" not in schema, tool["name"]
+
+    @respx.mock
+    async def test_structured_content_equals_the_parsed_text_for_every_tool(self, _server):
+        # Any upstream call answers with one plausible record; every tool must still
+        # come back with structuredContent == json.loads(text) (or a ToolError).
+        record = {"id": 1, "status": "ready", "computed_status": "built", "base_map": 7,
+                  "count": 0, "next": None, "results": []}
+        respx.route().mock(return_value=httpx.Response(200, json=record))
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            tools = _parse(resp)["result"]["tools"]
+            structured = []
+            for i, tool in enumerate(tools, start=2):
+                resp = await c.post(
+                    "/",
+                    headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                    json=_tools_call(tool["name"], _schema_args(tool["inputSchema"]), id=i),
+                )
+                result = _parse(resp)["result"]
+                if result.get("isError"):
+                    continue  # a refusal is an error string, not a JSON result
+                parsed = json.loads(result["content"][0]["text"])
+                expected = parsed if isinstance(parsed, dict) else {"result": parsed}
+                assert result.get("structuredContent") == expected, tool["name"]
+                structured.append(tool["name"])
+        # Most tools reach a JSON result on this upstream; the catch-all must not hide them.
+        assert len(structured) >= 12, structured
+
+    @respx.mock
+    async def test_structured_content_leaves_the_module_functions_returning_text(self, _server):
+        respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(200, json={"count": 0, "results": []}))
+        assert isinstance(await _server.list_projects(), str)

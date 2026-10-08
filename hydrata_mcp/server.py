@@ -1,6 +1,7 @@
 """Hydrata MCP Server — 19 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
+import functools
 import json
 import re
 import time
@@ -13,6 +14,7 @@ from urllib.parse import quote, urlencode
 import uvicorn
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.tools import ToolResult
 from mcp_types import ToolAnnotations
 from starlette.middleware import Middleware
 
@@ -217,13 +219,47 @@ TOOL_ANNOTATIONS = {
 }
 
 
+def _structured_result(text: str) -> ToolResult:
+    """The tool's JSON text plus the same value parsed as MCP structuredContent.
+
+    structuredContent must be an object, so a non-object JSON value (or text that
+    is not JSON) is carried as {"result": value}.
+    """
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = text
+    return ToolResult(
+        content=text,
+        structured_content=parsed if isinstance(parsed, dict) else {"result": parsed},
+    )
+
+
 def _tool(name: str):
-    """`@mcp.tool` with this tool's annotations (TOOL_ANNOTATIONS is the one table)."""
+    """`@mcp.tool` with this tool's annotations (TOOL_ANNOTATIONS is the one table).
+
+    TASK-3449 (W1b, epic 3200): the REGISTERED tool is a wrapper that returns the
+    JSON text plus the parsed value as structuredContent (outputSchema: object);
+    the module function is returned unchanged, so direct callers still get text.
+    """
     title, read_only, destructive, idempotent = TOOL_ANNOTATIONS[name]
-    return mcp.tool(annotations=ToolAnnotations(
-        title=title, read_only_hint=read_only, destructive_hint=destructive,
-        idempotent_hint=idempotent, open_world_hint=False,
-    ))
+    register = mcp.tool(
+        annotations=ToolAnnotations(
+            title=title, read_only_hint=read_only, destructive_hint=destructive,
+            idempotent_hint=idempotent, open_world_hint=False,
+        ),
+        output_schema={"type": "object"},
+    )
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def registered(*args, **kwargs):
+            return _structured_result(await fn(*args, **kwargs))
+
+        register(registered)
+        return fn
+
+    return decorate
 
 
 def _post_result(body, status_code: int) -> str:
