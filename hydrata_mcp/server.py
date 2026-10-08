@@ -1,16 +1,21 @@
-"""Hydrata MCP Server — 17 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 19 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
+import functools
 import json
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated
+from urllib.parse import quote, urlencode
 
 import uvicorn
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.tools import ToolResult
+from mcp_types import ToolAnnotations
 from starlette.middleware import Middleware
 
 from .client import HydrataAPIError, HydrataClient
@@ -156,6 +161,7 @@ mcp = FastMCP(
     instructions=(
         "Hydrata is a geospatial hydraulic modeling platform. Use these tools to "
         "manage ANUGA flood simulation projects, scenarios, and runs. "
+        "To see what a project already holds, use list_inputs and list_time_series. "
         "A typical workflow is: list_projects → get_scenario → start_simulation → "
         "poll get_run_status until complete → get_run for results. "
         "To author a project from your own files: create_project → "
@@ -168,10 +174,92 @@ mcp = FastMCP(
         "(reports the mesh-triangle estimate from the detail) → build_scenario "
         "(polls computed_status to built; asks for confirm=true above 100,000 "
         "triangles; returns the API's 422 MESH_TOO_LARGE body verbatim) → "
-        "start_simulation. No tool accepts file contents; the agent moves the bytes."
+        "start_simulation. No tool accepts file contents; the agent moves the bytes. "
+        "THE HUMAN SIGNS OFF: every tool that changes something returns `ui_url` (a "
+        "link that opens the project map on the thing that changed), a `summary` of "
+        "numbers the engineer can check, and `say_to_user` (what to tell them). Relay "
+        "say_to_user and the ui_url to the user after each layer lands. Before "
+        "start_simulation (the step that spends compute), give the user the ui_url and "
+        "WAIT for them to confirm they have reviewed the inputs in the map; do not "
+        "start a run on your own say-so. When a tool refuses because an input is "
+        "missing or wrong (no boundary, no External boundary edge), send the user to "
+        "the ui_url to draw or fix it in the map."
     ),
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# TASK-3204 (W1, epic 3200) — ToolAnnotations on every tool. Hints only:
+# Claude Code's permission engine ignores them today, but hosted surfaces use
+# readOnlyHint for "Allow always". destructiveHint defaults to TRUE in the
+# spec, so every write that is not cancel_run says false explicitly.
+# (title, read_only, destructive, idempotent)
+# ---------------------------------------------------------------------------
+TOOL_ANNOTATIONS = {
+    "list_projects": ("List projects", True, False, True),
+    "get_project": ("Get a project and its map link", True, False, True),
+    "get_scenario": ("Get a scenario's state, inputs and price", True, False, True),
+    "get_run_status": ("Poll a run's status", True, False, True),
+    "get_run": ("Get a run's full record", True, False, True),
+    "list_runs": ("List a project's runs", True, False, True),
+    "get_terrain": ("Wait for a terrain import", True, False, True),
+    "list_inputs": ("List a project's input layers", True, False, True),
+    "list_time_series": ("List a project's time series", True, False, True),
+    "start_simulation": ("Start a simulation run (spends compute)", False, False, False),
+    "cancel_run": ("Cancel a run", False, True, True),
+    "retry_run": ("Retry a failed run", False, False, False),
+    "create_project": ("Create a project", False, False, False),
+    "presign_terrain_upload": ("Get a terrain upload URL", False, False, False),
+    "finalize_terrain_upload": ("Register an uploaded terrain", False, False, False),
+    "create_time_series": ("Create a time series", False, False, False),
+    "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, True),
+    "create_scenario": ("Create a draft scenario", False, False, False),
+    "build_scenario": ("Build a scenario's mesh and package", False, False, False),
+}
+
+
+def _structured_result(text: str) -> ToolResult:
+    """The tool's JSON text plus the same value parsed as MCP structuredContent.
+
+    structuredContent must be an object, so a non-object JSON value (or text that
+    is not JSON) is carried as {"result": value}.
+    """
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = text
+    return ToolResult(
+        content=text,
+        structured_content=parsed if isinstance(parsed, dict) else {"result": parsed},
+    )
+
+
+def _tool(name: str):
+    """`@mcp.tool` with this tool's annotations (TOOL_ANNOTATIONS is the one table).
+
+    TASK-3449 (W1b, epic 3200): the REGISTERED tool is a wrapper that returns the
+    JSON text plus the parsed value as structuredContent (outputSchema: object);
+    the module function is returned unchanged, so direct callers still get text.
+    """
+    title, read_only, destructive, idempotent = TOOL_ANNOTATIONS[name]
+    register = mcp.tool(
+        annotations=ToolAnnotations(
+            title=title, read_only_hint=read_only, destructive_hint=destructive,
+            idempotent_hint=idempotent, open_world_hint=False,
+        ),
+        output_schema={"type": "object"},
+    )
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def registered(*args, **kwargs):
+            return _structured_result(await fn(*args, **kwargs))
+
+        register(registered)
+        return fn
+
+    return decorate
 
 
 def _post_result(body, status_code: int) -> str:
@@ -185,6 +273,107 @@ def _post_result(body, status_code: int) -> str:
         body = {"response": body}
     body["http_status"] = status_code
     return json.dumps(body, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3187 (W0, epic 3200) — presigned-URL elision.
+#
+# A run record carries five `s3_*_url` keys, each a presigned S3 URL: a 6-hour
+# capability (`X-Amz-Expires=21600`) carrying an STS token. A scenario detail
+# carries TEN of them — `latest_run` and `latest_complete_run` are both full
+# run dicts — and the read tools relayed every one of them verbatim into a
+# transcript the client persists. That widens what a leaked transcript is worth
+# beyond what the caller asked for, against decision D7 (epic 2467): the agent
+# moves bytes only through URLs it explicitly asked for.
+#
+# Applied PER TOOL and NEVER inside `_post_result`: that helper is shared with
+# presign_terrain_upload, whose signed `upload_url` IS what the caller asked
+# for (the sole documented exception), plus finalize_terrain_upload,
+# create_project, create_time_series, attach_input_layer, cancel_run and
+# retry_run.
+#
+# Two rules, applied RECURSIVELY so a key the API adds tomorrow is covered by
+# default (the six read tools' bodies are nested: list_runs is
+# `{count, results: [...]}`, get_terrain composes its own envelope):
+#   * KEY NAME — an `s3_*_url` key's string value is replaced outright.
+#   * VALUE SHAPE — any string carrying `X-Amz-Signature` or
+#     `X-Amz-Security-Token` has the signed URL REDACTED IN PLACE. In place,
+#     because a run's `log` is ~17 KB of build output (clean today, but one
+#     future line quoting a signed URL would otherwise silently nuke get_run's
+#     whole log). The entire whitespace-delimited token goes, not just the
+#     matched parameter: a presigned URL carries SIX `X-Amz-*` params, so
+#     redacting only the signature would leave `X-Amz-Credential=…` behind.
+# ---------------------------------------------------------------------------
+ELIDED_PRESIGNED = "[presigned-url-elided]"
+# Detection is the two capability-bearing params ONLY — an unsigned S3 link is
+# just a link, and `bbox_stats_url` / a layer's `catalogURL` must survive.
+PRESIGNED_MARKERS = ("X-Amz-Signature", "X-Amz-Security-Token")
+# The whole non-whitespace run around any `X-Amz-*` param. Greedy, so one
+# substitution swallows scheme, host, key and every parameter of the URL.
+PRESIGNED_URL_TOKEN = re.compile(r"\S*X-Amz-\S*")
+
+
+def _is_s3_url_key(key) -> bool:
+    """`s3_package_url`, `s3_depth_max_url`, … — the key-name rule."""
+    return isinstance(key, str) and key.startswith("s3_") and key.endswith("_url")
+
+
+def _elide_presigned(value):
+    """Recursively return `value` with every presigned S3 URL elided.
+
+    Returns a new structure; the caller's body is never mutated. Non-string
+    values under an `s3_*_url` key (a `null` package URL on a run that has no
+    package yet) are left alone — "not there" is information the agent needs.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                ELIDED_PRESIGNED
+                if _is_s3_url_key(key) and isinstance(item, str) and item
+                else _elide_presigned(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_elide_presigned(item) for item in value]
+    if isinstance(value, str) and any(marker in value for marker in PRESIGNED_MARKERS):
+        return PRESIGNED_URL_TOKEN.sub(ELIDED_PRESIGNED, value)
+    return value
+
+
+# TASK-3187 (W0, epic 3200) — the scenario fields a COMPACT read keeps, on top
+# of `_build_state`'s ten flat state keys. ONE tuple shared by get_scenario and
+# create_scenario so the two cannot drift: there is no `list_scenarios` tool
+# among the 17 and no other read path to a scenario record, so a session that
+# did not create the scenario would otherwise be blind to what it is about to
+# build (`resolution`, `duration`, the six input FKs, the terrain) and what it
+# will cost (`compute_cost_estimate`, `vcpu_hours_estimate`) — the inverse of
+# "show your work before build and spend". `inflow_anchor_mismatch` is the
+# record's only pre-build correctness warning (a timeseries inflow starting
+# after model_start has its first value ffilled backwards) and has no other
+# MCP path at all.
+SCENARIO_RECORD_KEYS = (
+    "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
+    "rainfall", "structure", "mesh_region", "resolution", "duration", "computed_status",
+    "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
+    "latest_run_is_valid", "compute_cost_estimate", "vcpu_hours_estimate",
+    "inflow_anchor_mismatch",
+)
+
+
+def _scenario_record(detail) -> dict:
+    """The whitelisted scenario fields PRESENT on `detail` — absent stays absent.
+
+    Never `detail.get(key)`: STRANGER_SCENARIO_FIELDS (hydrata
+    serializers_v2.py:381-400) DROPS the input FKs, both estimates,
+    `inflow_anchor_mismatch` and `perms` from a non-member's read of a public
+    project, and a fabricated `null` would read as "no terrain, no cost"
+    instead of "withheld". A non-dict detail reads as empty, exactly as
+    `_build_state` tolerates one.
+    """
+    if not isinstance(detail, dict):
+        return {}
+    return {key: detail[key] for key in SCENARIO_RECORD_KEYS if key in detail}
 
 
 # ---------------------------------------------------------------------------
@@ -234,9 +423,102 @@ async def _poll_until(fetch, is_terminal, timeout_seconds, poll_interval_seconds
 
 
 # ---------------------------------------------------------------------------
+# TASK-3203 (W1, epic 3200) — the hand-back.
+#
+# Every tool that CHANGES something answers with three extra keys, so the
+# agent can hand the engineer the link and the numbers instead of a bare "done":
+#   * ui_url      — `<ui origin>/catalogue/#/map/<base_map>?panel=…&layer=…&
+#                   scenario=…&run=…`; gmc's handBackParamsEpic (TASK-3205)
+#                   reads the hash query, opens the panel and frames the layer.
+#   * summary     — a dict of human-checkable numbers (feature count, bbox,
+#                   elevation range, triangle estimate, price).
+#   * say_to_user — the sentence the agent should relay.
+# Composing them is BEST EFFORT and never fails the tool: the change already
+# happened, so a lookup error leaves `ui_url` null and says so in
+# `hand_back_error` rather than hiding the result.
+# ---------------------------------------------------------------------------
+HAND_BACK_PARAM_ORDER = ("panel", "layer", "scenario", "run")
+
+
+def _ui_origin() -> str:
+    """Where a HUMAN opens the link — never the loopback API URL (see Config.ui_origin)."""
+    if config.ui_origin:
+        return config.ui_origin
+    if config.api_host:
+        return f"https://{config.api_host}"
+    return client._origin
+
+
+def _ui_url(base_map, **params) -> str | None:
+    """`<origin>/catalogue/#/map/<base_map>[?panel=…&layer=…&scenario=…&run=…]`, or None."""
+    if base_map in (None, ""):
+        return None
+    query = [(key, params[key]) for key in HAND_BACK_PARAM_ORDER if params.get(key) not in (None, "")]
+    url = f"{_ui_origin()}/catalogue/#/map/{base_map}"
+    # ':' stays literal so `layer=geonode:bdy_1_boundary_01` reads as the alternate.
+    return f"{url}?{urlencode(query, quote_via=quote, safe=':')}" if query else url
+
+
+def _alternate(name) -> str | None:
+    """A GeoNode layer name as its `workspace:name` alternate (gmc resolves layers by it)."""
+    if not isinstance(name, str) or not name:
+        return None
+    return name if ":" in name else f"geonode:{name}"
+
+
+async def _project_base_map(project_id) -> int | None:
+    """The project's base map id (TASK-3201 put it on the V2 project record)."""
+    data = await client.get(f"/projects/{project_id}/")
+    return data.get("base_map") if isinstance(data, dict) else None
+
+
+async def _hand_back(result: dict, project_id, summary: dict, say_to_user: str, **params) -> dict:
+    """Add ui_url / summary / say_to_user to `result` (best effort, never raises)."""
+    ui_url = None
+    try:
+        if project_id is not None:
+            ui_url = _ui_url(await _project_base_map(project_id), **params)
+    except Exception as exc:  # the change already landed; never hide it behind a link lookup
+        result["hand_back_error"] = f"could not compose ui_url: {exc}"
+    if ui_url is None:
+        say_to_user = f"{say_to_user} (No map link could be composed for project {project_id}.)"
+    result["ui_url"] = ui_url
+    result["summary"] = summary
+    result["say_to_user"] = say_to_user
+    return result
+
+
+async def _layer_summary(alternate) -> dict:
+    """feature_count (WFS resultType=hits) + bbox_wgs84 of a published vector layer.
+
+    Both best effort: each failure is a null plus an `*_error` string. The WFS
+    goes through GeoNode's /gs/ows proxy at the API origin, so it rides the
+    caller's own credential and, on prod, the loopback listener (which proxies
+    only Django, never /geoserver/ directly).
+    """
+    summary: dict = {"layer": alternate, "feature_count": None, "bbox_wgs84": None}
+    if not alternate:
+        return summary
+    summary["feature_count"] = await _feature_count(alternate)
+    try:
+        listing = await client.get_from_origin(
+            "/api/v2/datasets/", params={"filter{alternate}": alternate}
+        )
+        datasets = listing.get("datasets") if isinstance(listing, dict) else None
+        polygon = (datasets[0].get("ll_bbox_polygon") or {}) if datasets else {}
+        ring = (polygon.get("coordinates") or [[]])[0]
+        if ring:
+            xs, ys = [pt[0] for pt in ring], [pt[1] for pt in ring]
+            summary["bbox_wgs84"] = [min(xs), min(ys), max(xs), max(ys)]
+    except Exception as exc:
+        summary["bbox_error"] = str(exc)
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Tool 1: list_projects
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("list_projects")
 async def list_projects(
     page: Annotated[int, "Page number (default 1)"] = 1,
     page_size: Annotated[int, "Results per page, max 100 (default 100)"] = 100,
@@ -247,52 +529,82 @@ async def list_projects(
     and base map references.
     """
     data = await client.get("/projects/", params={"page": page, "page_size": page_size})
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 2: get_project
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_project")
 async def get_project(
     project_id: Annotated[int, "The project ID"],
 ) -> str:
-    """Get details of a specific ANUGA project including its scenarios.
+    """Get one ANUGA project: id, name, projection, visibility, your role, its base map — and the link to it.
 
-    Returns the project name, projection (EPSG code), base map ID,
-    and configuration.
+    Returns the project record (`id`, `name`, `projection` (EPSG code),
+    `simple_view_config`, `visibility`, `owner_username`, `my_role`,
+    `base_map`) plus `ui_url`: the link that opens the project's map, for the
+    user (`<site>/catalogue/#/map/<base_map>`; null while a new project's map
+    is still being created). Scenarios are NOT listed here — use get_scenario
+    with a scenario id.
     """
     data = await client.get(f"/projects/{project_id}/")
-    return json.dumps(data, indent=2)
+    if isinstance(data, dict):
+        data = dict(data, ui_url=_ui_url(data.get("base_map")))
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 3: get_scenario
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_scenario")
 async def get_scenario(
     project_id: Annotated[int, "The project ID"],
     scenario_id: Annotated[int, "The scenario ID"],
 ) -> str:
-    """Get scenario details including its `computed_status` and latest run.
+    """Get a scenario's COMPACT state: its `computed_status`, inputs, estimate and price.
+
+    Returns a compact record, never the raw ~50 KB detail: `scenario_id`,
+    `computed_status`, `mesh_triangle_count_estimate` and its `_breakdown`,
+    `latest_run_is_valid`, the latest run's `run_id`, `run_status`,
+    `error_message`, `user_message`, `status_detail` and `mesh_triangle_count`
+    — plus what the scenario IS and what it will cost: `name`, `description`,
+    `project`, `resolution`, `duration`, the input row ids (`terrain`,
+    `boundary`, `friction`, `inflow`, `rainfall`, `structure`, `mesh_region`),
+    `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
+    `inflow_anchor_mismatch` (null unless an inflow series starts after the
+    model does, whose first value is then held backwards).
 
     The `computed_status` field (there is NO `status` key on a scenario) is
     derived from the latest run and will be one of: created, building, built,
     queued, computing, processing, complete, error, or cancelled — `created`
     also means no run exists yet. A scenario must be `built` before it can be
-    run. The detail also carries `mesh_triangle_count_estimate` (+ its
-    `_breakdown`) and `latest_run_is_valid` (false after any edit since the
-    last build). A non-member reading a public project's scenario gets a
-    reduced record with no `computed_status`.
+    run. `latest_run_is_valid` is false after any edit since the last build.
+    A non-member reading a public project's scenario gets a reduced record:
+    the fields the server withholds (the input ids, the price,
+    `inflow_anchor_mismatch`) are ABSENT here rather than reported as null —
+    "withheld" is not "no terrain, no cost" — while the run-state keys,
+    `computed_status` among them, read null.
+
+    No presigned S3 URL is returned by any read tool (each is a 6-hour
+    capability): results stay viewable through a run's `gn_layer_*` WMS
+    entries — use get_run for the full run record.
     """
-    data = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
-    return json.dumps(data, indent=2)
+    detail = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
+    # TASK-3187 (W0, epic 3200) — the compact state, not the 52 KB detail: the
+    # two run blocks carry TEN presigned S3 URLs and a ~17 KB build log, and
+    # get_run is the tool for a run. `_build_state` UNFORKED + the shared
+    # scenario whitelist through its `**extra` kwarg. `_build_state` elides its
+    # whole return (including this `**extra`, which copies free text such as
+    # `description` that the caller does not control), so there is no second
+    # elision call here — W0 simplify pass.
+    return json.dumps(_build_state(detail, **_scenario_record(detail)), indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 4: start_simulation
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("start_simulation")
 async def start_simulation(
     scenario_id: Annotated[int, "The scenario ID to run"],
     compute_backend: Annotated[
@@ -307,37 +619,68 @@ async def start_simulation(
     The run transitions through: built → queued → computing → processing → complete.
 
     After starting, poll get_run_status to track progress. Returns 409
-    if the scenario is not in the correct state.
+    if the scenario is not in the correct state. The returned run record has
+    its presigned `s3_*_url` links elided (6-hour capabilities).
     """
     body, status_code = await client.post(
         f"/scenarios/{scenario_id}/run/",
         json={"compute_backend": compute_backend},
     )
-    return _post_result(body, status_code)
+    # TASK-3187 — the 202 relays RunSerializerV2 for a run that is already
+    # `built`, so it ALREADY holds the signed package URL: elide here, never in
+    # `_post_result` (presign_terrain_upload shares it and must keep its URL).
+    result = json.loads(_post_result(_elide_presigned(body), status_code))
+    run_id = result.get("id")
+    await _hand_back(
+        result, result.get("project"),
+        {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status"),
+         "compute_backend": result.get("compute_backend", compute_backend),
+         "vcpu_hours_estimate": result.get("vcpu_hours_estimate")},
+        f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}). "
+        "Open the link to watch it; the results appear on the map when it completes.",
+        run=run_id,
+    )
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 5: get_run_status
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_run_status")
 async def get_run_status(
     run_id: Annotated[int, "The run ID"],
 ) -> str:
     """Lightweight status check for a simulation run (fast, <50ms).
 
     Use this for polling instead of get_run. Returns only: id, status,
-    progress_pct (0-100), eta_seconds, error_message, and compute_backend.
+    `phase`, progress_pct (0-100), eta_seconds, error_message, and
+    compute_backend.
 
+    `phase` is never empty: it is `status`, except `preparing_inputs` while a
+    `computing` run has no progress yet (it is downloading its input package
+    and building the domain — minutes on a big model; this is NOT a stall).
     Poll every 5-10 seconds. Terminal states: complete, error, cancelled.
     """
     data = await client.get(f"/runs/{run_id}/status/")
-    return json.dumps(data, indent=2)
+    if isinstance(data, dict):
+        data = dict(data, phase=_run_phase(data))
+    return json.dumps(_elide_presigned(data), indent=2)
+
+
+def _run_phase(status_record: dict) -> str:
+    """TASK-3204 — the 09-21 drive read a blank progress poll as a stall. Mirrors
+    gmc TASK-2392's 'Preparing inputs…': a computing run with no progress yet is
+    still downloading its package. Never empty ('unknown' if the API sends none)."""
+    status = status_record.get("status") or "unknown"
+    if status == "computing" and status_record.get("progress_pct") is None:
+        return "preparing_inputs"
+    return status
 
 
 # ---------------------------------------------------------------------------
 # Tool 6: get_run
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_run")
 async def get_run(
     run_id: Annotated[int, "The run ID"],
 ) -> str:
@@ -347,15 +690,19 @@ async def get_run(
     timestamps, duration), compute details (backend, instance type, cost),
     mesh info, error messages, and result log. Use get_run_status for
     lightweight polling; use this for final results.
+
+    The presigned `s3_*_url` download links are ELIDED — each is a 6-hour
+    capability and no tool relays one. The results stay viewable through the
+    `gn_layer_*` entries (published WMS layers on the project's map).
     """
     data = await client.get(f"/runs/{run_id}/")
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 7: cancel_run
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("cancel_run")
 async def cancel_run(
     run_id: Annotated[int, "The run ID to cancel"],
 ) -> str:
@@ -368,13 +715,22 @@ async def cancel_run(
     (complete, cancelled, or error).
     """
     body, status_code = await client.post(f"/runs/{run_id}/cancel/")
-    return _post_result(body, status_code)
+    result = json.loads(_post_result(body, status_code))
+    project_id, scenario_id = await _run_project_and_scenario(run_id, result)
+    await _hand_back(
+        result, project_id,
+        {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status")},
+        f"Run {run_id} is cancelled ({result.get('status')}); its compute has been released. "
+        "Open the link to see the scenario.",
+        panel="scenarios", scenario=scenario_id,
+    )
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 8: retry_run
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("retry_run")
 async def retry_run(
     run_id: Annotated[int, "The run ID to retry"],
 ) -> str:
@@ -385,13 +741,38 @@ async def retry_run(
     status is 'error'. Returns 409 for any other state.
     """
     body, status_code = await client.post(f"/runs/{run_id}/retry/")
-    return _post_result(body, status_code)
+    result = json.loads(_post_result(body, status_code))
+    project_id, scenario_id = await _run_project_and_scenario(run_id, result)
+    await _hand_back(
+        result, project_id,
+        {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status"),
+         "rebuilding": result.get("rebuilding")},
+        f"Run {run_id} is being retried: scenario {scenario_id} is rebuilding as a NEW run. "
+        "Open the link to follow the build.",
+        panel="scenarios", scenario=scenario_id,
+    )
+    return json.dumps(result, indent=2)
+
+
+async def _run_project_and_scenario(run_id, body) -> tuple:
+    """(project, scenario) of a run: from `body` when it carries them, else one GET.
+
+    cancel/retry answer a short body; the run record has both ids. Best effort:
+    (None, None) on failure, and the hand-back then says no link was composed.
+    """
+    if isinstance(body, dict) and body.get("project") is not None:
+        return body.get("project"), body.get("scenario")
+    try:
+        run = await client.get(f"/runs/{run_id}/")
+    except Exception:
+        return None, None
+    return (run.get("project"), run.get("scenario")) if isinstance(run, dict) else (None, None)
 
 
 # ---------------------------------------------------------------------------
 # Tool 9: list_runs
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("list_runs")
 async def list_runs(
     project_id: Annotated[int, "The project ID"],
     status_filter: Annotated[
@@ -405,13 +786,14 @@ async def list_runs(
     """List all simulation runs across all scenarios in a project.
 
     Returns a paginated list of runs. Optionally filter by status
-    to find active, completed, or failed runs.
+    to find active, completed, or failed runs. Each row's presigned
+    `s3_*_url` download links are elided (6-hour capabilities).
     """
     params: dict = {"page": page, "page_size": page_size}
     if status_filter:
         params["status"] = status_filter
     data = await client.get(f"/projects/{project_id}/runs/", params=params)
-    return json.dumps(data, indent=2)
+    return json.dumps(_elide_presigned(data), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +817,7 @@ TERRAIN_TERMINAL_STATUSES = frozenset({"ready", "error"})
 # ---------------------------------------------------------------------------
 # Tool 10: create_project
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("create_project")
 async def create_project(
     name: Annotated[str, "Project name"],
     projection: Annotated[
@@ -444,22 +826,41 @@ async def create_project(
         "e.g. 'EPSG:32756' (WGS 84 / UTM 56S)",
     ],
 ) -> str:
-    """Create a new ANUGA project. Returns the project record including its id.
+    """Create a new ANUGA project. Returns the project record including its id, base_map and ui_url.
 
     The caller's own account becomes the owner. `projection` is the projected
     CRS every scenario in the project is meshed and run in — pick the UTM zone
-    covering the site. Next step for a new project: presign_terrain_upload.
+    covering the site. The project's map is created alongside it; `ui_url`
+    opens it — give it to the user. Next step for a new project:
+    presign_terrain_upload.
     """
     body, status_code = await client.post(
         "/projects/", json={"name": name, "projection": projection}
     )
-    return _post_result(body, status_code)
+    result = json.loads(_post_result(body, status_code))
+    project_id = result.get("id")
+    if project_id is not None and result.get("base_map") is None:
+        # The map can be created a moment after the 201: re-read the detail once.
+        try:
+            detail = await client.get(f"/projects/{project_id}/")
+            if isinstance(detail, dict):
+                result["base_map"] = detail.get("base_map")
+        except HydrataAPIError:
+            pass
+    await _hand_back(
+        result, project_id,
+        {"project_id": project_id, "name": result.get("name", name),
+         "projection": result.get("projection", projection), "base_map": result.get("base_map")},
+        f"Project '{result.get('name', name)}' (id {project_id}, {projection}) is created. "
+        "Here is its map; next I will upload the terrain.",
+    )
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 11: presign_terrain_upload
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("presign_terrain_upload")
 async def presign_terrain_upload(
     project_id: Annotated[int, "The project ID"],
     filename: Annotated[str, "Base name of the GeoTIFF, e.g. 'dem.tif' (a name only — never contents)"],
@@ -508,7 +909,7 @@ async def presign_terrain_upload(
 # ---------------------------------------------------------------------------
 # Tool 12: finalize_terrain_upload
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("finalize_terrain_upload")
 async def finalize_terrain_upload(
     project_id: Annotated[int, "The project ID"],
     staging_key: Annotated[str, "`staging_key` returned by presign_terrain_upload"],
@@ -533,13 +934,22 @@ async def finalize_terrain_upload(
         f"/projects/{project_id}/terrain/upload/finalize/",
         json={"staging_key": staging_key, "process_id": process_id, "title": title},
     )
-    return _post_result(body, status_code)
+    result = json.loads(_post_result(body, status_code))
+    await _hand_back(
+        result, project_id,
+        {"terrain_id": result.get("id"), "title": result.get("title") or title,
+         "status": result.get("status")},
+        f"The terrain upload is registered (terrain {result.get('id')}, {result.get('status')}). "
+        "The import takes minutes; I will tell you when it is ready to check on the map.",
+        panel="inputs",
+    )
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
 # Tool 13: get_terrain
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("get_terrain")
 async def get_terrain(
     project_id: Annotated[int, "The project ID"],
     terrain_id: Annotated[
@@ -559,7 +969,8 @@ async def get_terrain(
 
     Returns `outcome` — exactly one of `ready`, `error`, `timed_out`, `not_found`
     (the project has no terrain yet; an unknown terrain_id is an API 404 error
-    instead) — plus the last `status` seen (creating → styling → ready | error),
+    instead) — plus the last `status` seen (creating → styling → ready | error)
+    and `phase` (that status, or `not_found`; never empty),
     `polls`, `elapsed_seconds` and the full `terrain` record (its `gn_layer` is
     the published elevation dataset pk once ready). An import takes minutes to
     tens of minutes (the SAME 32 MB 1 m DEM measured 4.5 min once and 26 min
@@ -608,13 +1019,40 @@ async def get_terrain(
     result: dict = {
         "outcome": outcome,
         "status": status,
+        # TASK-3204 — never empty: the import stage, or `not_found`.
+        "phase": status or ("not_found" if terrain is None else "unknown"),
         "polls": polls,
         "elapsed_seconds": elapsed,
         "terrain": terrain,
     }
     if terrain_id is None:
         result["terrain_count"] = terrain_count
-    return json.dumps(result, indent=2)
+    record = terrain if isinstance(terrain, dict) else {}
+    summary = {key: record.get(key) for key in (
+        "id", "bbox_wgs84", "dem_elev_min", "dem_elev_max", "nodata_fraction",
+        "native_crs", "native_resolution_m",
+    )}
+    if outcome == "ready":
+        nodata = record.get("nodata_fraction")
+        nodata = f"{nodata:.1%}" if isinstance(nodata, (int, float)) else "an unknown share"
+        say = (
+            f"The terrain is ready: elevation {record.get('dem_elev_min')} to "
+            f"{record.get('dem_elev_max')} m, {nodata} of cells without data, native CRS "
+            f"{record.get('native_crs')}. Open the link and check it covers the whole site."
+        )
+    elif outcome == "error":
+        say = "The terrain import failed; the GeoTIFF needs fixing and uploading again."
+    elif outcome == "not_found":
+        say = "This project has no terrain yet."
+    else:
+        say = f"The terrain is still importing ({status}); I am still waiting on it."
+    await _hand_back(
+        result, project_id, summary, say,
+        panel="inputs", layer=_alternate(record.get("gn_layer_name")) if outcome == "ready" else None,
+    )
+    # TASK-3187 — this tool composes its own envelope, so elide the COMPOSED
+    # result; the terrain record carries no signed key today (future-proofing).
+    return json.dumps(_elide_presigned(result), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -714,7 +1152,7 @@ def _validate_row_data(data) -> int:
 # ---------------------------------------------------------------------------
 # Tool 14: create_time_series
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("create_time_series")
 async def create_time_series(
     project_id: Annotated[int, "The project ID"],
     name: Annotated[
@@ -771,20 +1209,32 @@ async def create_time_series(
     if not isinstance(body, dict):
         return _post_result(body, status_code)
     landed = body.get("data")
+    rows = data["rowData"]
     if isinstance(landed, dict) and isinstance(landed.get("rowData"), list):
-        row_count = len(landed["rowData"])
-    return json.dumps(
-        {
-            "id": body.get("id"),
-            "name": body.get("name", name),
-            "series_type": body.get("series_type", series_type),
-            "units": body.get("units", units),
-            "timezone": body.get("timezone", timezone),
-            "row_count": row_count,
-            "http_status": status_code,
-        },
-        indent=2,
+        rows = landed["rowData"]
+        row_count = len(rows)
+    result = {
+        "id": body.get("id"),
+        "name": body.get("name", name),
+        "series_type": body.get("series_type", series_type),
+        "units": body.get("units", units),
+        "timezone": body.get("timezone", timezone),
+        "row_count": row_count,
+        "http_status": status_code,
+    }
+    first = rows[0].get("timestamp") if rows and isinstance(rows[0], dict) else None
+    last = rows[-1].get("timestamp") if rows and isinstance(rows[-1], dict) else None
+    await _hand_back(
+        result, project_id,
+        {"series_id": result["id"], "name": result["name"], "series_type": result["series_type"],
+         "units": result["units"], "row_count": row_count, "first_timestamp": first,
+         "last_timestamp": last},
+        f"Time series '{result['name']}' ({result['series_type']}, {row_count} rows, "
+        f"{first} to {last}, {result['units'] or 'no units'}) is saved. Open the link to "
+        "check its shape in the Hydrology panel.",
+        panel="hydrology",
     )
+    return json.dumps(result, indent=2)
 
 
 def _first_resource_id(record) -> int | str | None:
@@ -811,7 +1261,7 @@ def _pick_default_row(rows: list, kind: str) -> dict:
 # ---------------------------------------------------------------------------
 # Tool 15: attach_input_layer
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("attach_input_layer")
 async def attach_input_layer(
     project_id: Annotated[int, "The project ID"],
     kind: Annotated[
@@ -865,9 +1315,18 @@ async def attach_input_layer(
     """
     kind = kind.strip().lower().replace("-", "_")
     if kind in UNSUPPORTED_INPUT_LAYER_KINDS:
+        # TASK-3203 (RE-REVIEW AC2) — the link, but NOT "draw it in the map": the
+        # map has no breakline/culvert tool either (TASK-3040 AC6 retired it).
+        # One read-only GET for the base map; no write is attempted.
+        try:
+            link = _ui_url(await _project_base_map(project_id), panel="inputs")
+        except Exception:
+            link = None
         raise ToolError(
             f"kind {kind!r} is refused: {UNSUPPORTED_INPUT_LAYER_REASON}. "
-            f"Accepted kinds: {', '.join(INPUT_LAYER_ROUTES)}."
+            f"Accepted kinds: {', '.join(INPUT_LAYER_ROUTES)}. "
+            f"say_to_user: {kind} layers are not supported by Hydrata yet — neither this "
+            f"tool nor the map can add one. ui_url: {link}"
         )
     if kind not in INPUT_LAYER_ROUTES:
         raise ToolError(
@@ -898,8 +1357,15 @@ async def attach_input_layer(
         poll_interval_seconds,
     )
     status = _status_of(execution)
+    label = kind.replace("_", " ")
+
+    async def handed_back(result, summary, say, **params):
+        await _hand_back(result, project_id, dict({"kind": kind}, **summary), say,
+                         panel="inputs", **params)
+        return json.dumps(result, indent=2)
+
     if timed_out:
-        return json.dumps(
+        return await handed_back(
             {
                 "outcome": "timed_out",
                 "kind": kind,
@@ -907,7 +1373,8 @@ async def attach_input_layer(
                 "polls": polls,
                 "elapsed_seconds": elapsed,
             },
-            indent=2,
+            {"execution_status": status},
+            f"The {label} upload is still importing; I am still waiting on it.",
         )
 
     result: dict = {
@@ -921,7 +1388,10 @@ async def attach_input_layer(
     if status == "failed":
         result["outcome"] = "upload_failed"
         result["execution"] = execution  # verbatim: the log names the import error
-        return json.dumps(result, indent=2)
+        return await handed_back(
+            result, {"execution_status": status},
+            f"The {label} file failed to import; it needs fixing before it can be attached.",
+        )
 
     dataset_pk = _first_resource_id(execution)
     if dataset_pk is None:
@@ -933,7 +1403,10 @@ async def attach_input_layer(
     if dataset_pk is None:
         result["outcome"] = "no_dataset"
         result["execution"] = execution
-        return json.dumps(result, indent=2)
+        return await handed_back(
+            result, {"execution_status": status},
+            f"The {label} upload finished but produced no layer, so nothing was attached.",
+        )
 
     listing = await client.get(f"/projects/{project_id}/{route}/")
     # A PLAIN JSON list on the six input routes (no count/results wrapper).
@@ -946,7 +1419,10 @@ async def attach_input_layer(
             f"'{INPUT_LAYER_DEFAULT_TITLES[kind]}' row is seeded by the terrain import: run "
             "finalize_terrain_upload, wait for get_terrain to report ready, then ~30 s more."
         )
-        return json.dumps(result, indent=2)
+        return await handed_back(
+            result, {"row_ids": []},
+            f"The project has no {label} layer to attach to yet (its terrain is not imported).",
+        )
 
     row = _pick_default_row(rows, kind)
     body, status_code = await client.patch(
@@ -969,6 +1445,163 @@ async def attach_input_layer(
     except HydrataAPIError as exc:
         result["dataset_alternate"] = None
         result["dataset_lookup_error"] = str(exc)
+    alternate = result["dataset_alternate"]
+    summary = await _layer_summary(alternate)
+    summary["row_id"] = row["id"]
+    # TASK-3188's perform_update swaps the map's MapLayer but swallows a swap
+    # failure and still answers 200 (W0 sweep, handover §7c) — the human would
+    # open the link and see the OLD layer. Check the map actually carries it.
+    summary["map_updated"] = await _map_carries_layer(project_id, alternate)
+    count = summary.get("feature_count")
+    say = (
+        f"{label.capitalize()} attached ({count if count is not None else 'an unknown number of'} "
+        f"feature(s)). Open the link and confirm it is the right {label}, in the right "
+        "place; sign it off there."
+    )
+    if summary["map_updated"] is False:
+        say += (
+            f" WARNING: the project map does not show the new layer yet — the scenario will "
+            f"use it, but the map still shows the old {label}."
+        )
+    return await handed_back(result, summary, say, layer=alternate)
+
+
+async def _map_carries_layer(project_id, alternate) -> bool | None:
+    """True/False: does the project's base map list `alternate` as a map layer? None = unknown."""
+    if not alternate:
+        return None
+    try:
+        base_map = await _project_base_map(project_id)
+        if base_map is None:
+            return None
+        data = await client.get_from_origin(
+            f"/api/v2/maps/{base_map}/", params={"exclude[]": "*", "include[]": "maplayers"}
+        )
+        layers = ((data or {}).get("map") or {}).get("maplayers") or []
+        return any(isinstance(layer, dict) and layer.get("name") == alternate for layer in layers)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# TASK-3204 (W1, epic 3200) — the two listing primitives. The 09-21 drive made
+# 17 `file://` probes because nothing listed what a project already holds.
+# ---------------------------------------------------------------------------
+# WFS feature-count lookups list_inputs may make for the kinds whose wrapper
+# serializer carries no has_features (friction, inflow, structure): one GET per
+# row, so bounded. Rows past the bound report has_features null.
+LIST_INPUTS_MAX_FEATURE_LOOKUPS = 24
+# list_time_series follows the paginated list at most this many pages.
+LIST_TIME_SERIES_MAX_PAGES = 20
+
+
+async def _feature_count(alternate) -> int | None:
+    """WFS resultType=hits for one layer, or None (best effort)."""
+    try:
+        xml = await client.get_text_from_origin("/gs/ows", params={
+            "service": "WFS", "version": "2.0.0", "request": "GetFeature",
+            "typeNames": alternate, "resultType": "hits",
+        })
+    except Exception:
+        return None
+    match = re.search(r'numberMatched="(\d+)"', xml)
+    return int(match.group(1)) if match else None
+
+
+@_tool("list_inputs")
+async def list_inputs(
+    project_id: Annotated[int, "The project ID"],
+) -> str:
+    """List every input layer row of a project, per kind, with whether it has features.
+
+    For each of boundary, friction, inflow, rainfall, structure and mesh_region:
+    the rows (`row_id`, `title`, `gn_layer` — the dataset pk — and
+    `dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.
+    `has_features` comes from the API for boundary, rainfall and mesh_region;
+    for friction, inflow and structure (whose records do not carry it) it is a
+    WFS feature count, at most 24 lookups per call — past that, or when a
+    lookup fails, it is null (unknown, not false). A row with no `gn_layer`
+    has no layer yet (`has_features` false). Use the row ids with
+    create_scenario; this is the listing primitive — no need to probe files.
+    """
+    lookups = 0
+    kinds: dict = {}
+    for kind, route in INPUT_LAYER_ROUTES.items():
+        listing = await client.get(f"/projects/{project_id}/{route}/")
+        rows = listing if isinstance(listing, list) else (listing or {}).get("results", [])
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            alternate = _alternate(row.get("gn_layer_name")) if row.get("gn_layer") else None
+            entry = {
+                "row_id": row.get("id"),
+                "title": row.get("title"),
+                "gn_layer": row.get("gn_layer"),
+                "dataset_alternate": alternate,
+            }
+            if "has_features" in row:
+                entry["has_features"] = row.get("has_features")
+            elif alternate is None:
+                entry["has_features"] = False
+            elif lookups < LIST_INPUTS_MAX_FEATURE_LOOKUPS:
+                lookups += 1
+                count = await _feature_count(alternate)
+                entry["feature_count"] = count
+                entry["has_features"] = None if count is None else count > 0
+            else:
+                entry["has_features"] = None
+            if kind == "boundary" and "has_external_feature" in row:
+                entry["has_external_feature"] = row.get("has_external_feature")
+            out.append(entry)
+        kinds[kind] = out
+    return json.dumps({"project_id": project_id, "inputs": kinds}, indent=2)
+
+
+@_tool("list_time_series")
+async def list_time_series(
+    project_id: Annotated[int, "The project ID"],
+) -> str:
+    """List a project's time series (rain gauges, hydrographs, tides) — never their rows.
+
+    Each series: `id`, `name` (a rainfall polygon binds to its gauge by this
+    exact name), `series_type`, `units`, `timezone`, `row_count`,
+    `first_timestamp` and `last_timestamp`. The data rows themselves are
+    dropped (a project's list is megabytes); fetch one series with the REST API
+    (GET /projects/<id>/time-series/<id>/) if you need its values.
+    """
+    series: list = []
+    params: dict = {"page": 1, "page_size": 100}
+    total = None
+    for _ in range(LIST_TIME_SERIES_MAX_PAGES):
+        page = await client.get(f"/projects/{project_id}/time-series/", params=params)
+        rows = page if isinstance(page, list) else (page or {}).get("results", [])
+        if isinstance(page, dict):
+            total = page.get("count", total)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            row_data = data.get("rowData") if isinstance(data.get("rowData"), list) else []
+            first = row_data[0] if row_data and isinstance(row_data[0], dict) else {}
+            last = row_data[-1] if row_data and isinstance(row_data[-1], dict) else {}
+            series.append({
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "series_type": row.get("series_type"),
+                "units": row.get("units"),
+                "timezone": row.get("timezone"),
+                "row_count": len(row_data),
+                "first_timestamp": first.get("timestamp"),
+                "last_timestamp": last.get("timestamp"),
+            })
+        if not isinstance(page, dict) or not page.get("next"):
+            break
+        params = dict(params, page=params["page"] + 1)
+    result = {"project_id": project_id, "count": total if total is not None else len(series),
+              "series": series}
+    if total is not None and total > len(series):
+        result["truncated"] = True
     return json.dumps(result, indent=2)
 
 
@@ -1040,7 +1673,15 @@ def _build_state(detail, **extra) -> dict:
         "mesh_triangle_count": run.get("mesh_triangle_count"),
     }
     state.update(extra)
-    return state
+    # W0 simplify pass (epic 3200, Phase 1.7) — ONE elision site for every tool
+    # that answers with a run's state, instead of get_scenario eliding and
+    # build_scenario not. `error_message` / `user_message` / `status_detail`
+    # are server-composed free text, and build_scenario additionally folds the
+    # raw build POST body in under `build=`. Safe here and NOT in
+    # `_post_result`: nothing that must keep a signed URL (presign) goes
+    # through `_build_state`. Applied after `state.update(extra)` so the
+    # caller's `**extra` is covered too.
+    return _elide_presigned(state)
 
 
 def _build_refusal(detail, reason: str) -> str:
@@ -1049,10 +1690,80 @@ def _build_refusal(detail, reason: str) -> str:
     )
 
 
+# The server's pre-build admission refusals (api_v2 _pre_build_admission_refusal):
+# what the human is told for each, and whether the link frames the boundary.
+BUILD_REFUSAL_SAY = {
+    "BOUNDARY_NO_EXTERNAL": (
+        "The build was refused: no boundary edge is marked External, so the model has no "
+        "outer perimeter. Open the link and fix it in the map — set the outer edges' "
+        "Location to External (the map offers a one-click fix) — then I will build again."
+    ),
+    "MESH_REGION_UNITS_UNMARKED": (
+        "The build was refused: the mesh-region resolutions are not marked as lengths in "
+        "metres, so the mesh density is unknown. An operator must convert them (the "
+        "command is in `detail`); nothing was spent."
+    ),
+    "MESH_TOO_LARGE": (
+        "The build was refused: the mesh is above the server's ceiling. A coarser "
+        "resolution or a smaller boundary is needed; nothing was spent."
+    ),
+}
+
+
+async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) -> dict:
+    """ui_url / summary / say_to_user for every build_scenario answer (TASK-3203)."""
+    run_cost = None
+    try:  # the actual-$ re-price lives only on the run record; best effort
+        if result.get("run_id") is not None and result.get("outcome") == "built":
+            run = await client.get(f"/runs/{result['run_id']}/")
+            run_cost = run.get("mesh_actual_cost_estimate") if isinstance(run, dict) else None
+    except Exception:
+        run_cost = None
+    summary = {
+        "scenario_id": scenario_id,
+        "outcome": result.get("outcome"),
+        "mesh_triangle_count_estimate": result.get("mesh_triangle_count_estimate"),
+        "mesh_triangle_count": result.get("mesh_triangle_count"),
+        "mesh_actual_cost_estimate": run_cost,
+    }
+    error_code = result.get("error_code")
+    boundary_layer = seen.get("boundary_layer")
+    params: dict = {"panel": "scenarios", "scenario": scenario_id}
+    refusal = seen.get("refusal")
+    if refusal in ("no_boundary", "boundary_has_no_features"):
+        params = {"panel": "inputs", "layer": boundary_layer}
+        say = (
+            "I cannot build yet: the scenario has no boundary with features. Open the link "
+            "and draw it in the map (Inputs > Boundaries), or give me a boundary file to attach."
+        )
+    elif error_code in BUILD_REFUSAL_SAY:
+        say = BUILD_REFUSAL_SAY[error_code]
+        if error_code == "BOUNDARY_NO_EXTERNAL":
+            params = {"panel": "inputs", "layer": boundary_layer}
+    elif result.get("outcome") == "built":
+        say = (
+            f"The scenario is built: {_fmt_count(result.get('mesh_triangle_count'))} triangles "
+            f"(estimated {_fmt_count(result.get('mesh_triangle_count_estimate'))}), about "
+            f"{_fmt_usd(run_cost)} to run. Open the link, check the mesh and inputs, and tell "
+            "me when you are happy for me to start the simulation."
+        )
+    elif result.get("outcome") == "refused":
+        say = f"I did not build: {result.get('reason')}."
+    elif result.get("outcome") == "timed_out":
+        say = "The build is still running; I am still waiting on it."
+    elif result.get("outcome") == "error":
+        say = f"The build failed: {result.get('error_message') or result.get('user_message')}"
+    elif "http_status" in result and result.get("http_status", 0) >= 400:
+        say = f"The build was refused by the server: {result.get('detail') or result}"
+    else:
+        say = f"The scenario's latest run is {result.get('outcome')}. Open the link to see it."
+    return await _hand_back(result, project_id, summary, say, **params)
+
+
 # ---------------------------------------------------------------------------
 # Tool 16: create_scenario
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("create_scenario")
 async def create_scenario(
     project_id: Annotated[int, "The project ID"],
     name: Annotated[str, "Scenario name"],
@@ -1079,8 +1790,8 @@ async def create_scenario(
     structure: Annotated[int | None, "Structure row id (optional)"] = None,
     mesh_region: Annotated[
         int | None,
-        "MeshRegion row id (optional). Leave UNSET unless you want the regions' "
-        "finer meshing — see the units note: they mesh ~15x more than estimated.",
+        "MeshRegion row id (optional): finer meshing inside its polygons, each "
+        "feature's `resolution` a LENGTH in metres (see the units note).",
     ] = None,
     description: Annotated[str, "Free-text description (optional)"] = "",
 ) -> str:
@@ -1089,19 +1800,20 @@ async def create_scenario(
     POSTs /projects/<id>/scenarios/ with the write fields, then GETs the
     scenario detail — the create response carries NO estimate; the detail's
     `mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact
-    record: id, name, the FK ids as stored, resolution, duration,
-    `computed_status` (`created` = no run yet), the estimate and its
-    breakdown, and http_status. Next step: build_scenario (which asks for
+    record (the same fields get_scenario answers with): id, name, the FK ids
+    as stored, resolution, duration, `computed_status` (`created` = no run
+    yet), the estimate and its breakdown, the price (`compute_cost_estimate`
+    in USD, `vcpu_hours_estimate`), `inflow_anchor_mismatch`, and
+    http_status. Next step: build_scenario (which asks for
     confirm=true above 100,000 triangles). Nothing is meshed or queued here.
 
-    Units: `resolution` on the SCENARIO is a LENGTH in metres — ANUGA
-    maximum_triangle_area = resolution²/2 (run_utils.py:227/:290; FloatField
-    default 100, not nullable; 0 makes the estimate None) and the same value
-    becomes the raster cell size; a MeshRegion FEATURE's `resolution` is
-    consumed by the mesher as an AREA (max_triangle_area, m²) while the
-    estimate prices it as a length, so attached regions mesh ~15x more than
-    estimated (Towradgi 100/36/8 m² regions: estimate ~18k, mesh ~283k); the
-    smallest MeshRegion value becomes the raster cell size.
+    Units: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is
+    a LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField
+    default 100, not nullable; 0 makes the estimate None), and the estimate
+    prices both the same way (TASK-3186). The smallest value becomes the raster
+    cell size. A MeshRegion feature must carry `resolution_units = m` (features
+    drawn in the map are marked automatically); an unmarked one makes the build
+    answer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.
 
     The server does NOT validate that the FK ids belong to `project_id` —
     pass the row ids attach_input_layer / get_terrain returned for THIS
@@ -1132,21 +1844,39 @@ async def create_scenario(
     detail = await client.get(f"/projects/{project_id}/scenarios/{scenario_id}/")
     if not isinstance(detail, dict):
         return _post_result(body, status_code)
-    keys = (
-        "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
-        "rainfall", "structure", "mesh_region", "resolution", "duration", "computed_status",
-        "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
-        "latest_run_is_valid",
-    )
-    result = {key: detail.get(key) for key in keys}
+    # TASK-3187 (W0, epic 3200) — this tuple moved to SCENARIO_RECORD_KEYS so
+    # get_scenario answers with the SAME fields (+ the two cost keys and
+    # inflow_anchor_mismatch); a field withheld by the serializer stays absent
+    # rather than being fabricated as null.
+    result = _scenario_record(detail)
     result["http_status"] = status_code
+    estimate = result.get("mesh_triangle_count_estimate")
+    cost = result.get("compute_cost_estimate")
+    await _hand_back(
+        result, project_id,
+        {"scenario_id": scenario_id, "resolution": result.get("resolution"),
+         "duration": result.get("duration"), "mesh_triangle_count_estimate": estimate,
+         "compute_cost_estimate": cost, "vcpu_hours_estimate": result.get("vcpu_hours_estimate")},
+        f"Draft scenario '{result.get('name', name)}' is set up: about "
+        f"{_fmt_count(estimate)} triangles at {result.get('resolution')} m, estimated "
+        f"{_fmt_usd(cost)} to run. Open the link to review its inputs before I build it.",
+        panel="scenarios", scenario=scenario_id,
+    )
     return json.dumps(result, indent=2)
+
+
+def _fmt_count(value) -> str:
+    return f"{value:,}" if isinstance(value, (int, float)) else "an unknown number of"
+
+
+def _fmt_usd(value) -> str:
+    return f"US${value:,.2f}" if isinstance(value, (int, float)) else "an unknown cost"
 
 
 # ---------------------------------------------------------------------------
 # Tool 17: build_scenario
 # ---------------------------------------------------------------------------
-@mcp.tool
+@_tool("build_scenario")
 async def build_scenario(
     project_id: Annotated[int, "The project ID"],
     scenario_id: Annotated[int, "The scenario ID from create_scenario"],
@@ -1212,15 +1942,25 @@ async def build_scenario(
     `error` is terminal: `error_message` says why (fix the inputs, then call
     again — an errored latest run is rebuilt).
 
-    Units: `resolution` on the SCENARIO is a LENGTH in metres — ANUGA
-    maximum_triangle_area = resolution²/2 (run_utils.py:227/:290; FloatField
-    default 100, not nullable; 0 makes the estimate None) and the same value
-    becomes the raster cell size; a MeshRegion FEATURE's `resolution` is
-    consumed by the mesher as an AREA (max_triangle_area, m²) while the
-    estimate prices it as a length, so attached regions mesh ~15x more than
-    estimated (Towradgi 100/36/8 m² regions: estimate ~18k, mesh ~283k); the
-    smallest MeshRegion value becomes the raster cell size.
+    Units: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is
+    a LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField
+    default 100, not nullable; 0 makes the estimate None), and the estimate
+    prices both the same way (TASK-3186). The smallest value becomes the raster
+    cell size. A MeshRegion feature must carry `resolution_units = m` (features
+    drawn in the map are marked automatically); an unmarked one makes the build
+    answer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.
     """
+    hand_back: dict = {}  # filled by the spend gates: which boundary to point the human at
+    result = json.loads(await _build_scenario_core(
+        project_id, scenario_id, confirm, rebuild, timeout_seconds, poll_interval_seconds, hand_back,
+    ))
+    return json.dumps(await _build_hand_back(result, project_id, scenario_id, hand_back), indent=2)
+
+
+async def _build_scenario_core(
+    project_id, scenario_id, confirm, rebuild, timeout_seconds, poll_interval_seconds, hand_back,
+) -> str:
+    """build_scenario's steps 1-5 (its docstring); `hand_back` collects the boundary seen."""
     path = f"/projects/{project_id}/scenarios/{scenario_id}/"
     detail = await client.get(path)
     if not isinstance(detail, dict) or "boundary" not in detail or "computed_status" not in detail:
@@ -1270,12 +2010,16 @@ async def build_scenario(
     # (3) Spend gates.
     boundary_id = detail.get("boundary")
     if boundary_id is None:
+        hand_back["refusal"] = "no_boundary"
         return _build_refusal(
             detail, "boundary has no features: the scenario has no boundary attached "
             "(attach_input_layer kind=boundary, then set it on the scenario)"
         )
     boundary = await client.get(f"/projects/{project_id}/boundaries/{boundary_id}/")
+    if isinstance(boundary, dict):
+        hand_back["boundary_layer"] = _alternate(boundary.get("gn_layer_name"))
     if not (isinstance(boundary, dict) and boundary.get("has_features")):
+        hand_back["refusal"] = "boundary_has_no_features"
         return _build_refusal(
             detail, f"boundary has no features: Boundary {boundary_id} has_features is false "
             "(the server would admit the build and fail it in make_package) — upload the "
@@ -1294,6 +2038,7 @@ async def build_scenario(
         )
 
     # (4) POST; every 4xx comes back as a result the agent can read.
+    hand_back["posted"] = True
     body, status_code = await client.post(
         f"/projects/{project_id}/scenarios/{scenario_id}/build/", raise_for_status=False
     )

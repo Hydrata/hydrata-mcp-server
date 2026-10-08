@@ -21,7 +21,7 @@ class TestFromEnv:
         monkeypatch.setenv("HYDRATA_API_URL", "https://example.com")
         cfg = Config.from_env()
         assert cfg.api_url == "https://example.com"
-        assert {f.name for f in fields(cfg)} == {"api_url", "port", "host", "api_host"}
+        assert {f.name for f in fields(cfg)} == {"api_url", "port", "host", "api_host", "ui_origin"}
 
     def test_valid_env_produces_config(self, env_vars):
         cfg = Config.from_env()

@@ -11,6 +11,7 @@ def _clean_env(monkeypatch):
     for key in (
         "HYDRATA_API_URL",
         "HYDRATA_API_HOST",  # TASK-3166 (W0.1, epic 2467): a shell export must not leak into tests
+        "HYDRATA_UI_ORIGIN",  # TASK-3203
         "HYDRATA_MCP_PORT",
         "HYDRATA_MCP_HOST",
     ):

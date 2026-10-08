@@ -465,6 +465,15 @@ def _tool_json(result):
     return json.loads(result["content"][0]["text"])
 
 
+HAND_BACK_KEYS = {"ui_url", "summary", "say_to_user", "hand_back_error"}
+
+
+def _without_hand_back(data):
+    """The API body a tool relays, minus TASK-3203's hand-back keys (which must be present)."""
+    assert {"ui_url", "summary", "say_to_user"} <= set(data), sorted(data)
+    return {k: v for k, v in data.items() if k not in HAND_BACK_KEYS}
+
+
 def _terrain(pk, status, **extra):
     return {"id": pk, "title": "mcp-w1-2469-dem", "status": status, "gn_layer": None, **extra}
 
@@ -476,6 +485,11 @@ class TestCreateProjectTool:
             return_value=httpx.Response(
                 201, json={"id": 42, "name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
             )
+        )
+        # TASK-3203 — the create body's base_map is null (the map is made async):
+        # the tool re-reads the detail once.
+        respx.get(f"{BASE}/projects/42/").mock(
+            return_value=httpx.Response(200, json={"id": 42, "base_map": 1525})
         )
         result = await _call_as_caller(
             _server, "create_project", {"name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
@@ -489,6 +503,7 @@ class TestCreateProjectTool:
         data = _tool_json(result)
         assert data["id"] == 42
         assert data["http_status"] == 201
+        assert data["base_map"] == 1525
 
 
 class TestPresignTerrainUploadTool:
@@ -889,7 +904,7 @@ class TestCreateTimeSeriesTool:
         data = _tool_json(result)
         # Compact record: the API echoes the whole row incl. `data` (~100 KB for
         # a 1447-row gauge); 50 of those would drown the driving agent's context.
-        assert data == {
+        compact = {
             "id": 77,
             "name": "rain_gauge_200",
             "series_type": "hyetograph",
@@ -898,6 +913,9 @@ class TestCreateTimeSeriesTool:
             "row_count": 3,
             "http_status": 201,
         }
+        # TASK-3203 adds only the hand-back keys on top of the compact record.
+        assert {k: data[k] for k in compact} == compact
+        assert set(data) - set(compact) <= {"ui_url", "summary", "say_to_user", "hand_back_error"}
         assert "data" not in data
 
     @respx.mock
@@ -1064,9 +1082,11 @@ class TestAttachInputLayerTool:
 
     @pytest.mark.parametrize("kind", ["breakline", "culvert"])
     @respx.mock
-    async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_http(
+    async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_write(
         self, _server, kind
     ):
+        # TASK-3203: the refusal now reads the project once (unmocked here, so
+        # its link is null) to hand the human a ui_url; it still writes nothing.
         status_route = respx.get(EXEC_STATUS_URL).mock(
             return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
         )
@@ -1600,7 +1620,7 @@ class TestBuildScenarioTool:
         assert result.get("isError") is not True, result["content"][0]["text"]
         data = _tool_json(result)
         assert build_route.call_count == 1
-        assert data == {**MESH_TOO_LARGE, "http_status": 422}
+        assert _without_hand_back(data) == {**MESH_TOO_LARGE, "http_status": 422}
         assert detail_route.call_count == 1  # nothing to poll: no Run was created
 
     @respx.mock
@@ -1613,7 +1633,7 @@ class TestBuildScenarioTool:
         _mock_boundary(True)
         _mock_build(409, unavailable)
         data = _tool_json(await _build(_server))
-        assert data == {**unavailable, "http_status": 409}
+        assert _without_hand_back(data) == {**unavailable, "http_status": 409}
         assert detail_route.call_count == 1
 
     @respx.mock
@@ -1624,7 +1644,7 @@ class TestBuildScenarioTool:
             return_value=httpx.Response(403, text="<html>Forbidden</html>", headers={"content-type": "text/html"})
         )
         data = _tool_json(await _build(_server))
-        assert data == {"response": "<html>Forbidden</html>", "http_status": 403}
+        assert _without_hand_back(data) == {"response": "<html>Forbidden</html>", "http_status": 403}
 
     @respx.mock
     async def test_build_scenario_5xx_on_build_is_still_a_tool_error(self, _server):
@@ -1807,9 +1827,10 @@ class TestBuildScenarioTool:
     async def test_build_scenario_and_create_scenario_listed_with_computed_status_metres_and_confirm(
         self, _server
     ):
-        """The docstring ACs, made provable: the units trap (a LENGTH in metres on the
-        scenario; an AREA on a MeshRegion feature), the poll key and the confirm gate
-        are on the tools' OWN descriptions; get_scenario's names computed_status."""
+        """The docstring ACs, made provable: the units rule (a LENGTH in metres on the
+        scenario AND on a MeshRegion feature since TASK-3186, with the marker the
+        build requires), the poll key and the confirm gate are on the tools' OWN
+        descriptions; get_scenario's names computed_status."""
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
@@ -1817,10 +1838,983 @@ class TestBuildScenarioTool:
         for token in ("computed_status", "resolution", "metres", "confirm", "100,000", "MESH_TOO_LARGE"):
             assert token in build, token
         create = tools["create_scenario"]["description"]
-        for token in ("resolution", "metres", "m²", "resolution²/2", "computed_status", "MeshRegion"):
+        for token in ("resolution", "metres", "resolution²/2", "computed_status", "MeshRegion",
+                      "resolution_units = m", "MESH_REGION_UNITS_UNMARKED"):
             assert token in create, token
+        assert "AREA" not in create and "AREA" not in build  # the pre-3186 split is gone
         get_scenario = tools["get_scenario"]["description"]
         assert "computed_status" in get_scenario
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
-        assert len(tools) == 17  # the module docstring's count
+        assert len(tools) == 19  # the module docstring's count (TASK-3204 added list_inputs + list_time_series)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3187 (W0, epic 3200) — presigned-URL elision + the compact get_scenario.
+#
+# A remote MCP with credential pass-through must not widen what a transcript
+# can leak beyond what the caller asked for. A live scenario detail carries TEN
+# presigned S3 URLs (five `s3_*_url` keys on `latest_run` and five more on
+# `latest_complete_run`), each a 6-hour capability with an STS token; the read
+# tools relayed them verbatim into the agent transcript. One recursive helper
+# elides them for every read tool + start_simulation; `presign_terrain_upload`
+# is the SOLE documented exception (the caller asked for that URL).
+#
+# The stored proof selects on `-k "presigned or elide or get_scenario"`, so
+# every test NAME below carries one of those LITERAL tokens — `pytest -k` is
+# case-sensitive and does not match a class name, so `TestGetScenario` is not
+# a selection (that is why the proof was RED at HEAD: `116 deselected`).
+# ---------------------------------------------------------------------------
+# A fake SigV4 query with all six X-Amz-* params a real presigned URL carries:
+# redacting only the matched param would leave X-Amz-Credential behind.
+SIGNED_QUERY = (
+    "X-Amz-Algorithm=AWS4-HMAC-SHA256"
+    "&X-Amz-Credential=FAKEKEYIDNOTREAL%2F20260922%2Fus-west-2%2Fs3%2Faws4_request"
+    "&X-Amz-Date=20260922T000000Z&X-Amz-Expires=21600&X-Amz-SignedHeaders=host"
+    "&X-Amz-Security-Token=fake-sts-token-for-tests&X-Amz-Signature=deadbeefdeadbeef"
+)
+# What an elided value (or an elided substring of a log line) reads as.
+ELIDED = "[presigned-url-elided]"
+# The five signed keys on a run record (serializers_v2.py RunSerializerV2).
+RUN_S3_URL_KEYS = (
+    "s3_package_url",
+    "s3_result_package_url",
+    "s3_depth_max_url",
+    "s3_velocity_max_url",
+    "s3_depth_integrated_velocity_max_url",
+)
+# A run's WMS dict, shaped like the live one on run 67181: its NAME matches
+# neither `*_url` nor `s3_*`, but it NESTS a `url` (GeoServer OWS) and a
+# `catalogURL` (catalogue CSW) that a case-insensitive "url in key" rule eats.
+GN_LAYER_DEPTH_MAX = {
+    "pk": 1538,
+    "name": "dep_67181_depth_max",
+    "title": "Depth max",
+    "alternate": "geonode:dep_67181_depth_max",
+    "url": "http://localhost:8080/geoserver/ows",
+    "catalogURL": (
+        "http://localhost:8081/catalogue/csw?outputschema="
+        "http%3A%2F%2Fwww.isotc211.org%2F2005%2Fgmd&service=CSW&request=GetRecordById"
+        "&version=2.0.2&elementsetname=full&id=dep-67181-depth-max"
+    ),
+    "visibility": True,
+}
+# Unsigned, relative — the only genuine top-level survivor on a terrain record.
+BBOX_STATS_URL = "/api/v2/anuga/projects/16132/terrain/110535/bbox-stats/"
+
+
+def _signed_url(key):
+    return f"https://anuga-test-storage.s3.amazonaws.com/{key}?{SIGNED_QUERY}"
+
+
+def _presigned_run(pk=67181, status="complete", **extra):
+    """A run record as RunSerializerV2 serialises it: five signed `s3_*_url`
+    keys, the WMS dicts, and a build log."""
+    run = _run(pk, status, **extra)
+    run.update({key: _signed_url(f"runs/{pk}/{key}") for key in RUN_S3_URL_KEYS})
+    run["gn_layer_depth_max"] = dict(GN_LAYER_DEPTH_MAX)
+    return run
+
+
+class TestElidePresignedUrls:
+    """One recursive helper, applied per tool — never inside `_post_result`."""
+
+    async def test_elide_presigned_walks_dicts_lists_and_leaves_plain_values_alone(self, _server):
+        body = {
+            "count": 1,
+            "results": [
+                {
+                    "id": 67181,
+                    "s3_package_url": _signed_url("runs/67181/package.zip"),
+                    "nested": {"deep": [{"handoff": _signed_url("x")}]},
+                    "gn_layer_depth_max": dict(GN_LAYER_DEPTH_MAX),
+                    "bbox_stats_url": BBOX_STATS_URL,
+                    "mesh_triangle_count": 256_869,
+                    "error_message": None,
+                    "flag": True,
+                }
+            ],
+        }
+        out = _server._elide_presigned(body)
+        row = out["results"][0]
+        assert out["count"] == 1
+        assert row["s3_package_url"] == ELIDED
+        assert row["nested"]["deep"][0]["handoff"] == ELIDED
+        # Untouched: not a capability.
+        assert row["gn_layer_depth_max"] == GN_LAYER_DEPTH_MAX
+        assert row["bbox_stats_url"] == BBOX_STATS_URL
+        assert row["mesh_triangle_count"] == 256_869
+        assert row["error_message"] is None
+        assert row["flag"] is True
+        # The input is not mutated — the helper returns a new structure.
+        assert "X-Amz-Signature" in body["results"][0]["s3_package_url"]
+
+    async def test_elide_presigned_redacts_a_signed_url_in_place_inside_a_log_line(self, _server):
+        log = (
+            "2026-09-21 09:00:01 INFO downloading package from "
+            + _signed_url("runs/67181/package.zip")
+            + " to /tmp/anuga\n2026-09-21 09:04:12 INFO mesh has 256869 triangles"
+        )
+        out = _server._elide_presigned({"log": log})["log"]
+        assert "X-Amz" not in out
+        # Redacted IN PLACE: only the URL token went, the rest of the log survives.
+        assert out.startswith("2026-09-21 09:00:01 INFO downloading package from " + ELIDED)
+        assert "256869 triangles" in out
+        assert "/tmp/anuga" in out
+
+    async def test_elide_presigned_leaves_an_unsigned_s3_style_string_alone(self, _server):
+        """Only a SIGNED string is a capability; an unsigned URL is just a link."""
+        plain = "https://anuga-test-storage.s3.amazonaws.com/runs/67181/package.zip"
+        assert _server._elide_presigned({"note": plain})["note"] == plain
+
+
+class TestGetScenarioCompactState:
+    """AC1: the compact state, and never a presigned URL."""
+
+    @staticmethod
+    def _detail():
+        return _scenario(
+            "complete",
+            latest_run=_presigned_run(67181, "complete", mesh_triangle_count=256_869),
+            latest_complete_run=_presigned_run(67181, "complete", mesh_triangle_count=256_869),
+            latest_run_is_valid=True,
+            resolution=35.0,
+            terrain=110535,
+            boundary=27499,
+            compute_cost_estimate=0.52,
+            vcpu_hours_estimate=3.071667015,
+            inflow_anchor_mismatch=None,
+        )
+
+    @respx.mock
+    async def test_get_scenario_elides_the_ten_presigned_urls_of_both_run_blocks(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=self._detail())
+        )
+        result = await _server.get_scenario(project_id=42, scenario_id=5)
+        assert "X-Amz" not in result
+        for key in RUN_S3_URL_KEYS:
+            assert key not in result, key
+        data = json.loads(result)
+        # The compact state replaces the detail wholesale: no run blocks, no log.
+        assert "latest_run" not in data and "latest_complete_run" not in data
+        assert "log" not in result and "perms" not in data
+
+    @respx.mock
+    async def test_get_scenario_carries_the_state_the_inputs_and_the_price(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=self._detail())
+        )
+        data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
+        # _build_state's ten flat keys (UNFORKED).
+        assert data["scenario_id"] == 5
+        assert data["computed_status"] == "complete"
+        assert data["latest_run_is_valid"] is True
+        assert data["run_id"] == 67181
+        assert data["run_status"] == "complete"
+        assert data["mesh_triangle_count"] == 256_869
+        assert data["error_message"] is None
+        assert data["user_message"] is None
+        assert data["status_detail"] is None
+        assert data["mesh_triangle_count_estimate"] == 19_729
+        # …plus the estimate breakdown, the inputs and the price: without them a
+        # session that did not create the scenario would be blind to what it is
+        # about to build and what it will cost (there is no list_scenarios tool).
+        assert data["mesh_triangle_count_estimate_breakdown"]["total"] == 19_729
+        assert data["name"] == "mcp-w1-3172-t"
+        assert data["project"] == 42
+        assert data["resolution"] == 35.0
+        assert data["duration"] == 43200
+        assert data["terrain"] == 110535
+        assert data["boundary"] == 27499
+        assert data["friction"] == 124557
+        assert data["inflow"] == 124555
+        assert data["rainfall"] == 124556
+        assert data["structure"] == 124558
+        assert data["mesh_region"] is None
+        assert data["description"] == ""
+        assert data["compute_cost_estimate"] == 0.52
+        assert data["vcpu_hours_estimate"] == 3.071667015
+        # The scenario's only pre-build correctness warning: present even when None.
+        assert "inflow_anchor_mismatch" in data
+
+    @respx.mock
+    async def test_get_scenario_redacts_a_presigned_url_quoted_in_the_description(self, _server):
+        """The compact shape alone would hide a leak: the whitelist copies the
+        scenario's own text through, so get_scenario must ALSO go through the
+        elision helper (the description is free text a user can paste into)."""
+        detail = _scenario(
+            "built",
+            description="rebuilt from " + _signed_url("runs/67179/package.zip") + " on 2026-09-21",
+        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=detail)
+        )
+        result = await _server.get_scenario(project_id=42, scenario_id=5)
+        assert "X-Amz" not in result
+        assert json.loads(result)["description"] == f"rebuilt from {ELIDED} on 2026-09-21"
+
+    @respx.mock
+    async def test_get_scenario_does_not_fabricate_nulls_for_a_non_member_record(self, _server):
+        """STRANGER_SCENARIO_FIELDS (hydrata serializers_v2.py:381-400) DROPS the
+        FKs, the estimates and the perms from a non-member's read. `.get(key)`
+        would turn "withheld" into "terrain: null, compute_cost_estimate: null" —
+        i.e. "no terrain, no cost". Absent stays absent."""
+        stranger = {"id": 5, "name": "mcp-w1-3172-t", "project": 42, "description": ""}
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=stranger)
+        )
+        data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
+        assert data["scenario_id"] == 5 and data["name"] == "mcp-w1-3172-t"
+        for withheld in ("terrain", "boundary", "compute_cost_estimate", "vcpu_hours_estimate",
+                         "resolution", "duration", "inflow_anchor_mismatch"):
+            assert withheld not in data, withheld
+
+    @respx.mock
+    async def test_get_scenario_tolerates_a_non_dict_detail(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
+            return_value=httpx.Response(200, json="gone")
+        )
+        data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
+        assert data["scenario_id"] is None and data["computed_status"] is None
+
+
+class TestElidePresignedPerTool:
+    """AC2: every read tool + start_simulation, asserted on the TOOL's output."""
+
+    @respx.mock
+    async def test_get_run_elides_the_five_presigned_urls_and_keeps_the_log(self, _server):
+        run = _presigned_run(
+            67181,
+            "complete",
+            log=(
+                "2026-09-21 09:00:01 INFO uploading results to "
+                + _signed_url("runs/67181/results.zip")
+                + "\n2026-09-21 09:31:44 INFO run complete"
+            ),
+        )
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        result = await _server.get_run(run_id=67181)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        for key in RUN_S3_URL_KEYS:
+            assert data[key] == ELIDED, key
+        # AC6: the log is redacted in place, not dropped.
+        assert "run complete" in data["log"] and ELIDED in data["log"]
+
+    @respx.mock
+    async def test_get_run_elide_keeps_the_gn_layer_dict_byte_equal(self, _server):
+        """AC3 (over-elision guard): the nested `url`/`catalogURL` of a WMS dict
+        are how results stay VIEWABLE after this card — assert by VALUE, because
+        a "key is present" assertion on a dict cannot fail."""
+        respx.get(f"{BASE}/runs/67181/").mock(
+            return_value=httpx.Response(200, json=_presigned_run())
+        )
+        data = json.loads(await _server.get_run(run_id=67181))
+        assert data["gn_layer_depth_max"] == GN_LAYER_DEPTH_MAX
+
+    @respx.mock
+    async def test_list_runs_elides_presigned_urls_nested_in_every_results_row(self, _server):
+        """list_runs is the biggest leak by volume: five signed keys per row,
+        default page_size 100 — and the body is a {count, results} DICT, so the
+        helper has to RECURSE into the list to reach them."""
+        respx.get(f"{BASE}/projects/42/runs/").mock(
+            return_value=httpx.Response(
+                200, json={"count": 2, "results": [_presigned_run(67180), _presigned_run(67181)]}
+            )
+        )
+        result = await _server.list_runs(project_id=42)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["count"] == 2
+        assert [row["id"] for row in data["results"]] == [67180, 67181]
+        assert all(row["s3_package_url"] == ELIDED for row in data["results"])
+
+    @respx.mock
+    async def test_start_simulation_elides_the_presigned_package_url_of_the_built_run(self, _server):
+        """A `built` run ALREADY holds a signed package URL, and that is exactly
+        the state start_simulation is called in — so every dispatch relayed a
+        6-hour capability back into the transcript."""
+        respx.post(f"{BASE}/scenarios/5/run/").mock(
+            return_value=httpx.Response(202, json=_presigned_run(67182, "queued"))
+        )
+        result = await _server.start_simulation(scenario_id=5)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["http_status"] == 202
+        assert data["status"] == "queued"
+        assert data["s3_package_url"] == ELIDED
+
+    @respx.mock
+    async def test_get_run_status_elides_a_presigned_url_under_an_unknown_key(self, _server):
+        """get_run_status carries no signed key TODAY — the value-shape rule is
+        what makes a key added server-side tomorrow safe by default."""
+        respx.get(f"{BASE}/runs/67181/status/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 67181,
+                    "status": "computing",
+                    "progress_pct": 45,
+                    "artifact_handoff": _signed_url("runs/67181/partial.zip"),
+                },
+            )
+        )
+        result = await _server.get_run_status(run_id=67181)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["progress_pct"] == 45
+        assert data["artifact_handoff"] == ELIDED
+
+    @respx.mock
+    async def test_get_project_elides_a_presigned_url_nested_under_an_unknown_key(self, _server):
+        respx.get(f"{BASE}/projects/42/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 42,
+                    "name": "Towradgi",
+                    "base_map": 1525,
+                    "exports": [{"handoff": _signed_url("exports/42.zip")}],
+                },
+            )
+        )
+        result = await _server.get_project(project_id=42)
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["name"] == "Towradgi" and data["base_map"] == 1525
+        assert data["exports"][0]["handoff"] == ELIDED
+
+    @respx.mock
+    async def test_list_projects_elides_a_presigned_url_in_a_project_row(self, _server):
+        respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "results": [{"id": 42, "name": "Towradgi",
+                                 "handoff": _signed_url("exports/42.zip")}],
+                },
+            )
+        )
+        result = await _server.list_projects()
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["results"][0]["name"] == "Towradgi"
+        assert data["results"][0]["handoff"] == ELIDED
+
+    @respx.mock
+    async def test_get_terrain_elides_a_presigned_url_in_the_composed_result(self, _server):
+        """get_terrain does NOT relay the body verbatim — it composes
+        {outcome, status, polls, elapsed_seconds, terrain}: elide the COMPOSED
+        result. AC3's other half rides here: `bbox_stats_url` is unsigned and
+        relative and must survive EXACTLY."""
+        terrain = _terrain(
+            110535,
+            "ready",
+            bbox_stats_url=BBOX_STATS_URL,
+            download_handoff=_signed_url("terrain/110535.tif"),
+        )
+        respx.get(f"{BASE}/projects/42/terrain/110535/").mock(
+            return_value=httpx.Response(200, json=terrain)
+        )
+        result = await _server.get_terrain(
+            project_id=42, terrain_id=110535, timeout_seconds=0, poll_interval_seconds=0
+        )
+        assert "X-Amz" not in result
+        data = json.loads(result)
+        assert data["outcome"] == "ready" and data["status"] == "ready"
+        assert data["terrain"]["bbox_stats_url"] == BBOX_STATS_URL
+        assert data["terrain"]["download_handoff"] == ELIDED
+
+    @respx.mock
+    async def test_presign_terrain_upload_still_returns_its_presigned_url_intact(self, _server):
+        """PRE-DECIDED #4 — the SOLE documented exception: the caller asked for
+        this URL, so the helper must never be wired into `_post_result` (which
+        presign/finalize/create_project/create_time_series/attach_input_layer/
+        cancel_run/retry_run all share)."""
+        upload_url = _signed_url("terrain_uploads/staging/dem.tif")
+        respx.post(f"{BASE}/projects/42/terrain/upload/presign/").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "upload_url": upload_url,
+                    "staging_key": STAGING_KEY,
+                    "process_id": PROCESS_ID,
+                    "method": "PUT",
+                    "expires_in": 3600,
+                },
+            )
+        )
+        result = await _server.presign_terrain_upload(project_id=42, filename=DEM_NAME)
+        assert json.loads(result)["upload_url"] == upload_url
+        assert "X-Amz-Signature" in result
+
+
+# ---------------------------------------------------------------------------
+# W0 simplify-pass (Phase 1.7 cumulative sweep, epic 3200) — the elision lives
+# in `_build_state`, so EVERY tool that answers with a run's state is covered
+# once: get_scenario (TASK-3187), build_scenario's poll/short-circuit returns
+# and `_build_refusal`. Before this, get_scenario elided and build_scenario —
+# which composes the SAME helper from the SAME detail, and additionally folds
+# the raw build POST body in under `build=` — did not.
+# ---------------------------------------------------------------------------
+class TestBuildScenarioElidesPresignedUrls:
+    @respx.mock
+    async def test_build_scenario_elides_a_presigned_url_quoted_in_the_run_error_message(
+        self, _server
+    ):
+        """`_build_state` copies the run's `error_message` / `user_message` /
+        `status_detail` verbatim. They are server-composed free text, so a
+        future line quoting a signed URL would reach the transcript through
+        build_scenario even though get_scenario elides the same field."""
+        signed = _signed_url("runs/67181/package.zip")
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_scenario(
+                    "built",
+                    latest_run=_run(
+                        501, "built", error_message=f"package upload failed for {signed}"
+                    ),
+                    latest_run_is_valid=True,
+                ),
+            )
+        )
+        data = _tool_json(await _build(_server))
+        assert "X-Amz" not in json.dumps(data)
+        assert data["error_message"] == f"package upload failed for {ELIDED}"
+        assert data["posted"] is False
+
+    @respx.mock
+    async def test_build_scenario_refusal_elides_a_presigned_url_it_echoes(self, _server):
+        """The refusal path (`_build_refusal`) goes through the same helper."""
+        signed = _signed_url("runs/67181/package.zip")
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_scenario(
+                    "created",
+                    estimate=None,
+                    latest_run=_run(501, "error", status_detail=f"gate: {signed}"),
+                ),
+            )
+        )
+        _mock_boundary(True)
+        data = _tool_json(await _build(_server))
+        assert "X-Amz" not in json.dumps(data)
+        assert data["outcome"] == "refused"
+        assert data["status_detail"] == f"gate: {ELIDED}"
+
+
+# ---------------------------------------------------------------------------
+# TASK-3203 (W1, epic 3200) — the hand-back: ui_url + summary + say_to_user on
+# every mutating tool, refusals that route the human to the map, and the
+# informational X-Hydrata-Client / X-Hydrata-Session headers.
+#
+# The stored proof selects on `-k "ui_url or say_to_user or client_header"`, so
+# every test NAME below carries one of those literal tokens.
+# ---------------------------------------------------------------------------
+UI_URL_RE = r"^https?://.+/catalogue/#/map/\d+"
+BASE_MAP = 1525
+BOUNDARY_ALTERNATE = "geonode:bdy_42_boundary_01"
+WFS_HITS = (
+    '<?xml version="1.0" encoding="UTF-8"?><wfs:FeatureCollection '
+    'numberMatched="4" numberReturned="0" timeStamp="2026-10-02T00:00:00Z"/>'
+)
+
+
+def _mock_project(base_map=BASE_MAP):
+    return respx.get(f"{BASE}/projects/42/").mock(
+        return_value=httpx.Response(200, json={"id": 42, "name": "p", "base_map": base_map})
+    )
+
+
+def _assert_hand_back(data, **params):
+    import re as _re
+    assert _re.match(UI_URL_RE, data["ui_url"] or ""), data.get("ui_url")
+    assert f"/catalogue/#/map/{BASE_MAP}" in data["ui_url"]
+    for key, value in params.items():
+        assert f"{key}={value}" in data["ui_url"], (key, value, data["ui_url"])
+    assert isinstance(data["summary"], dict) and data["summary"], data["summary"]
+    assert isinstance(data["say_to_user"], str) and data["say_to_user"].strip()
+
+
+def _mock_layer_summary(alternate, count=4, on_map=True):
+    respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(return_value=httpx.Response(200, text=WFS_HITS))
+    respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/?").mock(
+        return_value=httpx.Response(200, json={"datasets": [{"alternate": alternate, "ll_bbox_polygon": {
+            "type": "Polygon",
+            "coordinates": [[[150.89, -34.38], [150.89, -34.37], [150.91, -34.37], [150.91, -34.38], [150.89, -34.38]]],
+        }}]})
+    )
+    respx.get(url__startswith=f"{ORIGIN}/api/v2/maps/{BASE_MAP}/").mock(
+        return_value=httpx.Response(200, json={"map": {"maplayers": [
+            {"name": alternate if on_map else "geonode:bdy_42_boundary_old"},
+        ]}})
+    )
+
+
+class TestHandBackUiUrl:
+    @respx.mock
+    async def test_ui_url_get_project_carries_base_map_and_link(self, _server):
+        _mock_project()
+        data = json.loads(await _server.get_project(project_id=42))
+        assert data["base_map"] == BASE_MAP
+        assert data["ui_url"] == f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}"
+
+    @respx.mock
+    async def test_ui_url_create_project_rereads_a_null_base_map(self, _server):
+        respx.post(f"{BASE}/projects/").mock(return_value=httpx.Response(
+            201, json={"id": 42, "name": "n", "projection": "EPSG:32756", "base_map": None}))
+        detail = _mock_project()
+        data = json.loads(await _server.create_project(name="n", projection="EPSG:32756"))
+        assert detail.call_count >= 1
+        assert data["base_map"] == BASE_MAP
+        _assert_hand_back(data)
+        assert data["summary"]["base_map"] == BASE_MAP
+
+    @respx.mock
+    async def test_ui_url_finalize_terrain_upload(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/projects/42/terrain/upload/finalize/").mock(
+            return_value=httpx.Response(202, json=_terrain(110540, "creating")))
+        data = json.loads(await _server.finalize_terrain_upload(project_id=42, staging_key=STAGING_KEY))
+        _assert_hand_back(data, panel="inputs")
+        assert data["summary"]["terrain_id"] == 110540
+
+    @respx.mock
+    async def test_ui_url_get_terrain_ready_frames_the_dem_with_its_numbers(self, _server):
+        _mock_project()
+        ready = _terrain(110540, "ready", gn_layer=1530, gn_layer_name="ele_42_utm_dem",
+                         bbox_wgs84=[150.85, -34.42, 150.92, -34.36], dem_elev_min=-1.2,
+                         dem_elev_max=310.5, nodata_fraction=0.0, native_crs="EPSG:28356")
+        respx.get(f"{BASE}/projects/42/terrain/110540/").mock(return_value=httpx.Response(200, json=ready))
+        data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110540, timeout_seconds=0))
+        _assert_hand_back(data, panel="inputs", layer="geonode:ele_42_utm_dem")
+        assert data["summary"]["dem_elev_max"] == 310.5
+        assert data["summary"]["bbox_wgs84"] == [150.85, -34.42, 150.92, -34.36]
+        assert "310.5" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_create_time_series_opens_hydrology_with_row_count_and_span(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(201, json=_series_row(77)))
+        data = json.loads(await _server.create_time_series(**_series_args()))
+        _assert_hand_back(data, panel="hydrology")
+        assert data["summary"]["row_count"] == 3
+        assert data["summary"]["first_timestamp"] == ROW_DATA[0]["timestamp"]
+        assert data["summary"]["last_timestamp"] == ROW_DATA[-1]["timestamp"]
+
+    @respx.mock
+    async def test_ui_url_attach_input_layer_frames_the_layer_with_feature_count(self, _server):
+        _mock_project()
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+        _mock_layer_summary(BOUNDARY_ALTERNATE)
+        data = json.loads(await _server.attach_input_layer(
+            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
+        assert data["summary"]["feature_count"] == 4
+        assert data["summary"]["bbox_wgs84"] == [150.89, -34.38, 150.91, -34.37]
+        assert data["summary"]["map_updated"] is True
+        assert "4 feature" in data["say_to_user"] and "sign it off" in data["say_to_user"]
+        assert "WARNING" not in data["say_to_user"]
+
+    @respx.mock
+    async def test_say_to_user_attach_warns_when_the_map_still_shows_the_old_layer(self, _server):
+        """TASK-3188's swallowed MapLayer-swap failure (handover §7c) made client-visible."""
+        _mock_project()
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+        _mock_layer_summary(BOUNDARY_ALTERNATE, on_map=False)
+        data = json.loads(await _server.attach_input_layer(
+            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        assert data["outcome"] == "attached"
+        assert data["summary"]["map_updated"] is False
+        assert "WARNING" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_create_scenario_opens_the_scenario_with_estimate_and_price(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 5}))
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(
+            200, json=_scenario(compute_cost_estimate=1.23, vcpu_hours_estimate=0.4)))
+        data = json.loads(await _server.create_scenario(project_id=42, name="s", resolution=36.0, duration=3600))
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+        assert data["summary"]["mesh_triangle_count_estimate"] == 19_729
+        assert data["summary"]["compute_cost_estimate"] == 1.23
+        assert "19,729" in data["say_to_user"] and "US$1.23" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_build_scenario_built_reports_mesh_and_actual_cost(self, _server):
+        _mock_project()
+        _detail_to_built(_scenario())
+        _mock_boundary(True)
+        _mock_build()
+        respx.get(f"{BASE}/runs/501/").mock(return_value=httpx.Response(
+            200, json=_run(501, "built", mesh_triangle_count=20_480, mesh_actual_cost_estimate=2.5)))
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "built"
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+        assert data["summary"]["mesh_actual_cost_estimate"] == 2.5
+        assert "start the simulation" in data["say_to_user"]
+
+    @respx.mock
+    async def test_ui_url_start_simulation_opens_the_run(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(202, json=_run(502, "queued")))
+        data = json.loads(await _server.start_simulation(scenario_id=5))
+        _assert_hand_back(data, run=502)
+        assert data["summary"]["run_id"] == 502
+
+    @respx.mock
+    async def test_ui_url_cancel_run_reads_the_run_for_its_project(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/runs/502/cancel/").mock(return_value=httpx.Response(200, json={"id": 502, "status": "cancelled"}))
+        respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "cancelled")))
+        data = json.loads(await _server.cancel_run(run_id=502))
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+
+    @respx.mock
+    async def test_ui_url_retry_run_opens_the_rebuilding_scenario(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/runs/502/retry/").mock(
+            return_value=httpx.Response(202, json={"id": 502, "status": "created", "rebuilding": True}))
+        respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "created")))
+        data = json.loads(await _server.retry_run(run_id=502))
+        _assert_hand_back(data, panel="scenarios", scenario=5)
+        assert data["summary"]["rebuilding"] is True
+
+    @respx.mock
+    async def test_ui_url_lookup_failure_never_hides_the_change(self, _server):
+        """Best effort: the create landed; a failed base-map read leaves ui_url null and says so."""
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(202, json=_run(502, "queued")))
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(500))
+        data = json.loads(await _server.start_simulation(scenario_id=5))
+        assert data["id"] == 502 and data["ui_url"] is None
+        assert "hand_back_error" in data and "No map link" in data["say_to_user"]
+
+    async def test_ui_url_origin_is_the_public_host_not_the_loopback_api(self, _server, monkeypatch):
+        """Prod's API URL is the loopback 127.0.0.1:8081 listener; the human needs https://<host>."""
+        monkeypatch.setattr(_server, "config", _server.Config(
+            api_url="http://127.0.0.1:8081/api/v2/anuga", api_host="hydrata.com"))
+        assert _server._ui_url(7, panel="inputs", layer="geonode:a_b") == (
+            "https://hydrata.com/catalogue/#/map/7?panel=inputs&layer=geonode:a_b")
+        monkeypatch.setattr(_server, "config", _server.Config(
+            api_url="http://localhost/api/v2/anuga", ui_origin="http://localhost:8081"))
+        assert _server._ui_url(7, run=9) == "http://localhost:8081/catalogue/#/map/7?run=9"
+        assert _server._ui_url(None, panel="inputs") is None
+
+
+class TestHandBackRefusals:
+    @respx.mock
+    async def test_say_to_user_no_boundary_refusal_routes_to_the_map(self, _server):
+        _mock_project()
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(boundary=None)))
+        build = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "refused" and not build.called
+        _assert_hand_back(data, panel="inputs")
+        assert "draw it in the map" in data["say_to_user"]
+
+    @respx.mock
+    async def test_say_to_user_boundary_without_features_frames_that_boundary(self, _server):
+        _mock_project()
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        respx.get(BOUNDARY_URL).mock(return_value=httpx.Response(200, json={
+            "id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": False}))
+        build = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "refused" and not build.called
+        _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
+        assert "draw it in the map" in data["say_to_user"]
+
+    @respx.mock
+    async def test_say_to_user_relayed_422_boundary_no_external_says_fix_it_in_the_map(self, _server):
+        _mock_project()
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
+        respx.get(BOUNDARY_URL).mock(return_value=httpx.Response(200, json={
+            "id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": True}))
+        refusal = {"error_code": "BOUNDARY_NO_EXTERNAL",
+                   "detail": "Every boundary line is Location=Internal: features 1 (…), 2 (…)."}
+        _mock_build(422, refusal)
+        data = _tool_json(await _build(_server))
+        assert data["error_code"] == "BOUNDARY_NO_EXTERNAL" and data["http_status"] == 422
+        assert data["detail"] == refusal["detail"]  # the body is still relayed verbatim
+        _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
+        assert "fix it in the map" in data["say_to_user"]
+
+    @pytest.mark.parametrize("kind", ["breakline", "culvert"])
+    @respx.mock
+    async def test_say_to_user_breakline_culvert_refusal_has_ui_url_but_no_draw_hint(self, _server, kind):
+        project = _mock_project()
+        writes = [respx.post(url__startswith=BASE).mock(return_value=httpx.Response(201, json={})),
+                  respx.patch(url__startswith=BASE).mock(return_value=httpx.Response(200, json={}))]
+        with pytest.raises(_server.ToolError) as exc_info:
+            await _server.attach_input_layer(project_id=42, kind=kind, execution_id=EXEC_ID)
+        text = str(exc_info.value)
+        assert project.called and not any(w.called for w in writes)  # one read, no write
+        assert f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}?panel=inputs" in text
+        assert "not supported" in text
+        assert "draw it in the map" not in text
+
+
+class TestClientHeaders:
+    @respx.mock
+    async def test_client_header_and_session_on_every_forwarded_request(self, _server):
+        """Two tool calls carrying one client Mcp-Session-Id: every upstream request
+        carries X-Hydrata-Client mcp/<version> and the SAME UUID X-Hydrata-Session."""
+        import uuid as _uuid
+        route = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        session = "6f1c2b9e-3d4a-4b5c-8d6e-7f8091a2b3c4"
+        async with _asgi_client(_server) as c:
+            for call_id in (1, 2):
+                resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_BASIC,
+                                                  "mcp-session-id": session},
+                                    json=_tools_call("list_projects", {}, id=call_id))
+                assert resp.status_code == 200, resp.text
+        assert route.call_count == 2
+        sessions = set()
+        for call in route.calls:
+            assert call.request.headers["x-hydrata-client"].startswith("mcp/")
+            sessions.add(str(_uuid.UUID(call.request.headers["x-hydrata-session"])))
+        assert sessions == {session}
+
+    @respx.mock
+    async def test_client_header_session_is_a_uuid_without_an_inbound_session(self, _server):
+        """stateless_http: no server-issued session; one tool call's requests still share one UUID."""
+        import uuid as _uuid
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+        _mock_layer_summary(BOUNDARY_ALTERNATE)
+        _mock_project()
+        _tool_json(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "boundary", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        values = {r.request.headers.get("x-hydrata-session") for r in respx.calls}
+        assert len(values) == 1, values
+        _uuid.UUID(values.pop())
+
+
+# ---------------------------------------------------------------------------
+# TASK-3204 (W1, epic 3200) — annotations, never-null phase, the list tools.
+# Stored proof: -k "annotations or list_inputs or list_time_series or phase".
+# ---------------------------------------------------------------------------
+READ_TOOLS = {"list_projects", "get_project", "get_scenario", "get_run_status", "get_run",
+              "list_runs", "get_terrain", "list_inputs", "list_time_series"}
+
+
+class TestToolAnnotations:
+    async def test_annotations_on_all_19_tools_read_hints_and_cancel_destructive(self, _server):
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        assert len(tools) == 19
+        for name, tool in tools.items():
+            ann = tool.get("annotations") or {}
+            assert ann.get("title"), name
+            assert ann.get("readOnlyHint") is (name in READ_TOOLS), (name, ann)
+            if name not in READ_TOOLS:
+                assert ann.get("destructiveHint") is (name == "cancel_run"), (name, ann)
+        assert tools["cancel_run"]["annotations"]["destructiveHint"] is True
+        assert tools["cancel_run"]["annotations"]["idempotentHint"] is True
+        assert tools["start_simulation"]["annotations"]["destructiveHint"] is False
+
+
+class TestPhase:
+    @pytest.mark.parametrize("status,progress,phase", [
+        ("computing", None, "preparing_inputs"),
+        ("computing", 12, "computing"),
+        ("queued", None, "queued"),
+        ("complete", 100, "complete"),
+        (None, None, "unknown"),
+    ])
+    @respx.mock
+    async def test_phase_get_run_status_is_never_empty(self, _server, status, progress, phase):
+        respx.get(f"{BASE}/runs/9/status/").mock(return_value=httpx.Response(200, json={
+            "id": 9, "status": status, "progress_pct": progress, "eta_seconds": None,
+            "error_message": None, "compute_backend": "batch"}))
+        data = json.loads(await _server.get_run_status(run_id=9))
+        assert data["phase"] == phase
+        assert data["progress_pct"] == progress  # upstream fields untouched
+
+    @pytest.mark.parametrize("status", ["creating", "styling", "ready", "error"])
+    @respx.mock
+    async def test_phase_get_terrain_is_the_import_stage(self, _server, status):
+        respx.get(f"{BASE}/projects/42/terrain/110540/").mock(
+            return_value=httpx.Response(200, json=_terrain(110540, status)))
+        data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110540, timeout_seconds=0))
+        assert data["phase"] == status
+
+    @respx.mock
+    async def test_phase_get_terrain_not_found_and_null_status_never_empty(self, _server):
+        respx.get(f"{BASE}/projects/42/terrain/").mock(return_value=httpx.Response(200, json=[]))
+        data = json.loads(await _server.get_terrain(project_id=42, timeout_seconds=0))
+        assert data["phase"] == "not_found"
+        respx.get(f"{BASE}/projects/42/terrain/110541/").mock(
+            return_value=httpx.Response(200, json=_terrain(110541, None)))
+        data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110541, timeout_seconds=0))
+        assert data["phase"] == "unknown"
+
+
+def _wrapper_rows(route):
+    rows = {
+        "boundaries": [{"id": 1, "title": "Boundary 01", "gn_layer": 11, "gn_layer_name": "bdy_42_boundary_01",
+                        "has_features": True, "has_external_feature": True}],
+        "frictions": [{"id": 2, "title": "Friction 01", "gn_layer": 12, "gn_layer_name": "fri_42_friction_01"}],
+        "inflows": [{"id": 3, "title": "Inflow 01", "gn_layer": None, "gn_layer_name": None}],
+        "rainfalls": [{"id": 4, "title": "Rainfall 01", "gn_layer": 14, "gn_layer_name": "rai_42_rainfall_01",
+                       "has_features": False}],
+        "structures": [{"id": 5, "title": "Structure 01", "gn_layer": 15, "gn_layer_name": "str_42_structure_01"}],
+        "mesh-regions": [{"id": 6, "title": "MeshRegion 01", "gn_layer": 16, "gn_layer_name": "mes_42_meshregion_01",
+                          "has_features": True}],
+    }
+    return rows[route]
+
+
+class TestListInputs:
+    @respx.mock
+    async def test_list_inputs_every_kind_with_alternate_and_has_features(self, _server):
+        for route in INPUT_LAYER_ROUTES.values():
+            respx.get(f"{BASE}/projects/42/{route}/").mock(
+                return_value=httpx.Response(200, json=_wrapper_rows(route)))
+
+        def hits(request):
+            name = request.url.params["typeNames"]
+            n = {"geonode:fri_42_friction_01": 3, "geonode:str_42_structure_01": 0}[name]
+            return httpx.Response(200, text=f'<wfs:FeatureCollection numberMatched="{n}"/>')
+        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(side_effect=hits)
+        data = json.loads(await _server.list_inputs(project_id=42))
+        inputs = data["inputs"]
+        assert set(inputs) == set(INPUT_LAYER_ROUTES)
+        assert inputs["boundary"][0] == {"row_id": 1, "title": "Boundary 01", "gn_layer": 11,
+                                         "dataset_alternate": "geonode:bdy_42_boundary_01",
+                                         "has_features": True, "has_external_feature": True}
+        assert inputs["friction"][0]["has_features"] is True and inputs["friction"][0]["feature_count"] == 3
+        assert inputs["structure"][0]["has_features"] is False
+        assert inputs["inflow"][0] == {"row_id": 3, "title": "Inflow 01", "gn_layer": None,
+                                       "dataset_alternate": None, "has_features": False}
+        assert inputs["rainfall"][0]["has_features"] is False  # from the API, no WFS
+        assert wfs.call_count == 2  # only the two kinds without has_features, with a layer
+
+    @respx.mock
+    async def test_list_inputs_feature_lookups_are_bounded(self, _server, monkeypatch):
+        monkeypatch.setattr(_server, "LIST_INPUTS_MAX_FEATURE_LOOKUPS", 1)
+        for route in INPUT_LAYER_ROUTES.values():
+            respx.get(f"{BASE}/projects/42/{route}/").mock(
+                return_value=httpx.Response(200, json=_wrapper_rows(route)))
+        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(
+            return_value=httpx.Response(200, text='<x numberMatched="5"/>'))
+        inputs = json.loads(await _server.list_inputs(project_id=42))["inputs"]
+        assert wfs.call_count == 1
+        assert inputs["friction"][0]["has_features"] is True
+        assert inputs["structure"][0]["has_features"] is None  # past the bound: unknown, not false
+
+
+class TestListTimeSeries:
+    @respx.mock
+    async def test_list_time_series_follows_pages_and_drops_the_rows(self, _server):
+        page1 = {"count": 2, "next": "…?page=2", "previous": None, "results": [_series_row(77)]}
+        page2 = {"count": 2, "next": None, "previous": "…", "results": [
+            _series_row(78, name="tide", series_type="stage", units="m", data={"rowData": []})]}
+        route = respx.get(f"{BASE}/projects/42/time-series/").mock(
+            side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)])
+        data = json.loads(await _server.list_time_series(project_id=42))
+        assert route.call_count == 2
+        assert route.calls[1].request.url.params["page"] == "2"
+        assert data["count"] == 2 and "truncated" not in data
+        first, tide = data["series"]
+        assert first == {"id": 77, "name": "rain_gauge_200", "series_type": "hyetograph", "units": "mm/hr",
+                         "timezone": "Australia/Sydney", "row_count": 3,
+                         "first_timestamp": ROW_DATA[0]["timestamp"], "last_timestamp": ROW_DATA[-1]["timestamp"]}
+        assert tide["row_count"] == 0 and tide["first_timestamp"] is None
+        assert "rowData" not in json.dumps(data)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3449 (W1b, epic 3200) — structuredContent on every tool. Each tool's
+# registered wrapper (not the module function the direct-call tests use) hands
+# back the parsed JSON text as structuredContent, and tools/list advertises an
+# object outputSchema to match. Stored proof: -k structured_content.
+# ---------------------------------------------------------------------------
+def _schema_args(schema):
+    """Minimal valid arguments for a tool's inputSchema (required params only)."""
+    def value(prop):
+        types = [prop.get("type")] + [p.get("type") for p in prop.get("anyOf", [])]
+        if "integer" in types:
+            return 1
+        if "number" in types:
+            return 0.01
+        if "boolean" in types:
+            return False
+        if "object" in types:
+            return {}
+        if "array" in types:
+            return []
+        return "x"
+    props = schema.get("properties", {})
+    args = {name: value(props[name]) for name in schema.get("required", [])}
+    for poll_knob, knob in (("timeout_seconds", 0), ("poll_interval_seconds", 0.01)):
+        if poll_knob in props:
+            args[poll_knob] = knob  # the polling tools return after one read
+    return args
+
+
+class TestStructuredContent:
+    async def test_structured_content_output_schema_is_an_object_on_every_tool(self, _server):
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = _parse(resp)["result"]["tools"]
+        assert len(tools) == len(_server.TOOL_ANNOTATIONS)
+        for tool in tools:
+            schema = tool.get("outputSchema") or {}
+            assert schema.get("type") == "object", (tool["name"], schema)
+            assert "x-fastmcp-wrap-result" not in schema, tool["name"]
+
+    @respx.mock
+    async def test_structured_content_equals_the_parsed_text_for_every_tool(self, _server):
+        # Any upstream call answers with one plausible record; every tool must still
+        # come back with structuredContent == json.loads(text) (or a ToolError).
+        record = {"id": 1, "status": "ready", "computed_status": "built", "base_map": 7,
+                  "count": 0, "next": None, "results": []}
+        respx.route().mock(return_value=httpx.Response(200, json=record))
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            tools = _parse(resp)["result"]["tools"]
+            structured = []
+            for i, tool in enumerate(tools, start=2):
+                resp = await c.post(
+                    "/",
+                    headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                    json=_tools_call(tool["name"], _schema_args(tool["inputSchema"]), id=i),
+                )
+                result = _parse(resp)["result"]
+                if result.get("isError"):
+                    continue  # a refusal is an error string, not a JSON result
+                parsed = json.loads(result["content"][0]["text"])
+                expected = parsed if isinstance(parsed, dict) else {"result": parsed}
+                assert result.get("structuredContent") == expected, tool["name"]
+                structured.append(tool["name"])
+        # Most tools reach a JSON result on this upstream; the catch-all must not hide them.
+        assert len(structured) >= 12, structured
+
+    @respx.mock
+    async def test_structured_content_leaves_the_module_functions_returning_text(self, _server):
+        respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(200, json={"count": 0, "results": []}))
+        assert isinstance(await _server.list_projects(), str)
