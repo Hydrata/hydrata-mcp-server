@@ -1109,6 +1109,8 @@ INPUT_LAYER_DEFAULT_TITLES = {
     "building": "Building 01",
     "mesh_region": "MeshRegion 01",
 }
+# TASK-3586: a pre-rename project's default building row is titled 'Structure 01'.
+LEGACY_DEFAULT_TITLES = {"building": ("Structure 01",)}
 # No REST create path exists for either at HEAD (api_v2.py:3392: "no create
 # path exists today (TASK-3040 AC6)"), and run_anuga does not convey culvert
 # flow — so the tool refuses up front rather than pretending the layer landed.
@@ -1261,9 +1263,11 @@ def _first_resource_id(record) -> int | str | None:
 
 def _pick_default_row(rows: list, kind: str) -> dict:
     """The '<Kind> 01' row if present, else the lowest id — the list has no declared ordering."""
-    for row in rows:
-        if isinstance(row, dict) and row.get("title") == INPUT_LAYER_DEFAULT_TITLES[kind]:
-            return row
+    titles = (INPUT_LAYER_DEFAULT_TITLES[kind], *LEGACY_DEFAULT_TITLES.get(kind, ()))
+    for title in titles:
+        for row in rows:
+            if isinstance(row, dict) and row.get("title") == title:
+                return row
     return min(rows, key=lambda row: row.get("id", 0) if isinstance(row, dict) else 0)
 
 

@@ -1361,6 +1361,34 @@ class TestAttachInputLayerTool:
         assert data["row_id"] == 5
         assert data["row_ids"] == [9, 5, 2]
 
+    @respx.mock
+    async def test_attach_building_picks_a_pre_rename_structure_01_row(self, _server):
+        """TASK-3586: an existing project's default building row is titled
+        'Structure 01'. It is the default row even when a user-added building
+        has a lower id."""
+        respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
+        respx.get(f"{BASE}/projects/42/buildings/").mock(
+            return_value=httpx.Response(200, json=[_row(9, "Structure 01"), _row(3, "Garage")])
+        )
+        patch_route = respx.patch(f"{BASE}/projects/42/buildings/9/").mock(
+            return_value=httpx.Response(200, json=_row(9, "Structure 01", gn_layer=1502))
+        )
+        respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:str"))
+        )
+        _mock_no_wrapper_posts()
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "building", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
+        assert patch_route.called
+        assert data["row_id"] == 9
+
     async def test_attach_input_layer_and_time_series_listed_not_conveyed_no_file_inputs(
         self, _server
     ):
