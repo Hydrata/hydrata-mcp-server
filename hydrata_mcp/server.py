@@ -214,7 +214,8 @@ TOOL_ANNOTATIONS = {
     "presign_terrain_upload": ("Get a terrain upload URL", False, False, False),
     "finalize_terrain_upload": ("Register an uploaded terrain", False, False, False),
     "create_time_series": ("Create a time series", False, False, False),
-    "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, True),
+    # TASK-3641: not idempotent — a culvert attach re-uploads its mapped culverts.
+    "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, False),
     "create_scenario": ("Create a draft scenario", False, False, False),
     "build_scenario": ("Build a scenario's mesh and package", False, False, False),
 }
@@ -1627,8 +1628,12 @@ async def attach_input_layer(
         )
     label = kind.replace("_", " ")
 
+    # ONE budget for every wait of this call (the culvert path polls up to three
+    # times), clamped like _poll_until so the sum stays under prod's proxy cut.
+    budget = max(0, min(int(timeout_seconds), POLL_MAX_TIMEOUT_SECONDS))
+
     def remaining() -> float:
-        return max(0.0, timeout_seconds - (time.monotonic() - started))
+        return max(0.0, budget - (time.monotonic() - started))
 
     async def handed_back(result, summary, say, **params):
         if deprecation:
@@ -1637,7 +1642,7 @@ async def attach_input_layer(
                          panel="inputs", **params)
         return json.dumps(result, indent=2)
 
-    upload = await _await_upload(execution_id, timeout_seconds, poll_interval_seconds)
+    upload = await _await_upload(execution_id, budget, poll_interval_seconds)
     status = upload["execution_status"]
     if upload["timed_out"]:
         return await handed_back(
@@ -1712,6 +1717,7 @@ async def attach_input_layer(
                 result["outcome"] = (
                     "upload_failed" if mapped_upload["execution_status"] == "failed" else "no_dataset"
                 )
+                result.pop("retry_execution_id")  # retrying a failed import cannot help
                 result["execution"] = mapped_upload["execution"]
                 return await handed_back(
                     result, {"execution_status": mapped_upload["execution_status"]},

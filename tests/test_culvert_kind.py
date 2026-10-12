@@ -299,3 +299,28 @@ class TestCulvertKindScenario:
         respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1}))
         await _server.create_scenario(project_id=42, name="s", resolution=10, duration=60)
         assert "culvert" not in json.loads(post.calls[0].request.content)
+
+
+class TestCulvertKindReview:
+    @respx.mock
+    async def test_culvert_kind_failed_reimport_drops_the_retry_execution_id(self, _server):
+        routes = _mock_attach(_fc(RAW_BOX))
+        routes["mapped_status"].return_value = httpx.Response(200, json=_exec("failed", log="boom"))
+        data = await _attach(_server)
+        assert data["outcome"] == "upload_failed" and "retry_execution_id" not in data
+        assert not routes["patch"].called
+
+    @respx.mock
+    async def test_culvert_kind_one_budget_across_every_wait(self, _server, monkeypatch):
+        """A timeout_seconds above the ceiling is clamped ONCE for the whole call:
+        the culvert path's later polls get only what the first left over."""
+        budgets = []
+
+        async def fake_poll(fetch, is_terminal, timeout_seconds, poll_interval_seconds):
+            budgets.append(timeout_seconds)
+            return await fetch(), 1, 0.0, False
+        monkeypatch.setattr(_server, "_poll_until", fake_poll)
+        _mock_attach(_fc(RAW_BOX))
+        await _attach(_server, timeout_seconds=10_000)
+        assert budgets[0] == _server.POLL_MAX_TIMEOUT_SECONDS
+        assert all(b <= _server.POLL_MAX_TIMEOUT_SECONDS for b in budgets) and len(budgets) == 2
