@@ -3,6 +3,7 @@
 import asyncio
 import functools
 import json
+import math
 import re
 import time
 import uuid
@@ -167,7 +168,7 @@ mcp = FastMCP(
         "To author a project from your own files: create_project → "
         "presign_terrain_upload → PUT the GeoTIFF yourself (curl --upload-file) → "
         "finalize_terrain_upload → get_terrain (polls until ready) → for each "
-        "input GeoJSON (boundary, friction, inflow, rainfall, building, mesh_region): "
+        "input GeoJSON (boundary, friction, inflow, rainfall, building, mesh_region, culvert): "
         "multipart-POST it yourself to <origin>/api/v2/uploads/upload/ with the "
         "same credential, then attach_input_layer with the execution_id → "
         "create_time_series for each rain gauge / hydrograph → create_scenario "
@@ -346,7 +347,7 @@ def _elide_presigned(value):
 # create_scenario so the two cannot drift: there is no `list_scenarios` tool
 # among the 17 and no other read path to a scenario record, so a session that
 # did not create the scenario would otherwise be blind to what it is about to
-# build (`resolution`, `duration`, the six input FKs, the terrain) and what it
+# build (`resolution`, `duration`, the input FKs, the terrain) and what it
 # will cost (`compute_cost_estimate`, `vcpu_hours_estimate`) — the inverse of
 # "show your work before build and spend". `inflow_anchor_mismatch` is the
 # record's only pre-build correctness warning (a timeseries inflow starting
@@ -354,7 +355,7 @@ def _elide_presigned(value):
 # MCP path at all.
 SCENARIO_RECORD_KEYS = (
     "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
-    "rainfall", "building", "mesh_region", "resolution", "duration", "computed_status",
+    "rainfall", "building", "mesh_region", "culvert", "resolution", "duration", "computed_status",
     "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
     "latest_run_is_valid", "compute_cost_estimate", "vcpu_hours_estimate",
     "inflow_anchor_mismatch",
@@ -570,7 +571,7 @@ async def get_scenario(
     `error_message`, `user_message`, `status_detail` and `mesh_triangle_count`
     — plus what the scenario IS and what it will cost: `name`, `description`,
     `project`, `resolution`, `duration`, the input row ids (`terrain`,
-    `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`),
+    `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),
     `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
     `inflow_anchor_mismatch` (null unless an inflow series starts after the
     model does, whose first value is then held backwards).
@@ -1088,6 +1089,11 @@ INPUT_LAYER_ROUTES = {
     "rainfall": "rainfalls",
     "building": "buildings",
     "mesh_region": "mesh-regions",
+    # TASK-3641 (epic 3585): Hydraulic Structures. Unlike the six above, the
+    # terrain chain seeds NO culvert row, so attach_input_layer creates the
+    # default 'Culvert 01' on demand (POST, then waits for the layer factory
+    # to finish BEFORE its PATCH, so the factory cannot overwrite gn_layer).
+    "culvert": "culverts",
 }
 # TASK-3586: the building-footprint layer was called 'structure' before the
 # Structure -> Building rename. The tool is an external contract, so the old
@@ -1108,18 +1114,19 @@ INPUT_LAYER_DEFAULT_TITLES = {
     "rainfall": "Rainfall 01",
     "building": "Building 01",
     "mesh_region": "MeshRegion 01",
+    "culvert": "Culvert 01",
 }
 # TASK-3586: a pre-rename project's default building row is titled 'Structure 01'.
 LEGACY_DEFAULT_TITLES = {"building": ("Structure 01",)}
-# No REST create path exists for either at HEAD (api_v2.py:3392: "no create
-# path exists today (TASK-3040 AC6)"), and run_anuga does not convey culvert
-# flow — so the tool refuses up front rather than pretending the layer landed.
-UNSUPPORTED_INPUT_LAYER_KINDS = frozenset({"breakline", "culvert"})
+# No REST create path exists for breaklines at HEAD (api_v2.py:3392: "no
+# create path exists today (TASK-3040 AC6)"), so the tool refuses up front
+# rather than pretending the layer landed. Culverts left this set in TASK-3641
+# (epic 3585 W2b): the culvert route, Scenario.culvert and the package key exist.
+UNSUPPORTED_INPUT_LAYER_KINDS = frozenset({"breakline"})
 UNSUPPORTED_INPUT_LAYER_REASON = (
-    "no REST create path exists for breaklines or culverts at HEAD (TASK-3040 AC6 "
-    "retired the UI surface; the models + Scenario FKs stay dormant), and culvert "
-    "flow is not conveyed by run_anuga — attaching one would only pretend the "
-    "layer landed"
+    "no REST create path exists for breaklines at HEAD (TASK-3040 AC6 "
+    "retired the UI surface; the model + Scenario FK stay dormant) — attaching "
+    "one would only pretend the layer landed"
 )
 # GeoNode ExecutionRequest statuses (geonode/resource/models.py:29-32).
 EXECUTION_TERMINAL_STATUSES = frozenset({"finished", "failed"})
@@ -1272,6 +1279,240 @@ def _pick_default_row(rows: list, kind: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# TASK-3641 (W2b, epic 3585) — culvert attribute mapping.
+#
+# The build reads each culvert's details from the layer's columns BY THEIR D10
+# NAMES (hydrata gn_anuga/models/culvert.py CULVERT_FIELDS) and refuses a
+# culvert missing any it needs; the true-scale style draws barrels from them.
+# An agent's GeoJSON rarely uses those names (the Towradgi bundle says
+# `shape: pipe`, `anuga_label`, `barrel_manning`), and attach_input_layer
+# never sees the file. So for kind=culvert the tool reads the uploaded
+# features back over WFS, renames recognised attributes onto the D10 fields,
+# fills the D10 defaults (the map's WFS-T inserts send explicit NULLs, so the
+# layer must carry them, not a column DEFAULT), keeps every other attribute
+# verbatim, and re-uploads that as the culvert layer. A layer that already
+# reads as D10 with defaults filled is attached as uploaded.
+# ---------------------------------------------------------------------------
+CULVERT_FIELDS = (
+    "name", "shape", "width_m", "height_m", "diameter_m",
+    "upstream_invert_m", "downstream_invert_m", "barrels", "wall_thickness_m",
+    "entrance_type", "material", "manning_n", "blockage_pct",
+    "length_override_m", "description",
+)
+CULVERT_NUMBER_FIELDS = (
+    "width_m", "height_m", "diameter_m", "upstream_invert_m", "downstream_invert_m",
+    "wall_thickness_m", "manning_n", "blockage_pct", "length_override_m",
+)
+# Mirrors CULVERT_FEATURE_DEFAULTS + MATERIAL_MANNING_N (hydrata culvert.py).
+CULVERT_DEFAULTS = {
+    "barrels": 1,
+    "wall_thickness_m": 0.20,
+    "entrance_type": "square_edge_headwall",
+    "material": "concrete",
+    "blockage_pct": 0.0,
+}
+CULVERT_MATERIAL_MANNING_N = {"concrete": 0.013, "corrugated_metal": 0.024}
+CULVERT_MAX_BARRELS = 20
+# Other attribute names (matched case-insensitively) taken for each D10 field,
+# in priority order. The D10 name itself always wins when it carries a value.
+CULVERT_ATTRIBUTE_ALIASES = {
+    "name": ("label", "anuga_label", "culvert_name", "structure_name"),
+    "shape": ("culvert_shape", "section", "section_shape", "cross_section"),
+    "width_m": ("width", "span", "span_m", "box_width"),
+    "height_m": ("height", "rise", "rise_m", "box_height"),
+    "diameter_m": ("diameter", "dia", "diam", "pipe_diameter"),
+    "upstream_invert_m": ("upstream_invert", "us_invert", "us_invert_m", "inlet_invert",
+                          "inlet_invert_m", "invert_us", "invert_upstream"),
+    "downstream_invert_m": ("downstream_invert", "ds_invert", "ds_invert_m", "outlet_invert",
+                            "outlet_invert_m", "invert_ds", "invert_downstream"),
+    "barrels": ("barrel_count", "num_barrels", "n_barrels", "number_of_barrels", "no_barrels", "cells"),
+    "wall_thickness_m": ("wall_thickness", "wall_m"),
+    "entrance_type": ("entrance", "inlet_type", "entrance_loss_type"),
+    "material": ("culvert_material", "barrel_material"),
+    "manning_n": ("manning", "mannings_n", "manning_s_n", "barrel_manning", "roughness"),
+    "blockage_pct": ("blockage", "blockage_percent", "blocked_pct", "blockage_percentage"),
+    "length_override_m": ("length", "length_m", "barrel_length", "culvert_length"),
+    "description": ("desc", "notes", "comment", "comments"),
+}
+CULVERT_SHAPE_ALIASES = {
+    "box": "box", "rectangular": "box", "rectangle": "box", "rect": "box", "rcbc": "box",
+    "circular": "circular", "circle": "circular", "pipe": "circular", "round": "circular",
+    "circ": "circular", "rcp": "circular",
+}
+CULVERT_MATERIAL_ALIASES = {
+    "concrete": "concrete", "rc": "concrete", "rcp": "concrete", "rcbc": "concrete",
+    "reinforced_concrete": "concrete",
+    "corrugated_metal": "corrugated_metal", "cmp": "corrugated_metal",
+    "corrugated_steel": "corrugated_metal", "corrugated_metal_pipe": "corrugated_metal",
+}
+# The importer's primary-key column; never a culvert attribute.
+CULVERT_SKIPPED_ATTRIBUTES = frozenset({"fid", "ogc_fid"})
+# The most culverts one attach reads back (WFS maxFeatures is this + 1).
+CULVERT_MAX_FEATURES = 2000
+CULVERT_UPLOAD_PATH = "/api/v2/uploads/upload/"
+
+
+def _culvert_number(value):
+    """A finite float for a numeric-looking value; anything else unchanged."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    return number if math.isfinite(number) else value
+
+
+def _culvert_slug(value):
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _map_culvert_properties(properties: dict) -> tuple[dict, dict, list]:
+    """One feature's attributes renamed onto the D10 fields, with defaults filled.
+
+    Returns (properties, renamed {source attribute: D10 field}, filled [D10
+    fields given a default]). Unrecognised attributes are kept verbatim; an
+    alias whose D10 field already had a value is dropped (the D10 name wins).
+    """
+    source = {key: value for key, value in (properties or {}).items()
+              if key.lower() not in CULVERT_SKIPPED_ATTRIBUTES}
+    by_lower = {key.strip().lower(): key for key in source}
+    out: dict = {}
+    renamed: dict = {}
+    consumed = set()
+    for field in CULVERT_FIELDS:
+        value = None
+        for candidate in (field, *CULVERT_ATTRIBUTE_ALIASES[field]):
+            key = by_lower.get(candidate)
+            if key is None:
+                continue
+            consumed.add(key)
+            if (value is None or value == "") and source[key] not in (None, ""):
+                value = source[key]
+                if key != field:
+                    renamed[key] = field
+        out[field] = value
+    for field in CULVERT_NUMBER_FIELDS:
+        out[field] = _culvert_number(out[field])
+    barrels = _culvert_number(out["barrels"])
+    if isinstance(barrels, float) and barrels.is_integer():
+        barrels = int(barrels)
+    out["barrels"] = barrels
+    if isinstance(out["shape"], str) and out["shape"].strip():
+        out["shape"] = CULVERT_SHAPE_ALIASES.get(_culvert_slug(out["shape"]), out["shape"])
+    if isinstance(out["material"], str) and out["material"].strip():
+        out["material"] = CULVERT_MATERIAL_ALIASES.get(_culvert_slug(out["material"]), out["material"])
+    filled = []
+    for field, default in CULVERT_DEFAULTS.items():
+        if out[field] is None or out[field] == "":
+            out[field] = default
+            filled.append(field)
+    if out["manning_n"] is None and out["material"] in CULVERT_MATERIAL_MANNING_N:
+        out["manning_n"] = CULVERT_MATERIAL_MANNING_N[out["material"]]
+        filled.append("manning_n")
+    extras = {key: value for key, value in source.items() if key not in consumed}
+    return {**out, **extras}, renamed, filled
+
+
+def _culvert_vertex_count(geometry) -> int | None:
+    """Vertices of a LineString (or a single-part MultiLineString, as the importer stores it)."""
+    if not isinstance(geometry, dict):
+        return None
+    coordinates = geometry.get("coordinates")
+    if geometry.get("type") == "MultiLineString" and isinstance(coordinates, list) and len(coordinates) == 1:
+        coordinates = coordinates[0]
+    elif geometry.get("type") != "LineString":
+        return None
+    return len(coordinates) if isinstance(coordinates, list) else None
+
+
+def _culvert_problems(index: int, properties: dict, geometry) -> list:
+    """What the build will refuse about one mapped culvert (advisory; the build decides)."""
+    label = f"Culvert '{properties['name']}'" if properties.get("name") else f"Culvert #{index + 1}"
+    problems = []
+    if _culvert_vertex_count(geometry) != 2:
+        problems.append("must be a straight line of exactly two points (Inlet, then Outlet)")
+    shape = properties.get("shape")
+    if shape not in ("box", "circular"):
+        problems.append(f"shape must be 'box' or 'circular' (got {shape!r})")
+    else:
+        sizes = ("width_m", "height_m") if shape == "box" else ("diameter_m",)
+        for key in sizes:
+            value = properties.get(key)
+            if not isinstance(value, float) or value <= 0:
+                problems.append(f"{key} must be a positive number for a {shape} culvert")
+    for key in ("upstream_invert_m", "downstream_invert_m"):
+        if not isinstance(properties.get(key), float):
+            problems.append(f"{key} is required")
+    barrels = properties.get("barrels")
+    if not isinstance(barrels, int) or isinstance(barrels, bool) or not 1 <= barrels <= CULVERT_MAX_BARRELS:
+        problems.append(f"barrels must be a whole number from 1 to {CULVERT_MAX_BARRELS}")
+    blockage = properties.get("blockage_pct")
+    if not isinstance(blockage, float) or not 0 <= blockage < 100:
+        problems.append("blockage_pct must be from 0 to below 100")
+    return [f"{label}: " + "; ".join(problems)] if problems else []
+
+
+def _comparable(properties: dict) -> dict:
+    """Attributes as the rewrite check compares them: no nulls (a WFS read may omit
+    or include a null column alike) and no importer key (GeoServer's JSON carries
+    the `fid` primary key as a property)."""
+    return {key: value for key, value in properties.items()
+            if value is not None and key.lower() not in CULVERT_SKIPPED_ATTRIBUTES}
+
+
+def _map_culvert_collection(collection) -> tuple[dict, dict]:
+    """The uploaded culverts mapped onto D10, plus a report.
+
+    report = {feature_count, renamed (source -> D10, union), filled (D10 field ->
+    how many culverts took the default), problems [...], rewrite (True when any
+    feature changed, i.e. the upload is not already a D10 culvert layer)}.
+    """
+    features = (collection or {}).get("features") or []
+    mapped, renamed, filled, problems, rewrite = [], {}, {}, [], False
+    for index, feature in enumerate(features):
+        original = (feature or {}).get("properties") or {}
+        properties, feature_renamed, feature_filled = _map_culvert_properties(original)
+        renamed.update(feature_renamed)
+        for field in feature_filled:
+            filled[field] = filled.get(field, 0) + 1
+        problems.extend(_culvert_problems(index, properties, feature.get("geometry")))
+        rewrite = rewrite or _comparable(properties) != _comparable(original)
+        mapped.append({"type": "Feature", "geometry": feature.get("geometry"), "properties": properties})
+    out = {"type": "FeatureCollection", "features": mapped}
+    if (collection or {}).get("crs"):
+        out["crs"] = collection["crs"]
+    report = {"feature_count": len(mapped), "renamed": renamed, "filled": filled,
+              "problems": problems, "rewrite": rewrite}
+    return out, report
+
+
+async def _read_culvert_features(alternate) -> dict:
+    """The uploaded layer's features as GeoJSON, in its native CRS (WFS 1.0.0: x/y order)."""
+    try:
+        collection = await client.get_from_origin("/gs/ows", params={
+            "service": "WFS", "version": "1.0.0", "request": "GetFeature",
+            "typeName": alternate, "outputFormat": "application/json",
+            "maxFeatures": CULVERT_MAX_FEATURES + 1,
+        })
+    except (HydrataAPIError, ValueError) as exc:
+        raise ToolError(
+            f"could not read the uploaded culverts back from {alternate} over WFS ({exc}); "
+            "nothing was attached — call again with the same arguments"
+        )
+    if not isinstance(collection, dict) or not isinstance(collection.get("features"), list):
+        raise ToolError(f"the WFS read of {alternate} returned no feature collection; nothing was attached")
+    if len(collection["features"]) > CULVERT_MAX_FEATURES:
+        raise ToolError(
+            f"{alternate} holds more than {CULVERT_MAX_FEATURES} culverts; split the file — "
+            "nothing was attached"
+        )
+    return collection
+
+
+# ---------------------------------------------------------------------------
 # Tool 15: attach_input_layer
 # ---------------------------------------------------------------------------
 @_tool("attach_input_layer")
@@ -1280,8 +1521,8 @@ async def attach_input_layer(
     kind: Annotated[
         str,
         "Which input the uploaded layer is: boundary, friction, inflow, rainfall, "
-        "building or mesh_region ('structure' is a deprecated alias of building). "
-        "breakline and culvert are refused (see below).",
+        "building, mesh_region or culvert ('structure' is a deprecated alias of "
+        "building). breakline is refused (see below).",
     ],
     execution_id: Annotated[
         str,
@@ -1295,7 +1536,7 @@ async def attach_input_layer(
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
-    """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building or mesh_region layer.
+    """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building, mesh_region or culvert layer.
 
     The agent moves the bytes: first upload the GeoJSON yourself, with the
     same credential, to GeoNode's upload endpoint at the site origin:
@@ -1310,30 +1551,51 @@ async def attach_input_layer(
     seeds ~30 s after get_terrain reports ready; if the list is still empty
     the tool says so: run finalize_terrain_upload / wait for get_terrain first).
 
+    kind `culvert` (Hydraulic Structures; one two-point line per culvert,
+    Inlet first, then Outlet): no culvert row is seeded, so the tool creates
+    'Culvert 01' when the project has none and waits for its layer. It reads
+    your culverts back and maps your attribute names onto the culvert fields
+    — name, shape (box|circular), width_m, height_m, diameter_m,
+    upstream_invert_m, downstream_invert_m, barrels (1-20), wall_thickness_m,
+    entrance_type, material (concrete|corrugated_metal), manning_n,
+    blockage_pct (Reduced-area blockage, percent), length_override_m,
+    description — accepting common alternatives (width, diameter, label,
+    us_invert, ds_invert, num_barrels, manning, blockage, length, shape
+    'pipe' = circular, …) and filling the defaults (barrels 1, wall 0.20 m,
+    square_edge_headwall, concrete, manning_n from the material, blockage
+    0). Other attributes are kept. If anything changed it re-uploads the
+    mapped culverts and attaches THAT layer (`mapped`: renamed, filled,
+    source_dataset_pk). `culvert_problems` lists what the build will still
+    refuse (typically missing inverts) — the user fixes those in the map.
+    Until the culvert engine ships (epic 3585 W3), culvert flow is
+    not conveyed: a run lists the culverts but no water passes through them.
+
     `outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk,
     dataset_alternate — the WFS typename — and every row id seen);
-    `timed_out` (the import is still running: call again with the same
-    arguments); `upload_failed` (the execution record, incl. its log, is
-    returned verbatim — fix the file and upload again); `no_default_row`;
-    `no_dataset` (finished but no resource was recorded). The PATCH is
-    refused with a 400 if the dataset is not owned by you.
+    `timed_out` (still importing or still creating the culvert layer: call
+    again with the same arguments, except pass `retry_execution_id` as
+    execution_id when the result carries one); `upload_failed` (the
+    execution record, incl. its log, is returned verbatim — fix the file and
+    upload again); `no_default_row`; `no_dataset` (finished but no resource
+    was recorded). The PATCH is refused with a 400 if the dataset is not
+    owned by you.
 
-    Refused, with no request made: kind `breakline` and kind `culvert` — no
-    REST create path exists for either at HEAD (TASK-3040 AC6), and culvert
-    flow is not conveyed by run_anuga, so attaching one would only pretend.
-    Also refused without a request: an execution_id that is not the UUID the
-    upload returned.
+    Refused, with no request made: kind `breakline` — no REST create path
+    exists for it at HEAD (TASK-3040 AC6), so attaching one would only
+    pretend. Also refused without a request: an execution_id that is not the
+    UUID the upload returned.
     One GeoJSON per kind: all of a kind's features travel in that one file. A
     rainfall polygon names its gauge in its `data` property — create that
     gauge with create_time_series under the exact same name.
     """
+    started = time.monotonic()
     kind = kind.strip().lower().replace("-", "_")
     deprecation = None
     if kind in LEGACY_INPUT_LAYER_KINDS:
         kind, deprecation = LEGACY_INPUT_LAYER_KINDS[kind], LEGACY_KIND_DEPRECATION
     if kind in UNSUPPORTED_INPUT_LAYER_KINDS:
         # TASK-3203 (RE-REVIEW AC2) — the link, but NOT "draw it in the map": the
-        # map has no breakline/culvert tool either (TASK-3040 AC6 retired it).
+        # map has no breakline tool either (TASK-3040 AC6 retired it).
         # One read-only GET for the base map; no write is attempted.
         try:
             link = _ui_url(await _project_base_map(project_id), panel="inputs")
@@ -1348,7 +1610,7 @@ async def attach_input_layer(
     if kind not in INPUT_LAYER_ROUTES:
         raise ToolError(
             f"kind {kind!r} is not one of {', '.join(INPUT_LAYER_ROUTES)} "
-            "(breakline and culvert are refused: no REST create path at HEAD, TASK-3040 AC6)"
+            "(breakline is refused: no REST create path at HEAD, TASK-3040 AC6)"
         )
     route = INPUT_LAYER_ROUTES[kind]
     # The one free-form path segment a tool interpolates into a URL — and on
@@ -1363,18 +1625,10 @@ async def attach_input_layer(
             f"execution_id {execution_id!r} is not a UUID — pass the `execution_id` "
             "your upload POST to /api/v2/uploads/upload/ returned, verbatim"
         )
-    # GeoNode's route, at the ORIGIN, with NO trailing slash
-    # (geonode/resource/api/urls.py:26) — 404 with one.
-    status_path = f"/api/v2/resource-service/execution-status/{execution_id}"
-
-    execution, polls, elapsed, timed_out = await _poll_until(
-        lambda: client.get_from_origin(status_path),
-        lambda record: _status_of(record) in EXECUTION_TERMINAL_STATUSES,
-        timeout_seconds,
-        poll_interval_seconds,
-    )
-    status = _status_of(execution)
     label = kind.replace("_", " ")
+
+    def remaining() -> float:
+        return max(0.0, timeout_seconds - (time.monotonic() - started))
 
     async def handed_back(result, summary, say, **params):
         if deprecation:
@@ -1383,14 +1637,16 @@ async def attach_input_layer(
                          panel="inputs", **params)
         return json.dumps(result, indent=2)
 
-    if timed_out:
+    upload = await _await_upload(execution_id, timeout_seconds, poll_interval_seconds)
+    status = upload["execution_status"]
+    if upload["timed_out"]:
         return await handed_back(
             {
                 "outcome": "timed_out",
                 "kind": kind,
                 "execution_status": status,
-                "polls": polls,
-                "elapsed_seconds": elapsed,
+                "polls": upload["polls"],
+                "elapsed_seconds": upload["elapsed_seconds"],
             },
             {"execution_status": status},
             f"The {label} upload is still importing; I am still waiting on it.",
@@ -1401,35 +1657,75 @@ async def attach_input_layer(
         "kind": kind,
         "route": route,
         "execution_status": status,
-        "polls": polls,
-        "elapsed_seconds": elapsed,
+        "polls": upload["polls"],
+        "elapsed_seconds": upload["elapsed_seconds"],
     }
     if status == "failed":
         result["outcome"] = "upload_failed"
-        result["execution"] = execution  # verbatim: the log names the import error
+        result["execution"] = upload["execution"]  # verbatim: the log names the import error
         return await handed_back(
             result, {"execution_status": status},
             f"The {label} file failed to import; it needs fixing before it can be attached.",
         )
 
-    dataset_pk = _first_resource_id(execution)
-    if dataset_pk is None:
-        # The e2e recipe's fallback (test_anuga_merewether.py:296-320): the
-        # detail route carries the same output_params under `request`.
-        detail = await client.get_from_origin(f"/api/v2/executionrequest/{execution_id}/")
-        dataset_pk = _first_resource_id(detail.get("request") if isinstance(detail, dict) else None)
+    dataset_pk = upload["dataset_pk"]
     result["dataset_pk"] = dataset_pk
     if dataset_pk is None:
         result["outcome"] = "no_dataset"
-        result["execution"] = execution
+        result["execution"] = upload["execution"]
         return await handed_back(
             result, {"execution_status": status},
             f"The {label} upload finished but produced no layer, so nothing was attached.",
         )
 
+    culvert_report = None
+    if kind == "culvert":
+        # TASK-3641 — read back, map onto D10, re-upload when anything changed.
+        source_alternate = await _dataset_alternate(dataset_pk)
+        if not source_alternate:
+            raise ToolError(f"dataset {dataset_pk} has no layer name to read the culverts from; nothing was attached")
+        collection, culvert_report = _map_culvert_collection(await _read_culvert_features(source_alternate))
+        rewrite = culvert_report.pop("rewrite")
+        result["culvert_problems"] = culvert_report.pop("problems")
+        result["mapped"] = dict(culvert_report, source_dataset_pk=dataset_pk, reuploaded=rewrite)
+        if rewrite:
+            body, _status_code = await client.post_file_to_origin(
+                CULVERT_UPLOAD_PATH, "base_file", f"cul_{project_id}_culverts.geojson",
+                json.dumps(collection).encode("utf-8"), "application/geo+json",
+            )
+            mapped_execution_id = body.get("execution_id") if isinstance(body, dict) else None
+            if not mapped_execution_id:
+                raise ToolError(
+                    f"the mapped culvert re-upload returned no execution_id ({body!r}); nothing was attached"
+                )
+            result["retry_execution_id"] = str(mapped_execution_id)
+            mapped_upload = await _await_upload(str(mapped_execution_id), remaining(), poll_interval_seconds)
+            result["execution_status"] = mapped_upload["execution_status"]
+            if mapped_upload["timed_out"]:
+                result["outcome"] = "timed_out"
+                return await handed_back(
+                    result, {"execution_status": mapped_upload["execution_status"]},
+                    "The culverts were mapped onto the culvert fields and are re-importing; "
+                    "I am still waiting on it.",
+                )
+            if mapped_upload["execution_status"] == "failed" or mapped_upload["dataset_pk"] is None:
+                result["outcome"] = (
+                    "upload_failed" if mapped_upload["execution_status"] == "failed" else "no_dataset"
+                )
+                result["execution"] = mapped_upload["execution"]
+                return await handed_back(
+                    result, {"execution_status": mapped_upload["execution_status"]},
+                    "The mapped culverts failed to re-import, so nothing was attached.",
+                )
+            dataset_pk = mapped_upload["dataset_pk"]
+            result["dataset_pk"] = dataset_pk
+
     listing = await client.get(f"/projects/{project_id}/{route}/")
-    # A PLAIN JSON list on the six input routes (no count/results wrapper).
+    # A PLAIN JSON list on the input routes (no count/results wrapper).
     rows = listing if isinstance(listing, list) else listing.get("results", [])
+    if not rows and kind == "culvert":
+        rows = [await _create_default_culvert_row(project_id)]
+        result["created_row"] = True
     result["row_ids"] = [row.get("id") for row in rows if isinstance(row, dict)]
     if not rows:
         result["outcome"] = "no_default_row"
@@ -1444,9 +1740,26 @@ async def attach_input_layer(
         )
 
     row = _pick_default_row(rows, kind)
+    if kind == "culvert" and row.get("gn_layer") is None:
+        # The layer factory (queued by the POST) re-saves gn_layer when it
+        # finishes; a PATCH before then would be silently overwritten.
+        row, _polls, _elapsed, factory_timed_out = await _poll_until(
+            lambda: client.get(f"/projects/{project_id}/{route}/{row['id']}/"),
+            lambda record: isinstance(record, dict) and record.get("gn_layer") is not None,
+            remaining(),
+            poll_interval_seconds,
+        )
+        if factory_timed_out:
+            result["outcome"] = "timed_out"
+            result["row_id"] = row.get("id") if isinstance(row, dict) else None
+            return await handed_back(
+                result, {"row_id": result["row_id"]},
+                "The project's culvert layer is still being created; I am still waiting on it.",
+            )
     body, status_code = await client.patch(
         f"/projects/{project_id}/{route}/{row['id']}/", json={"gn_layer": dataset_pk}
     )
+    result.pop("retry_execution_id", None)
     result.update(
         {
             "outcome": "attached",
@@ -1459,8 +1772,7 @@ async def attach_input_layer(
     # The WFS typename, so the agent can count features without a GeoNode
     # tool of its own. Best effort: the attach already happened.
     try:
-        detail = await client.get_from_origin(f"/api/v2/datasets/{dataset_pk}/")
-        result["dataset_alternate"] = (detail.get("dataset") or {}).get("alternate")
+        result["dataset_alternate"] = await _dataset_alternate(dataset_pk)
     except HydrataAPIError as exc:
         result["dataset_alternate"] = None
         result["dataset_lookup_error"] = str(exc)
@@ -1477,12 +1789,65 @@ async def attach_input_layer(
         f"feature(s)). Open the link and confirm it is the right {label}, in the right "
         "place; sign it off there."
     )
+    if culvert_report is not None:
+        summary["culvert_problems"] = len(result["culvert_problems"])
+        if result["culvert_problems"]:
+            say += (
+                f" {len(result['culvert_problems'])} culvert(s) still need details filled in "
+                "before a run can use them (e.g. the invert levels): open the link and complete "
+                "them in the map."
+            )
     if summary["map_updated"] is False:
         say += (
             f" WARNING: the project map does not show the new layer yet — the scenario will "
             f"use it, but the map still shows the old {label}."
         )
     return await handed_back(result, summary, say, layer=alternate)
+
+
+async def _await_upload(execution_id: str, timeout_seconds, poll_interval_seconds) -> dict:
+    """Poll a GeoNode upload to finished|failed (bounded) and resolve its dataset pk.
+
+    Returns {execution, execution_status, polls, elapsed_seconds, timed_out,
+    dataset_pk}; dataset_pk is None unless the import finished with a resource.
+    """
+    # GeoNode's route, at the ORIGIN, with NO trailing slash
+    # (geonode/resource/api/urls.py:26) — 404 with one.
+    status_path = f"/api/v2/resource-service/execution-status/{execution_id}"
+    execution, polls, elapsed, timed_out = await _poll_until(
+        lambda: client.get_from_origin(status_path),
+        lambda record: _status_of(record) in EXECUTION_TERMINAL_STATUSES,
+        timeout_seconds,
+        poll_interval_seconds,
+    )
+    status = _status_of(execution)
+    dataset_pk = None
+    if not timed_out and status != "failed":
+        dataset_pk = _first_resource_id(execution)
+        if dataset_pk is None:
+            # The e2e recipe's fallback (test_anuga_merewether.py:296-320): the
+            # detail route carries the same output_params under `request`.
+            detail = await client.get_from_origin(f"/api/v2/executionrequest/{execution_id}/")
+            dataset_pk = _first_resource_id(detail.get("request") if isinstance(detail, dict) else None)
+    return {"execution": execution, "execution_status": status, "polls": polls,
+            "elapsed_seconds": elapsed, "timed_out": timed_out, "dataset_pk": dataset_pk}
+
+
+async def _dataset_alternate(dataset_pk):
+    """A GeoNode dataset's `alternate` (its WFS typename), or None."""
+    detail = await client.get_from_origin(f"/api/v2/datasets/{dataset_pk}/")
+    return (detail.get("dataset") or {}).get("alternate") if isinstance(detail, dict) else None
+
+
+async def _create_default_culvert_row(project_id) -> dict:
+    """POST the default 'Culvert 01' row (TASK-3641); its layer is made asynchronously."""
+    body, _status_code = await client.post(
+        f"/projects/{project_id}/{INPUT_LAYER_ROUTES['culvert']}/",
+        json={"title": INPUT_LAYER_DEFAULT_TITLES["culvert"]},
+    )
+    if not isinstance(body, dict) or body.get("id") is None:
+        raise ToolError(f"creating the project's 'Culvert 01' layer returned no row ({body!r})")
+    return body
 
 
 async def _map_carries_layer(project_id, alternate) -> bool | None:
@@ -1533,10 +1898,10 @@ async def list_inputs(
 ) -> str:
     """List every input layer row of a project, per kind, with whether it has features.
 
-    For each of boundary, friction, inflow, rainfall, building and mesh_region:
+    For each of boundary, friction, inflow, rainfall, building, mesh_region and culvert:
     the rows (`row_id`, `title`, `gn_layer` — the dataset pk — and
     `dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.
-    `has_features` comes from the API for boundary, rainfall and mesh_region;
+    `has_features` comes from the API for boundary, rainfall, mesh_region and culvert;
     for friction, inflow and building (whose records do not carry it) it is a
     WFS feature count, at most 24 lookups per call — past that, or when a
     lookup fails, it is null (unknown, not false). A row with no `gn_layer`
@@ -1812,6 +2177,11 @@ async def create_scenario(
         "MeshRegion row id (optional): finer meshing inside its polygons, each "
         "feature's `resolution` a LENGTH in metres (see the units note).",
     ] = None,
+    culvert: Annotated[
+        int | None,
+        "Culvert row id (optional; attach_input_layer kind=culvert → row_id). The build "
+        "refuses a culvert missing its shape, size or invert levels.",
+    ] = None,
     description: Annotated[str, "Free-text description (optional)"] = "",
     structure: Annotated[
         int | None,
@@ -1860,6 +2230,8 @@ async def create_scenario(
         "building": building if building is not None else structure,
         "mesh_region": mesh_region,
     }
+    if culvert is not None:
+        payload["culvert"] = culvert  # TASK-3641: sent only when given (older APIs lack the field)
     body, status_code = await client.post(f"/projects/{project_id}/scenarios/", json=payload)
     scenario_id = body.get("id") if isinstance(body, dict) else None
     if scenario_id is None:
