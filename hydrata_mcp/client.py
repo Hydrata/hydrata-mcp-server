@@ -224,6 +224,22 @@ class HydrataClient:
         )
         return self._body(resp), resp.status_code
 
+    async def post_file_to_origin(
+        self, path: str, field: str, filename: str, content: bytes, content_type: str
+    ) -> tuple[Any, int]:
+        """Multipart POST of ONE file to a path at the API's ORIGIN; (body, status).
+
+        TASK-3641 (epic 3585) — attach_input_layer kind=culvert re-uploads the
+        culverts it read back from the agent's own upload, renamed onto the D10
+        fields, to GeoNode's /api/v2/uploads/upload/ (the same route and the
+        same forwarded credential the agent used). The bytes are ones the
+        server already holds, never agent-supplied file contents.
+        """
+        resp = await self._send(
+            "POST", f"{self._origin}{path}", path, files={field: (filename, content, content_type)}
+        )
+        return self._body(resp), resp.status_code
+
     async def patch(self, path: str, json: dict | None = None) -> tuple[Any, int]:
         """PATCH request (partial update). Returns (body, status_code) like post().
 
