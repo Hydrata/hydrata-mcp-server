@@ -194,10 +194,13 @@ MCP_HEADERS = {
     "Accept": "application/json, text/event-stream",  # 406 without both
     "Content-Type": "application/json",
 }
-# foo:bar — deliberately NOT the env_vars credential (testuser:testpass). httpx
-# lets a constructor-level BasicAuth overwrite a per-request Authorization
-# header, so a build that still holds a server-side credential could pass the
-# verbatim-forward case by coincidence if the test used the same value.
+# TASK-3508 (W2a, epic 3200, D25): the caller's credential is an hk_ agent key,
+# verified by Django; the MCP server forwards it verbatim and never parses it.
+CALLER_KEY = "Bearer hk_0123456789ab_c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA"
+# foo:bar — a password caller, deprecated on /mcp/ (still forwarded verbatim
+# until the sunset). Deliberately NOT the env_vars credential: httpx lets a
+# constructor-level BasicAuth overwrite a per-request Authorization header, so a
+# build that still held a server-side credential could pass by coincidence.
 CALLER_BASIC = "Basic Zm9vOmJhcg=="
 UPSTREAM_OK = {"count": 0, "results": []}
 
@@ -234,19 +237,22 @@ class TestPassthrough:
     """The MCP server holds no identity of its own: it forwards the caller's."""
 
     @respx.mock
-    async def test_anon_tools_call_401_with_basic_challenge(self, _server):
+    async def test_anon_tools_call_401_with_agent_key_challenge(self, _server):
         upstream = respx.get(f"{BASE}/projects/").mock(
             return_value=httpx.Response(200, json=UPSTREAM_OK)
         )
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=MCP_HEADERS, json=_tools_call(id=7))
         assert resp.status_code == 401
-        assert resp.headers["www-authenticate"] == 'Basic realm="hydrata.com"'
+        assert resp.headers["www-authenticate"] == 'Bearer realm="hydrata.com"'
         body = resp.json()
         assert body["jsonrpc"] == "2.0"
         assert body["id"] == 7
         assert body["error"]["code"] == -32001
-        assert "Basic" in body["error"]["message"]
+        # TASK-3508: points to agent keys, never asks for a password.
+        assert "Authorization: Bearer hk_" in body["error"]["message"]
+        assert "/agents/" in body["error"]["message"]
+        assert "password" not in body["error"]["message"].lower()
         # Short-circuited in the middleware: nothing reached the upstream API.
         assert not upstream.calls
 
@@ -277,7 +283,7 @@ class TestPassthrough:
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=MCP_HEADERS, json=batch)
         assert resp.status_code == 401
-        assert resp.headers["www-authenticate"] == 'Basic realm="hydrata.com"'
+        assert resp.headers["www-authenticate"] == 'Bearer realm="hydrata.com"'
         assert resp.json()["id"] == 2
 
     @respx.mock
@@ -288,11 +294,11 @@ class TestPassthrough:
         async with _asgi_client(_server) as c:
             resp = await c.post(
                 "/",
-                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
                 json=_tools_call(),
             )
         assert resp.status_code == 200
-        assert upstream.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert upstream.calls[0].request.headers["authorization"] == CALLER_KEY
         # The replayed body reached fastmcp intact: the tool ran and returned the upstream JSON.
         payload = _parse(resp)
         assert json.loads(payload["result"]["content"][0]["text"])["count"] == 3
@@ -319,7 +325,7 @@ class TestPassthrough:
         async with _asgi_client(_server) as c:
             resp = await c.post(
                 "/",
-                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
                 json=_tools_call("probe_bare"),
             )
         assert resp.status_code == 200
@@ -347,7 +353,7 @@ class TestPassthrough:
         async with _asgi_client(_server) as c:
             resp = await c.post(
                 "/",
-                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
                 json=_tools_call(),
             )
         assert resp.status_code == 200
@@ -362,7 +368,7 @@ class TestPassthrough:
         async with _asgi_client(_server) as c:
             resp = await c.post(
                 "/",
-                headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
                 json=_tools_call(),
             )
         assert resp.status_code == 200
@@ -433,7 +439,7 @@ class TestCliEntry:
 #
 # create_project / presign_terrain_upload / finalize_terrain_upload / get_terrain
 # wrap the existing V2 REST API. Every case drives the tool through the REAL
-# ASGI app with CALLER_BASIC (see _asgi_client above) and asserts the caller's
+# ASGI app with CALLER_KEY (see _asgi_client above) and asserts the caller's
 # Authorization header reached the upstream mock — the pass-through is the
 # whole point of the internal-first design. Request BODIES are asserted too:
 # the REST contract (api_v2.py upload_presign :1651 / upload_finalize :1756,
@@ -448,11 +454,11 @@ PROCESS_ID = "9a1b2c3d-4444-4555-8666-777788889999"
 
 
 async def _call_as_caller(srv, name, arguments):
-    """Drive `name` through the ASGI app as CALLER_BASIC; return the JSON-RPC result."""
+    """Drive `name` through the ASGI app as CALLER_KEY; return the JSON-RPC result."""
     async with _asgi_client(srv) as c:
         resp = await c.post(
             "/",
-            headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+            headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
             json=_tools_call(name, arguments),
         )
     assert resp.status_code == 200, resp.text
@@ -494,7 +500,7 @@ class TestCreateProjectTool:
         result = await _call_as_caller(
             _server, "create_project", {"name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
         )
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         # Exactly the two writable fields of ProjectCreateSerializerV2.
         assert json.loads(route.calls[0].request.content) == {
             "name": "mcp-w1-2469-t",
@@ -527,7 +533,7 @@ class TestPresignTerrainUploadTool:
             "presign_terrain_upload",
             {"project_id": 42, "filename": DEM_NAME, "content_type": "image/tiff", "size": DEM_SIZE},
         )
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert json.loads(route.calls[0].request.content) == {
             "filename": DEM_NAME,
             "content_type": "image/tiff",
@@ -552,7 +558,7 @@ class TestPresignTerrainUploadTool:
         await _call_as_caller(
             _server, "presign_terrain_upload", {"project_id": 42, "filename": DEM_NAME}
         )
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert json.loads(route.calls[0].request.content) == {
             "filename": DEM_NAME,
             "content_type": "image/tiff",
@@ -577,7 +583,7 @@ class TestFinalizeTerrainUploadTool:
                 "title": "mcp-w1-2469-dem",
             },
         )
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert json.loads(route.calls[0].request.content) == {
             "staging_key": STAGING_KEY,
             "process_id": PROCESS_ID,
@@ -629,7 +635,7 @@ class TestGetTerrainTool:
         )
         assert route.call_count == 3
         for call in route.calls:
-            assert call.request.headers["authorization"] == CALLER_BASIC
+            assert call.request.headers["authorization"] == CALLER_KEY
         data = _tool_json(result)
         assert data["outcome"] == "ready"
         assert data["status"] == "ready"
@@ -733,7 +739,7 @@ class TestGetTerrainTool:
         data = _tool_json(
             await _call_as_caller(_server, "get_terrain", {"project_id": 42, "poll_interval_seconds": 0})
         )
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert data["terrain"]["id"] == 9
         assert data["outcome"] == "ready"
         assert data["terrain_count"] == 3
@@ -886,7 +892,7 @@ class TestCreateTimeSeriesTool:
             return_value=httpx.Response(201, json=_series_row(77))
         )
         result = await _call_as_caller(_server, "create_time_series", _series_args())
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         body = json.loads(route.calls[0].request.content)
         # AC (flipped at the re-aim): both are TOP-LEVEL body keys, never folded
         # into description; rows travel VERBATIM (clean() normalises them server-side).
@@ -1096,7 +1102,7 @@ class TestAttachInputLayerTool:
 
         for route in (status_route, list_route, patch_route, dataset_route):
             assert route.called, route
-            assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+            assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert str(status_route.calls[0].request.url) == EXEC_STATUS_URL
         # The PATCH: plural route + the default row's pk, body exactly {"gn_layer": pk}.
         assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
@@ -1245,7 +1251,7 @@ class TestAttachInputLayerTool:
             )
         )
         assert fallback.called
-        assert fallback.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert fallback.calls[0].request.headers["authorization"] == CALLER_KEY
         assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
         assert data["outcome"] == "attached"
         assert data["dataset_pk"] == 1502
@@ -1554,8 +1560,8 @@ class TestCreateScenarioTool:
                 "rainfall": 124556, "building": 124558,
             },
         )
-        assert post_route.calls[0].request.headers["authorization"] == CALLER_BASIC
-        assert detail_route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert post_route.calls[0].request.headers["authorization"] == CALLER_KEY
+        assert detail_route.calls[0].request.headers["authorization"] == CALLER_KEY
         # Exactly ScenarioCreateSerializerV2's writable fields the tool exposes
         # (network is not offered); an unset FK travels as null.
         assert json.loads(post_route.calls[0].request.content) == {
@@ -1583,10 +1589,10 @@ class TestBuildScenarioTool:
         build_route = _mock_build()
         data = _tool_json(await _build(_server))
         assert build_route.call_count == 1
-        assert build_route.calls[0].request.headers["authorization"] == CALLER_BASIC
-        assert boundary_route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert build_route.calls[0].request.headers["authorization"] == CALLER_KEY
+        assert boundary_route.calls[0].request.headers["authorization"] == CALLER_KEY
         for call in detail_route.calls:
-            assert call.request.headers["authorization"] == CALLER_BASIC
+            assert call.request.headers["authorization"] == CALLER_KEY
         assert detail_route.call_count == 4  # pre-check, then created → building → built
         assert data["outcome"] == "built"
         assert data["computed_status"] == "built"
@@ -2644,7 +2650,7 @@ class TestClientHeaders:
         session = "6f1c2b9e-3d4a-4b5c-8d6e-7f8091a2b3c4"
         async with _asgi_client(_server) as c:
             for call_id in (1, 2):
-                resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_BASIC,
+                resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_KEY,
                                                   "mcp-session-id": session},
                                     json=_tools_call("list_projects", {}, id=call_id))
                 assert resp.status_code == 200, resp.text
@@ -2864,7 +2870,7 @@ class TestStructuredContent:
             for i, tool in enumerate(tools, start=2):
                 resp = await c.post(
                     "/",
-                    headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                    headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
                     json=_tools_call(tool["name"], _schema_args(tool["inputSchema"]), id=i),
                 )
                 result = _parse(resp)["result"]
@@ -2882,3 +2888,122 @@ class TestStructuredContent:
         respx.get(f"{BASE}/projects/").mock(
             return_value=httpx.Response(200, json={"count": 0, "results": []}))
         assert isinstance(await _server.list_projects(), str)
+
+
+# ---------------------------------------------------------------------------
+# TASK-3508 (W2a, epic 3200, D25) — agent keys replace the password on /mcp/.
+# The tool text never asks for a password; a Basic caller still works (the
+# header is forwarded verbatim) but every result carries a deprecation note
+# until HYDRATA_MCP_BASIC_SUNSET, after which a Basic tools/call is 401.
+# Stored proof: -k agent_key.
+# ---------------------------------------------------------------------------
+async def _catalog(srv):
+    """Every string an agent reads before calling: instructions + tool + parameter text."""
+    async with _asgi_client(srv) as c:
+        init = await c.post("/", headers=MCP_HEADERS, json=_rpc("initialize", {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"}}))
+        listed = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list", id=2))
+    texts = [_parse(init)["result"].get("instructions") or ""]
+    for tool in _parse(listed)["result"]["tools"]:
+        texts.append(tool.get("description") or "")
+        for prop in (tool.get("inputSchema") or {}).get("properties", {}).values():
+            texts.append(prop.get("description") or "")
+    return "\n".join(texts)
+
+
+async def _call(srv, auth, name="list_projects", arguments=None):
+    async with _asgi_client(srv) as c:
+        return await c.post("/", headers={**MCP_HEADERS, "Authorization": auth},
+                            json=_tools_call(name, arguments))
+
+
+class TestAgentKeys:
+    async def test_agent_key_tool_text_never_asks_for_a_password(self, _server):
+        text = await _catalog(_server)
+        assert "password" not in text.lower()
+        assert "<user>:" not in text
+        assert "-u <" not in text
+        assert "Authorization: Bearer hk_" in text  # the upload recipe uses the key
+
+    async def test_agent_key_module_source_has_no_password_curl(self, _server):
+        import inspect
+        source = inspect.getsource(_server)
+        assert "<password>" not in source
+        assert "<user>:" not in source
+
+    @respx.mock
+    async def test_agent_key_is_forwarded_verbatim_without_a_note(self, _server):
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, CALLER_KEY)
+        assert resp.status_code == 200
+        assert upstream.calls[0].request.headers["authorization"] == CALLER_KEY
+        result = _parse(resp)["result"]
+        assert "auth_deprecation" not in result["structuredContent"]
+        assert "auth_deprecation" not in json.loads(result["content"][0]["text"])
+
+    @respx.mock
+    async def test_agent_key_basic_caller_gets_the_deprecation_note_in_every_result(self, _server):
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, CALLER_BASIC)
+        assert resp.status_code == 200
+        assert upstream.calls[0].request.headers["authorization"] == CALLER_BASIC  # still verbatim
+        result = _parse(resp)["result"]
+        note = result["structuredContent"]["auth_deprecation"]
+        assert "deprecated" in note and "/agents/" in note and "Bearer hk_" in note
+        assert "password" not in note.lower()
+        text = json.loads(result["content"][0]["text"])
+        assert text["auth_deprecation"] == note
+        assert result["structuredContent"] == text  # the TASK-3449 invariant holds
+
+    @respx.mock
+    async def test_agent_key_basic_caller_gets_the_note_on_an_error_result_too(self, _server):
+        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(403, json={"detail": "no"}))
+        result = _parse(await _call(_server, CALLER_BASIC))["result"]
+        assert result["isError"] is True
+        assert "deprecated" in result["content"][0]["text"]
+        result = _parse(await _call(_server, CALLER_KEY))["result"]
+        assert result["isError"] is True
+        assert "deprecated" not in result["content"][0]["text"]
+
+    @respx.mock
+    async def test_agent_key_basic_note_names_the_sunset_date_before_it(self, _server, monkeypatch):
+        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "2999-01-01")
+        importlib.reload(_server)
+        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, CALLER_BASIC)
+        assert resp.status_code == 200
+        assert "2999-01-01" in _parse(resp)["result"]["structuredContent"]["auth_deprecation"]
+
+    @respx.mock
+    async def test_agent_key_basic_is_401_after_the_sunset(self, _server, monkeypatch):
+        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "2000-01-01")
+        importlib.reload(_server)
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, CALLER_BASIC)
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == 'Bearer realm="hydrata.com"'
+        message = resp.json()["error"]["message"]
+        assert "/agents/" in message and "Bearer hk_" in message
+        assert not upstream.calls
+        # The key keeps working after the sunset.
+        resp = await _call(_server, CALLER_KEY)
+        assert resp.status_code == 200
+        assert upstream.calls
+
+    async def test_agent_key_basic_catalog_stays_open_after_the_sunset(self, _server, monkeypatch):
+        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "2000-01-01")
+        importlib.reload(_server)
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
+                                json=_rpc("tools/list"))
+        assert resp.status_code == 200
+
+    @respx.mock
+    async def test_agent_key_bad_sunset_value_never_locks_basic_out(self, _server, monkeypatch):
+        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "next tuesday")
+        importlib.reload(_server)
+        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, CALLER_BASIC)
+        assert resp.status_code == 200
+        assert "auth_deprecation" in _parse(resp)["result"]["structuredContent"]

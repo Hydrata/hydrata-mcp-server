@@ -7,15 +7,16 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 from urllib.parse import quote, urlencode
 
 import uvicorn
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_headers
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
-from mcp_types import ToolAnnotations
+from mcp_types import TextContent, ToolAnnotations
 from starlette.middleware import Middleware
 
 from .client import HydrataAPIError, HydrataClient
@@ -28,16 +29,62 @@ client = HydrataClient(config)
 # ---------------------------------------------------------------------------
 # TASK-3166 (W0.1, epic 2467) — credential pass-through
 # ---------------------------------------------------------------------------
+# TASK-3508 (W2a, epic 3200, D25) — the credential is an hk_ agent key: a named,
+# revocable grant the user creates on <site>/agents/, sent as
+# ``Authorization: Bearer hk_…`` and VERIFIED BY DJANGO (this server never parses
+# it; it forwards it verbatim). HTTP Basic still forwards until
+# Config.basic_auth_sunset, with a deprecation note in every result; from that
+# day a Basic tools/call is 401 here.
+AGENT_KEY_HEADER = "Authorization: Bearer hk_..."
+
+
+def _agent_keys_url() -> str:
+    return f"{_ui_origin()}/agents/"
+
+
+def _basic_sunset() -> date | None:
+    """The configured sunset day, or None (unset, or not an ISO date — never a lock-out)."""
+    try:
+        return date.fromisoformat(config.basic_auth_sunset) if config.basic_auth_sunset else None
+    except ValueError:
+        return None
+
+
+def _basic_expired() -> bool:
+    sunset = _basic_sunset()
+    return sunset is not None and date.today() >= sunset
+
+
+def _auth_scheme(value: str) -> str:
+    return value.strip().partition(" ")[0].lower()
+
+
+def _basic_deprecation_note() -> str | None:
+    """The note a Basic caller gets in every tool result; None for any other credential."""
+    auth = get_http_headers(include={"authorization"}).get("authorization", "")
+    if _auth_scheme(auth) != "basic":
+        return None
+    sunset = _basic_sunset()
+    until = f" and stops working on {sunset.isoformat()}" if sunset else " and will stop working soon"
+    return (
+        f"Signing in to the Hydrata MCP server with HTTP Basic credentials is deprecated{until}. "
+        f"Ask the account owner to create an agent key at {_agent_keys_url()} and send it as the "
+        f"header '{AGENT_KEY_HEADER}' instead."
+    )
+
+
 class RequireAuthForToolsCall:
     """Pure-ASGI middleware: 401 an anonymous ``tools/call``; every other method stays open.
 
     The server holds no identity of its own. A ``tools/call`` must carry the caller's
-    ``Authorization`` header (HTTP Basic for a hydrata.com account), which
-    :class:`HydrataClient` forwards verbatim to the REST API — so GeoNode scopes
-    results by the real user's project permissions and the audit trail names them.
-    Missing it, the request is answered here with ``401`` +
-    ``WWW-Authenticate: Basic realm="hydrata.com"`` and a JSON-RPC-shaped error body
-    (code ``-32001``) that an MCP client can surface, before fastmcp ever runs a tool.
+    ``Authorization`` header — an agent key, ``Bearer hk_…`` (TASK-3508) — which
+    :class:`HydrataClient` forwards verbatim to the REST API, where Django verifies
+    it, so results are scoped by the real user's project permissions and the grant's
+    level, and the audit trail names them. Missing it, the request is answered here
+    with ``401`` + ``WWW-Authenticate: Bearer realm="hydrata.com"`` and a
+    JSON-RPC-shaped error body (code ``-32001``) that an MCP client can surface,
+    before fastmcp ever runs a tool. A Basic ``tools/call`` on or after
+    Config.basic_auth_sunset gets the same 401.
 
     Why only ``tools/call`` (decision D2 on TASK-2467, a deliberate deviation from
     TASK-1389's "reject anonymous tools/list"): the tool catalog is public on GitHub
@@ -54,7 +101,8 @@ class RequireAuthForToolsCall:
 
     Expected side effect: OAuth-aware MCP clients that see the 401 probe
     ``/.well-known/oauth-protected-resource`` and get a 404. That is fine — we
-    are not an OAuth resource server; Basic is the credential.
+    are not an OAuth resource server (yet: WorkOS connect is TASK-3512); the
+    agent key is the credential.
     """
 
     def __init__(self, app):
@@ -94,23 +142,30 @@ class RequireAuthForToolsCall:
                 break
 
         # ASGI header names are lowercase bytes; a blank value is not a credential.
-        has_auth = any(
-            name == b"authorization" and value.strip()
-            for name, value in scope.get("headers", [])
+        auth = next(
+            (value.decode("latin-1") for name, value in scope.get("headers", [])
+             if name == b"authorization" and value.strip()),
+            "",
         )
+        refusal = None
+        if needs_auth and not auth:
+            refusal = (
+                f"Authentication required: send a Hydrata agent key as the header "
+                f"'{AGENT_KEY_HEADER}' (create one at {_agent_keys_url()})"
+            )
+        elif needs_auth and _auth_scheme(auth) == "basic" and _basic_expired():
+            refusal = (
+                f"HTTP Basic sign-in to the Hydrata MCP server ended on "
+                f"{_basic_sunset().isoformat()}. Create an agent key at {_agent_keys_url()} and send "
+                f"it as the header '{AGENT_KEY_HEADER}'"
+            )
 
-        if needs_auth and not has_auth:
+        if refusal:
             payload = json.dumps(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "error": {
-                        "code": -32001,
-                        "message": (
-                            "Authentication required: send HTTP Basic credentials "
-                            "for a hydrata.com account"
-                        ),
-                    },
+                    "error": {"code": -32001, "message": refusal},
                 }
             ).encode()
             await send(
@@ -120,7 +175,7 @@ class RequireAuthForToolsCall:
                     "headers": [
                         (b"content-type", b"application/json"),
                         (b"content-length", str(len(payload)).encode()),
-                        (b"www-authenticate", b'Basic realm="hydrata.com"'),
+                        (b"www-authenticate", b'Bearer realm="hydrata.com"'),
                     ],
                 }
             )
@@ -169,7 +224,8 @@ mcp = FastMCP(
         "finalize_terrain_upload → get_terrain (polls until ready) → for each "
         "input GeoJSON (boundary, friction, inflow, rainfall, building, mesh_region): "
         "multipart-POST it yourself to <origin>/api/v2/uploads/upload/ with the "
-        "same credential, then attach_input_layer with the execution_id → "
+        "same agent key (-H 'Authorization: Bearer hk_...'), then attach_input_layer "
+        "with the execution_id → "
         "create_time_series for each rain gauge / hydrograph → create_scenario "
         "(reports the mesh-triangle estimate from the detail) → build_scenario "
         "(polls computed_status to built; asks for confirm=true above 100,000 "
@@ -224,14 +280,28 @@ def _structured_result(text: str) -> ToolResult:
 
     structuredContent must be an object, so a non-object JSON value (or text that
     is not JSON) is carried as {"result": value}.
+
+    TASK-3508: a caller still on HTTP Basic gets ``auth_deprecation`` in EVERY
+    result — in the JSON text and structuredContent alike (they stay equal, the
+    TASK-3449 invariant); a non-object result carries the note as a second
+    text block.
     """
     try:
         parsed = json.loads(text)
     except (TypeError, ValueError):
         parsed = text
+    note = _basic_deprecation_note()
+    if note is None:
+        return ToolResult(
+            content=text,
+            structured_content=parsed if isinstance(parsed, dict) else {"result": parsed},
+        )
+    if isinstance(parsed, dict):
+        parsed = {**parsed, "auth_deprecation": note}
+        return ToolResult(content=json.dumps(parsed, indent=2), structured_content=parsed)
     return ToolResult(
-        content=text,
-        structured_content=parsed if isinstance(parsed, dict) else {"result": parsed},
+        content=[TextContent(type="text", text=text), TextContent(type="text", text=note)],
+        structured_content={"result": parsed, "auth_deprecation": note},
     )
 
 
@@ -254,7 +324,15 @@ def _tool(name: str):
     def decorate(fn):
         @functools.wraps(fn)
         async def registered(*args, **kwargs):
-            return _structured_result(await fn(*args, **kwargs))
+            try:
+                text = await fn(*args, **kwargs)
+            except (ToolError, HydrataAPIError) as exc:
+                # TASK-3508: an error result carries the Basic deprecation note too.
+                note = _basic_deprecation_note()
+                if note is None:
+                    raise
+                raise type(exc)(f"{exc}\n\n{note}") from exc
+            return _structured_result(text)
 
         register(registered)
         return fn
@@ -893,7 +971,7 @@ async def presign_terrain_upload(
     uploaded GeoTIFF is only rejected above 5 GiB, but a larger DEM will not
     mesh or run well. The GeoTIFF must carry a CRS; the import reprojects it to
     the site's UTM zone and builds a hillshade. Fallback when a presigned PUT is
-    impossible: multipart-POST the file with the same credential to
+    impossible: multipart-POST the file with the same agent key to
     /api/v2/anuga/projects/<id>/terrain/upload/ (form field `file`, optional
     `title`), which creates the terrain in one step — then get_terrain.
     """
@@ -1298,9 +1376,9 @@ async def attach_input_layer(
     """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building or mesh_region layer.
 
     The agent moves the bytes: first upload the GeoJSON yourself, with the
-    same credential, to GeoNode's upload endpoint at the site origin:
+    same agent key, to GeoNode's upload endpoint at the site origin:
 
-        curl -sS -u <user>:<password> -F "base_file=@/path/rainfall.geojson" https://<site>/api/v2/uploads/upload/
+        curl -sS -H 'Authorization: Bearer hk_...' -F "base_file=@/path/rainfall.geojson" https://<site>/api/v2/uploads/upload/
 
     → JSON with `execution_id`. Then call this tool with it. The tool polls
     GET /api/v2/resource-service/execution-status/<execution_id> (bounded by
