@@ -1568,8 +1568,8 @@ async def attach_input_layer(
     mapped culverts and attaches THAT layer (`mapped`: renamed, filled,
     source_dataset_pk). `culvert_problems` lists what the build will still
     refuse (typically missing inverts) — the user fixes those in the map.
-    Until the culvert engine ships (epic 3585 W3), culvert flow is
-    not conveyed: a run lists the culverts but no water passes through them.
+    The culvert engine conveys flow through each culvert in a run (GPU
+    lanes and localhost; the multi-core CPU lanes refuse a culvert scenario).
 
     `outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk,
     dataset_alternate — the WFS typename — and every row id seen);

@@ -1399,10 +1399,10 @@ class TestAttachInputLayerTool:
         assert patch_route.called
         assert data["row_id"] == 9
 
-    async def test_attach_input_layer_and_time_series_listed_not_conveyed_no_file_inputs(
+    async def test_attach_input_layer_and_time_series_listed_culvert_conveyed_no_file_inputs(
         self, _server
     ):
-        """AC3: 'not conveyed' is in attach_input_layer's description; neither
+        """AC3: the culvert engine conveys flow (TASK-3661: no 'not conveyed' caveat) in attach_input_layer's description; neither
         tool takes file contents (create_time_series takes a small JSON `data`
         object by design — decision D7 forbids bytes, not row objects)."""
         async with _asgi_client(_server) as c:
@@ -1410,7 +1410,8 @@ class TestAttachInputLayerTool:
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert "create_time_series" in tools and "attach_input_layer" in tools
         attach = tools["attach_input_layer"]["description"]
-        assert "not conveyed" in attach
+        assert "not conveyed" not in attach
+        assert "conveys flow through each culvert" in attach
         assert "TASK-3040" in attach
         assert "base_file" in attach  # the curl recipe the agent runs itself
         for name in ("create_time_series", "attach_input_layer"):
