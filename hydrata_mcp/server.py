@@ -8,6 +8,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date, datetime
+from http import HTTPStatus
 from typing import Annotated
 from urllib.parse import quote, urlencode
 
@@ -237,7 +238,10 @@ mcp = FastMCP(
         "say_to_user and the ui_url to the user after each layer lands. Before "
         "start_simulation (the step that spends compute), give the user the ui_url and "
         "WAIT for them to confirm they have reviewed the inputs in the map; do not "
-        "start a run on your own say-so. When a tool refuses because an input is "
+        "start a run on your own say-so. Hydrata itself guards the money: a run over "
+        "your agent key's monthly spend limit comes back CONSENT_REQUIRED with a "
+        "consent_url — give it to the user; only they can approve it, in their browser. "
+        "When a tool refuses because an input is "
         "missing or wrong (no boundary, no External boundary edge), send the user to "
         "the ui_url to draw or fix it in the map."
     ),
@@ -690,6 +694,14 @@ async def start_simulation(
         "Compute backend: 'local' (Celery), 'ec2' (dedicated instance), "
         "or 'batch' (AWS Batch spot, cheapest). Default: 'local'",
     ] = "local",
+    consent_timeout_seconds: Annotated[
+        int,
+        "When the run needs the person's consent (CONSENT_REQUIRED), how long this "
+        "call keeps polling the run for their click before it returns (ceiling 280). "
+        "Default 0: return the consent link at once, so you can give it to them — "
+        "they cannot press a button they have not been shown.",
+    ] = 0,
+    poll_interval_seconds: Annotated[float, "Seconds between consent polls (default 5)"] = 5.0,
 ) -> str:
     """Start a flood simulation run for a built scenario.
 
@@ -699,11 +711,29 @@ async def start_simulation(
     After starting, poll get_run_status to track progress. Returns 409
     if the scenario is not in the correct state. The returned run record has
     its presigned `s3_*_url` links elided (6-hour capabilities).
+
+    SPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not
+    fit your agent key's monthly spend limit (default $0), or that Hydrata
+    cannot price, is NOT started. The result is then a normal (non-error)
+    answer with `outcome` `consent_required`, `error_code` CONSENT_REQUIRED,
+    `quoted_cost_usd` and `consent_url`: give the user the link and the price
+    (`say_to_user`). Only they can approve, in their browser. Then do NOT call
+    start_simulation again for this run: poll get_run_status(run_id) — the run
+    leaves `built` once they press the button. (With consent_timeout_seconds > 0
+    this call polls the run itself and answers `outcome` `consented`, with the
+    run, if they approve within that time.)
     """
     body, status_code = await client.post(
         f"/scenarios/{scenario_id}/run/",
         json={"compute_backend": compute_backend},
+        raise_for_status=False,
     )
+    if status_code == 409 and isinstance(body, dict) and body.get("error_code") == CONSENT_REQUIRED:
+        return json.dumps(
+            await _await_consent(scenario_id, body, consent_timeout_seconds, poll_interval_seconds), indent=2
+        )
+    if status_code >= 400:
+        raise HydrataAPIError(_api_refusal_message(status_code, "POST", f"/scenarios/{scenario_id}/run/", body))
     # TASK-3187 — the 202 relays RunSerializerV2 for a run that is already
     # `built`, so it ALREADY holds the signed package URL: elide here, never in
     # `_post_result` (presign_terrain_upload shares it and must keep its URL).
@@ -719,6 +749,90 @@ async def start_simulation(
         run=run_id,
     )
     return json.dumps(result, indent=2)
+
+
+# TASK-3214 (W2a, epic 3200, D27) — run consent. Hydrata (not this server)
+# decides whether an agent may spend: over the key's monthly limit, or for a
+# run it cannot price, the dispatch is 409 CONSENT_REQUIRED + a consent link
+# the PERSON opens in their browser. This replaces in-chat (MRTR) consent,
+# which only works in interactive Claude Code. The relay is a non-error
+# result, as build_scenario's refusals are; the link goes on the UI origin.
+CONSENT_REQUIRED = "CONSENT_REQUIRED"
+RUN_AWAITING_CONSENT = "built"
+
+
+def _api_refusal_message(status_code: int, method: str, path: str, body) -> str:
+    """The same message client._client_error_message gives a raised 4xx (status, reason, body)."""
+    try:
+        reason = HTTPStatus(status_code).phrase
+    except ValueError:
+        reason = ""
+    message = f"Hydrata API returned {status_code}: {reason} for {method} {path}"
+    detail = json.dumps(body, separators=(",", ":"), ensure_ascii=False)[:1000] if body else ""
+    return f"{message} — {detail}" if detail else message
+
+
+async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_interval_seconds) -> dict:
+    """Relay a CONSENT_REQUIRED and wait (bounded) for the person to consent in the browser."""
+    run_id = refusal.get("run_id")
+    path = refusal.get("consent_path")
+    consent_url = f"{_ui_origin()}{path}" if path else refusal.get("consent_url")
+    record = None
+    polls, elapsed, timed_out = 0, 0.0, True
+    if run_id is not None:
+        async def fetch():
+            return await client.get(f"/runs/{run_id}/status/")
+
+        record, polls, elapsed, timed_out = await _poll_until(
+            fetch, lambda value: _status_of(value) not in (None, RUN_AWAITING_CONSENT),
+            timeout_seconds, poll_interval_seconds,
+        )
+    run_status = _status_of(record)
+    cost = refusal.get("quoted_cost_usd")
+    if run_status not in (None, RUN_AWAITING_CONSENT):
+        result = {"outcome": "consented", "id": run_id, "run_id": run_id, "scenario_id": scenario_id,
+                  "status": run_status, "quoted_cost_usd": cost, "consent_url": consent_url,
+                  "polls": polls, "elapsed_seconds": elapsed}
+        project_id, _scenario = await _run_project_and_scenario(run_id, None)
+        price = f" for ${cost}" if cost is not None else ""
+        await _hand_back(
+            result, project_id,
+            {"run_id": run_id, "scenario_id": scenario_id, "status": run_status, "quoted_cost_usd": cost},
+            f"The user gave consent{price}: run {run_id} has started ({run_status}). Open the link to watch "
+            "it; the results appear on the map when it completes.",
+            run=run_id,
+        )
+        return result
+    if cost is None:
+        say = (f"Hydrata could not price this run in advance, so you need to start it yourself: open {consent_url} "
+               "in your browser (signed in to Hydrata) and press the button. Nothing has started.")
+    else:
+        say = (f"This run is quoted at ${cost}, more than this agent key may spend without asking you "
+               f"(${refusal.get('month_to_date_usd')} of its ${refusal.get('monthly_cap_usd')} monthly limit "
+               f"used). To start it, open {consent_url} in your browser (signed in to Hydrata) and press the "
+               "button. Nothing has started.")
+    return {
+        "outcome": "consent_required",
+        "error_code": CONSENT_REQUIRED,
+        "state": refusal.get("state"),
+        "http_status": 409,
+        "run_id": run_id,
+        "scenario_id": scenario_id,
+        "consent_url": consent_url,
+        "quoted_cost_usd": cost,
+        "mesh_triangle_count": refusal.get("mesh_triangle_count"),
+        "compute_target": refusal.get("compute_target"),
+        "monthly_cap_usd": refusal.get("monthly_cap_usd"),
+        "month_to_date_usd": refusal.get("month_to_date_usd"),
+        "detail": refusal.get("detail"),
+        "timed_out": timed_out,
+        "polls": polls,
+        "elapsed_seconds": elapsed,
+        "say_to_user": say,
+        "next_step": ("Give the user consent_url and the price. Only they can approve it, in their browser. Do "
+                      "not call start_simulation again for this run: poll get_run_status(run_id) — it leaves "
+                      "'built' once they approve."),
+    }
 
 
 # ---------------------------------------------------------------------------

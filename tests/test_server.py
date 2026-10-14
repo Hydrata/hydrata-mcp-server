@@ -3007,3 +3007,106 @@ class TestAgentKeys:
         resp = await _call(_server, CALLER_BASIC)
         assert resp.status_code == 200
         assert "auth_deprecation" in _parse(resp)["result"]["structuredContent"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-3214 (W2a, epic 3200, D27) — run consent. Hydrata answers an agent's
+# dispatch over its key's monthly spend limit (or an unpriceable one) with
+# 409 CONSENT_REQUIRED + a consent link. start_simulation relays the code and
+# the link as a NON-error result and polls the run for the person's click.
+# The build 100k-triangle confirm stays: it protects the web box, not the
+# budget. The stored proof selects on `-k consent`: every name carries it.
+# ---------------------------------------------------------------------------
+CONSENT_409 = {
+    "error_code": "CONSENT_REQUIRED",
+    "state": "consent_required",
+    "detail": "This run is quoted at $10.00; this agent key has used $45.00 of its $50.00 monthly spend limit.",
+    "consent_path": "/agents/consent/502/",
+    "consent_url": "http://127.0.0.1:8081/agents/consent/502/",
+    "run_id": 502,
+    "scenario_id": 5,
+    "quoted_cost_usd": "10.00",
+    "mesh_triangle_count": 19812,
+    "compute_target": "batch-gpu-l40s",
+    "monthly_cap_usd": "50.00",
+    "month_to_date_usd": "45.00",
+}
+
+
+class TestStartSimulationConsent:
+    @respx.mock
+    async def test_consent_required_is_relayed_with_the_link_on_the_ui_origin_not_an_error(self, _server):
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=CONSENT_409))
+        status = respx.get(f"{BASE}/runs/502/status/").mock(
+            return_value=httpx.Response(200, json={"id": 502, "status": "built"}))
+        data = _tool_json(await _call_as_caller(_server, "start_simulation", {"scenario_id": 5}))
+        assert data["outcome"] == "consent_required"
+        assert data["error_code"] == "CONSENT_REQUIRED" and data["http_status"] == 409
+        # the human opens the UI origin (prod's API URL is the loopback listener)
+        assert data["consent_url"] == "https://hydrata.example.com/agents/consent/502/"
+        assert data["quoted_cost_usd"] == "10.00" and data["run_id"] == 502
+        assert data["consent_url"] in data["say_to_user"] and "$10.00" in data["say_to_user"]
+        assert "start_simulation" in data["next_step"] and "get_run_status" in data["next_step"]
+        assert status.call_count == 1           # default: one read, the link comes back at once
+
+    @respx.mock
+    async def test_consent_polls_until_the_person_presses_the_button(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=CONSENT_409))
+        respx.get(f"{BASE}/runs/502/status/").mock(side_effect=[
+            httpx.Response(200, json={"id": 502, "status": "built"}),
+            httpx.Response(200, json={"id": 502, "status": "built"}),
+            httpx.Response(200, json={"id": 502, "status": "queued"}),
+        ])
+        respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "queued")))
+        data = _tool_json(await _call_as_caller(_server, "start_simulation", {
+            "scenario_id": 5, "consent_timeout_seconds": 30, "poll_interval_seconds": 0}))
+        assert data["outcome"] == "consented"
+        assert data["status"] == "queued" and data["run_id"] == 502 and data["polls"] == 3
+        _assert_hand_back(data, run=502)
+        assert "consent" in data["say_to_user"]
+
+    @respx.mock
+    async def test_consent_timeout_returns_the_link_and_does_not_redispatch(self, _server):
+        dispatch = respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=CONSENT_409))
+        respx.get(f"{BASE}/runs/502/status/").mock(return_value=httpx.Response(200, json={"id": 502, "status": "built"}))
+        data = _tool_json(await _call_as_caller(_server, "start_simulation", {
+            "scenario_id": 5, "consent_timeout_seconds": 1, "poll_interval_seconds": 0.2}))
+        assert data["outcome"] == "consent_required" and data["timed_out"] is True
+        assert dispatch.call_count == 1
+
+    @respx.mock
+    async def test_consent_for_an_unpriceable_run_says_so(self, _server):
+        body = dict(CONSENT_409, state="pending_human_consent", quoted_cost_usd=None)
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=body))
+        respx.get(f"{BASE}/runs/502/status/").mock(return_value=httpx.Response(200, json={"id": 502, "status": "built"}))
+        data = _tool_json(await _call_as_caller(
+            _server, "start_simulation", {"scenario_id": 5, "consent_timeout_seconds": 0}))
+        assert data["state"] == "pending_human_consent"
+        assert "could not price" in data["say_to_user"]
+
+    @respx.mock
+    async def test_consent_other_4xx_still_raise_with_the_api_body(self, _server):
+        from hydrata_mcp.client import HydrataAPIError
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(
+            409, json={"error_code": "INVALID_TRANSITION", "detail": "Cannot transition from queued"}))
+        with pytest.raises(HydrataAPIError, match="409.*INVALID_TRANSITION"):
+            await _server.start_simulation(scenario_id=5)
+
+    @respx.mock
+    async def test_consent_does_not_remove_the_build_100k_confirm(self, _server):
+        """AC6: the build_scenario confirm above 100,000 triangles still refuses without confirm=true."""
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(estimate=255_412)))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called and data["outcome"] == "refused"
+        assert "confirm=true" in data["reason"]
+
+    async def test_consent_no_in_chat_consent_path_exists(self, _server):
+        """D27 replaces in-chat (MRTR) consent: no tool takes a confirm/consent flag for a RUN."""
+        import inspect
+        params = inspect.signature(_server.start_simulation).parameters
+        assert not {"confirm", "consent", "unattended"} & set(params)
+        source = inspect.getsource(_server)
+        assert "HYDRATA_MCP_UNATTENDED" not in source and "elicit" not in source

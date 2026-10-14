@@ -23,7 +23,7 @@ Version 0.2.0 exposes nineteen tools: eleven that read projects, inputs and scen
 | `list_projects` | List ANUGA simulation projects (paginated) |
 | `get_project` | Get one project — name, projection, visibility, your role, `base_map` — plus `ui_url`, the link that opens its map |
 | `get_scenario` | Get a scenario's compact state — `computed_status`, its inputs (terrain, boundary, friction, inflow, rainfall, structure, mesh region, resolution, duration), the mesh-triangle estimate + breakdown, the price (`compute_cost_estimate`, `vcpu_hours_estimate`) and the latest run's id/status/error — never the raw detail |
-| `start_simulation` | Start a flood simulation (local/EC2/Batch backends); the returned run record has its presigned download links elided; hand-back link opens the run |
+| `start_simulation` | Start a flood simulation (local/EC2/Batch backends); the returned run record has its presigned download links elided; hand-back link opens the run. A run over the agent key's monthly spend limit (default $0), or one Hydrata cannot price, is not started: the tool relays Hydrata's `CONSENT_REQUIRED` at once with the `consent_url` the person opens in their browser (`consent_timeout_seconds` > 0 also polls the run for their click) |
 | `get_run_status` | Lightweight status poll (<50ms); `phase` is never empty (`preparing_inputs` while a computing run has no progress yet) |
 | `get_run` | Full run details with timing, log and result layers; presigned `s3_*_url` download links are elided |
 | `cancel_run` | Cancel an in-flight simulation; hand-back link opens the scenario |
