@@ -1313,6 +1313,26 @@ CULVERT_DEFAULTS = {
     "blockage_pct": 0.0,
 }
 CULVERT_MATERIAL_MANNING_N = {"concrete": 0.013, "corrugated_metal": 0.024}
+# TASK-3662: the 14 valid (entrance code, shape, material) combinations. Mirrors
+# hydrata gn_anuga.models.culvert.CULVERT_ENTRANCE_TYPES (pinned equal to the gmc
+# ENTRANCE_TYPES table and the engine catalogue); the build refuses any other.
+CULVERT_ENTRANCE_TYPES = (
+    ("square_edge_headwall", "circular", "concrete"),
+    ("groove_end_headwall", "circular", "concrete"),
+    ("groove_end_projecting", "circular", "concrete"),
+    ("bevelled_ring_45", "circular", "concrete"),
+    ("square_edge_headwall", "circular", "corrugated_metal"),
+    ("mitred_to_slope", "circular", "corrugated_metal"),
+    ("projecting", "circular", "corrugated_metal"),
+    ("square_edge_headwall", "box", "concrete"),
+    ("wingwalls_30_75", "box", "concrete"),
+    ("wingwalls_0", "box", "concrete"),
+    ("wingwalls_45_top_bevel", "box", "concrete"),
+    ("headwall_bevelled_45", "box", "concrete"),
+    ("square_edge_headwall", "box", "corrugated_metal"),
+    ("thin_wall_projecting", "box", "corrugated_metal"),
+)
+CULVERT_ENTRANCE_CODES = frozenset(code for code, _shape, _material in CULVERT_ENTRANCE_TYPES)
 CULVERT_MAX_BARRELS = 20
 # Other attribute names (matched case-insensitively) taken for each D10 field,
 # in priority order. The D10 name itself always wins when it carries a value.
@@ -1405,6 +1425,8 @@ def _map_culvert_properties(properties: dict) -> tuple[dict, dict, list]:
         out["shape"] = CULVERT_SHAPE_ALIASES.get(_culvert_slug(out["shape"]), out["shape"])
     if isinstance(out["material"], str) and out["material"].strip():
         out["material"] = CULVERT_MATERIAL_ALIASES.get(_culvert_slug(out["material"]), out["material"])
+    if isinstance(out["entrance_type"], str) and _culvert_slug(out["entrance_type"]) in CULVERT_ENTRANCE_CODES:
+        out["entrance_type"] = _culvert_slug(out["entrance_type"])
     filled = []
     for field, default in CULVERT_DEFAULTS.items():
         if out[field] is None or out[field] == "":
@@ -1444,6 +1466,16 @@ def _culvert_problems(index: int, properties: dict, geometry) -> list:
             value = properties.get(key)
             if not isinstance(value, float) or value <= 0:
                 problems.append(f"{key} must be a positive number for a {shape} culvert")
+    material = properties.get("material")
+    if material not in CULVERT_MATERIAL_MANNING_N:
+        problems.append("material must be 'concrete' or 'corrugated_metal'")
+    elif shape in ("box", "circular"):
+        valid = [code for code, s, m in CULVERT_ENTRANCE_TYPES if s == shape and m == material]
+        entrance = properties.get("entrance_type")
+        if entrance not in valid:
+            problems.append(
+                f"entrance_type {entrance!r} is not available for a {shape} "
+                f"{material.replace('_', ' ')} culvert (choose one of: {', '.join(valid)})")
     for key in ("upstream_invert_m", "downstream_invert_m"):
         if not isinstance(properties.get(key), float):
             problems.append(f"{key} is required")

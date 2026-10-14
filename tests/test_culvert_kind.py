@@ -187,6 +187,32 @@ class TestCulvertKindMapping:
         assert "barrels must be a whole number from 1 to 20" in second
 
 
+class TestCulvertEntranceCodes:
+    """TASK-3662: the import uses the same 14 entrance codes as the build."""
+
+    async def test_culvert_entrance_table_has_the_14_pinned_combinations(self, _server):
+        assert len(_server.CULVERT_ENTRANCE_TYPES) == 14
+        assert len(set(_server.CULVERT_ENTRANCE_TYPES)) == 14
+        for shape in ("box", "circular"):
+            for material in ("concrete", "corrugated_metal"):
+                assert ("square_edge_headwall", shape, material) in _server.CULVERT_ENTRANCE_TYPES
+
+    async def test_culvert_entrance_label_style_value_maps_to_the_code(self, _server):
+        props, renamed, _ = _server._map_culvert_properties({"Entrance": "Wingwalls-30-75", "shape": "box"})
+        assert props["entrance_type"] == "wingwalls_30_75" and renamed == {"Entrance": "entrance_type"}
+
+    async def test_culvert_entrance_invalid_combination_is_a_problem_line(self, _server):
+        _, report = _server._map_culvert_collection(_fc(
+            _d10(name="Bad", shape="circular", width_m=None, height_m=None, diameter_m=0.9,
+                 entrance_type="wingwalls_30_75")))
+        (line,) = report["problems"]
+        assert "Culvert 'Bad'" in line and "entrance_type 'wingwalls_30_75' is not available for a circular concrete" in line
+
+    async def test_culvert_entrance_valid_combination_has_no_problem(self, _server):
+        _, report = _server._map_culvert_collection(_fc(_d10(entrance_type="wingwalls_0")))
+        assert report["problems"] == []
+
+
 class TestCulvertKindAttach:
     @respx.mock
     async def test_culvert_kind_attach_returns_the_layer_id_not_the_refusal(self, _server):
