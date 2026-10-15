@@ -1124,27 +1124,37 @@ class TestAttachInputLayerTool:
     async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_write(
         self, _server, kind
     ):
+        """Breakline is still refused before any request. TASK-3641 (epic 3585)
+        INVERTED the culvert case: kind=culvert is no longer refused — it reaches
+        the upload poll (a failed import here, so it still writes nothing). The
+        name is kept: renaming a test counts as deleting it (ratchet)."""
         # TASK-3203: the refusal now reads the project once (unmocked here, so
         # its link is null) to hand the human a ui_url; it still writes nothing.
         status_route = respx.get(EXEC_STATUS_URL).mock(
-            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+            return_value=httpx.Response(200, json=_exec("failed", log="bad file"))
         )
         list_routes = [
             respx.get(f"{BASE}/projects/42/{r}/").mock(return_value=httpx.Response(200, json=[]))
-            for r in INPUT_LAYER_ROUTES.values()
+            for r in (*INPUT_LAYER_ROUTES.values(), "culverts")
         ]
+        culverts_post = respx.post(f"{BASE}/projects/42/culverts/").mock(
+            return_value=httpx.Response(201, json={}))
         buildings_post, mesh_regions_post = _mock_no_wrapper_posts()
-        text = _tool_error_text(
-            await _call_as_caller(
-                _server, "attach_input_layer", {"project_id": 42, "kind": kind, "execution_id": EXEC_ID}
-            )
+        result = await _call_as_caller(
+            _server, "attach_input_layer", {"project_id": 42, "kind": kind, "execution_id": EXEC_ID}
         )
-        assert not status_route.called
         assert not any(r.called for r in list_routes)
-        assert not buildings_post.called and not mesh_regions_post.called
-        assert "TASK-3040" in text
-        assert "not conveyed" in text
-        assert kind in text
+        assert not buildings_post.called and not mesh_regions_post.called and not culverts_post.called
+        if kind == "breakline":
+            text = _tool_error_text(result)
+            assert not status_route.called
+            assert "TASK-3040" in text
+            assert kind in text
+        else:
+            data = _tool_json(result)
+            assert status_route.called
+            assert data["outcome"] == "upload_failed" and data["kind"] == "culvert"
+            assert data["route"] == "culverts"
 
     @pytest.mark.parametrize(
         "bad_id",
@@ -1392,10 +1402,10 @@ class TestAttachInputLayerTool:
         assert patch_route.called
         assert data["row_id"] == 9
 
-    async def test_attach_input_layer_and_time_series_listed_not_conveyed_no_file_inputs(
+    async def test_attach_input_layer_and_time_series_listed_culvert_conveyed_no_file_inputs(
         self, _server
     ):
-        """AC3: 'not conveyed' is in attach_input_layer's description; neither
+        """AC3: the culvert engine conveys flow (TASK-3661: no 'not conveyed' caveat) in attach_input_layer's description; neither
         tool takes file contents (create_time_series takes a small JSON `data`
         object by design — decision D7 forbids bytes, not row objects)."""
         async with _asgi_client(_server) as c:
@@ -1403,7 +1413,8 @@ class TestAttachInputLayerTool:
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert "create_time_series" in tools and "attach_input_layer" in tools
         attach = tools["attach_input_layer"]["description"]
-        assert "not conveyed" in attach
+        assert "not conveyed" not in attach
+        assert "conveys flow through each culvert" in attach
         assert "TASK-3040" in attach
         assert "base_file" in attach  # the curl recipe the agent runs itself
         for name in ("create_time_series", "attach_input_layer"):
@@ -2625,16 +2636,27 @@ class TestHandBackRefusals:
     @pytest.mark.parametrize("kind", ["breakline", "culvert"])
     @respx.mock
     async def test_say_to_user_breakline_culvert_refusal_has_ui_url_but_no_draw_hint(self, _server, kind):
+        """TASK-3641 (epic 3585) INVERTED the culvert case: only breakline is still
+        refused with the 'not supported' hand-back; a culvert attach goes ahead
+        (a failed import here) and never says 'not supported'. Name kept (ratchet)."""
         project = _mock_project()
         writes = [respx.post(url__startswith=BASE).mock(return_value=httpx.Response(201, json={})),
                   respx.patch(url__startswith=BASE).mock(return_value=httpx.Response(200, json={}))]
-        with pytest.raises(_server.ToolError) as exc_info:
-            await _server.attach_input_layer(project_id=42, kind=kind, execution_id=EXEC_ID)
-        text = str(exc_info.value)
-        assert project.called and not any(w.called for w in writes)  # one read, no write
-        assert f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}?panel=inputs" in text
-        assert "not supported" in text
-        assert "draw it in the map" not in text
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("failed", log="bad")))
+        if kind == "breakline":
+            with pytest.raises(_server.ToolError) as exc_info:
+                await _server.attach_input_layer(project_id=42, kind=kind, execution_id=EXEC_ID)
+            text = str(exc_info.value)
+            assert project.called and not any(w.called for w in writes)  # one read, no write
+            assert f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}?panel=inputs" in text
+            assert "not supported" in text
+            assert "draw it in the map" not in text
+        else:
+            data = json.loads(await _server.attach_input_layer(
+                project_id=42, kind=kind, execution_id=EXEC_ID, poll_interval_seconds=0))
+            assert data["outcome"] == "upload_failed" and not any(w.called for w in writes)
+            assert "not supported" not in data["say_to_user"]
+            assert f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}?panel=inputs" == data["ui_url"]
 
 
 class TestClientHeaders:
@@ -2750,6 +2772,9 @@ def _wrapper_rows(route):
         "buildings": [{"id": 5, "title": "Building 01", "gn_layer": 15, "gn_layer_name": "str_42_building_01"}],
         "mesh-regions": [{"id": 6, "title": "MeshRegion 01", "gn_layer": 16, "gn_layer_name": "mes_42_meshregion_01",
                           "has_features": True}],
+        # TASK-3641: CulvertSerializerV2 carries has_features (no WFS lookup).
+        "culverts": [{"id": 7, "title": "Culvert 01", "gn_layer": 17, "gn_layer_name": "cul_42_culvert_01",
+                      "has_features": True}],
     }
     return rows[route]
 
@@ -2757,7 +2782,7 @@ def _wrapper_rows(route):
 class TestListInputs:
     @respx.mock
     async def test_list_inputs_every_kind_with_alternate_and_has_features(self, _server):
-        for route in INPUT_LAYER_ROUTES.values():
+        for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
             respx.get(f"{BASE}/projects/42/{route}/").mock(
                 return_value=httpx.Response(200, json=_wrapper_rows(route)))
 
@@ -2768,7 +2793,9 @@ class TestListInputs:
         wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(side_effect=hits)
         data = json.loads(await _server.list_inputs(project_id=42))
         inputs = data["inputs"]
-        assert set(inputs) == set(INPUT_LAYER_ROUTES)
+        assert set(inputs) == {*INPUT_LAYER_ROUTES, "culvert"}  # TASK-3641
+        assert inputs["culvert"][0] == {"row_id": 7, "title": "Culvert 01", "gn_layer": 17,
+                                        "dataset_alternate": "geonode:cul_42_culvert_01", "has_features": True}
         assert inputs["boundary"][0] == {"row_id": 1, "title": "Boundary 01", "gn_layer": 11,
                                          "dataset_alternate": "geonode:bdy_42_boundary_01",
                                          "has_features": True, "has_external_feature": True}
@@ -2782,7 +2809,7 @@ class TestListInputs:
     @respx.mock
     async def test_list_inputs_feature_lookups_are_bounded(self, _server, monkeypatch):
         monkeypatch.setattr(_server, "LIST_INPUTS_MAX_FEATURE_LOOKUPS", 1)
-        for route in INPUT_LAYER_ROUTES.values():
+        for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
             respx.get(f"{BASE}/projects/42/{route}/").mock(
                 return_value=httpx.Response(200, json=_wrapper_rows(route)))
         wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(
