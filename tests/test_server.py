@@ -2822,7 +2822,7 @@ class TestListInputs:
     @respx.mock
     async def test_list_inputs_has_features_is_null_not_an_error_when_gs_refuses_the_key(self, _server):
         """TASK-3728: Hydrata refuses every /gs/ request made with an hk_ key (403 AGENT_KEY_SCOPE)."""
-        for route in INPUT_LAYER_ROUTES.values():
+        for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
             respx.get(f"{BASE}/projects/42/{route}/").mock(
                 return_value=httpx.Response(200, json=_wrapper_rows(route)))
         wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(return_value=httpx.Response(

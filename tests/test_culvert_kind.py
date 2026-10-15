@@ -17,7 +17,7 @@ import respx
 
 from tests.test_server import (
     BASE,
-    CALLER_BASIC,
+    CALLER_KEY,
     EXEC_ID,
     EXEC_STATUS_URL,
     ORIGIN,
@@ -226,7 +226,7 @@ class TestCulvertKindAttach:
         assert "retry_execution_id" not in data
         assert json.loads(routes["patch"].calls[0].request.content) == {"gn_layer": 1600}
         for name in ("status", "ows", "upload", "mapped_status", "list", "patch"):
-            assert routes[name].calls[0].request.headers["authorization"] == CALLER_BASIC, name
+            assert routes[name].calls[0].request.headers["authorization"] == CALLER_KEY, name
 
     @respx.mock
     async def test_culvert_kind_reuploads_mapped_values_with_defaults_filled(self, _server):
