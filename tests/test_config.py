@@ -23,8 +23,20 @@ class TestFromEnv:
         assert cfg.api_url == "https://example.com"
         # TASK-3730: no Basic grace-period setting either: Basic on /mcp/ is
         # refused outright, so there is nothing to configure.
+        # TASK-3511: data_envelope is the harness's negative-control switch, not a credential.
         assert {f.name for f in fields(cfg)} == {
-            "api_url", "port", "host", "api_host", "ui_origin"}
+            "api_url", "port", "host", "api_host", "ui_origin", "data_envelope"}
+
+    @pytest.mark.parametrize("raw,expected", [
+        (None, True), ("on", True), ("1", True), ("off", False), ("OFF", False), ("0", False),
+        ("false", False), ("no", False),
+    ])
+    def test_data_envelope_is_on_unless_switched_off(self, monkeypatch, raw, expected):
+        # TASK-3511: ON by default; only the harness's negative control turns it off.
+        monkeypatch.setenv("HYDRATA_API_URL", "https://example.com")
+        if raw is not None:
+            monkeypatch.setenv("HYDRATA_MCP_DATA_ENVELOPE", raw)
+        assert Config.from_env().data_envelope is expected
 
     def test_valid_env_produces_config(self, env_vars):
         cfg = Config.from_env()

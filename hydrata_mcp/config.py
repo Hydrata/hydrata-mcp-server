@@ -31,6 +31,12 @@ class Config:
     # the API URL's own origin. Localhost's hot-reload dev server sets
     # HYDRATA_UI_ORIGIN=http://localhost:8081.
     ui_origin: str = ""
+    # TASK-3511 (W2b, epic 3200, D32) — wrap people's text in tool results as
+    # <untrusted-data>…</untrusted-data>. ON unless HYDRATA_MCP_DATA_ENVELOPE is
+    # off/0/false/no: the OFF switch exists ONLY for the MCP harness's negative
+    # control (merewether-injected run with the envelope disabled must be able
+    # to fail). Never set it on a served site.
+    data_envelope: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -44,4 +50,6 @@ class Config:
             host=os.environ.get("HYDRATA_MCP_HOST", "127.0.0.1"),
             api_host=os.environ.get("HYDRATA_API_HOST", ""),
             ui_origin=os.environ.get("HYDRATA_UI_ORIGIN", "").rstrip("/"),
+            data_envelope=os.environ.get("HYDRATA_MCP_DATA_ENVELOPE", "on").strip().lower()
+            not in ("off", "0", "false", "no"),
         )

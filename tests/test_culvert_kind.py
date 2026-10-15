@@ -181,7 +181,8 @@ class TestCulvertKindMapping:
             {"shape": "arch", "upstream_invert_m": 1, "downstream_invert_m": 1, "barrels": 30},
         ))
         first, second = report["problems"]  # one line per culvert
-        assert first == ("Culvert 'No inverts': upstream_invert_m is required; "
+        # TASK-3511: the culvert's name is the uploader's text, so it comes back as data.
+        assert first == ("Culvert <untrusted-data>'No inverts'</untrusted-data>: upstream_invert_m is required; "
                          "downstream_invert_m is required")
         assert second.startswith("Culvert #2: shape must be 'box' or 'circular'")
         assert "barrels must be a whole number from 1 to 20" in second
@@ -206,7 +207,9 @@ class TestCulvertEntranceCodes:
             _d10(name="Bad", shape="circular", width_m=None, height_m=None, diameter_m=0.9,
                  entrance_type="wingwalls_30_75")))
         (line,) = report["problems"]
-        assert "Culvert 'Bad'" in line and "entrance_type 'wingwalls_30_75' is not available for a circular concrete" in line
+        assert "Culvert <untrusted-data>'Bad'</untrusted-data>" in line
+        assert ("entrance_type <untrusted-data>'wingwalls_30_75'</untrusted-data> is not available "
+                "for a circular concrete") in line
 
     async def test_culvert_entrance_valid_combination_has_no_problem(self, _server):
         _, report = _server._map_culvert_collection(_fc(_d10(entrance_type="wingwalls_0")))

@@ -462,10 +462,27 @@ async def _call_as_caller(srv, name, arguments):
     return _parse(resp)["result"]
 
 
+def _unwrapped(value):
+    """`value` with TASK-3511's data envelope taken off: the markers and the leading note.
+
+    The tools/call tests in this file pin what each tool RETURNS (its logic);
+    tests/test_data_envelope.py pins the envelope itself on the raw text, for
+    every tool. This keeps the two concerns apart instead of restating the
+    markers in a hundred unrelated assertions.
+    """
+    if isinstance(value, dict):
+        return {_unwrapped(k): _unwrapped(v) for k, v in value.items() if k != "untrusted_data_note"}
+    if isinstance(value, list):
+        return [_unwrapped(item) for item in value]
+    if isinstance(value, str):
+        return value.replace("<untrusted-data>", "").replace("</untrusted-data>", "")
+    return value
+
+
 def _tool_json(result):
-    """The tool's text payload, parsed. Fails loudly on isError so the message shows."""
+    """The tool's text payload, parsed and unwrapped. Fails loudly on isError so the message shows."""
     assert result.get("isError") is not True, result["content"][0]["text"]
-    return json.loads(result["content"][0]["text"])
+    return _unwrapped(json.loads(result["content"][0]["text"]))
 
 
 HAND_BACK_KEYS = {"ui_url", "summary", "say_to_user", "hand_back_error"}
