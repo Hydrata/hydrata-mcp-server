@@ -1016,8 +1016,10 @@ async def create_project(
     The caller's own account becomes the owner. `projection` is the projected
     CRS every scenario in the project is meshed and run in — pick the UTM zone
     covering the site. The project's map is created alongside it; `ui_url`
-    opens it — give it to the user. Next step for a new project:
-    presign_terrain_upload.
+    opens it — give it to the user. A project you create is unpublished
+    (`is_published: false`): only its owner and members can see it until the
+    user presses Publish in its Sharing panel in the browser — you cannot
+    publish it. Next step for a new project: presign_terrain_upload.
     """
     body, status_code = await client.post(
         "/projects/", json={"name": name, "projection": projection}
