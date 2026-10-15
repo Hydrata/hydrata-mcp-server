@@ -7,17 +7,16 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import datetime
 from http import HTTPStatus
 from typing import Annotated
 from urllib.parse import quote, urlencode
 
 import uvicorn
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_http_headers
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
-from mcp_types import TextContent, ToolAnnotations
+from mcp_types import ToolAnnotations
 from starlette.middleware import Middleware
 
 from .client import HydrataAPIError, HydrataClient
@@ -32,46 +31,28 @@ client = HydrataClient(config)
 # ---------------------------------------------------------------------------
 # TASK-3508 (W2a, epic 3200, D25) — the credential is an hk_ agent key: a named,
 # revocable grant the user creates on <site>/agents/, sent as
-# ``Authorization: Bearer hk_…`` and VERIFIED BY DJANGO (this server never parses
-# it; it forwards it verbatim). HTTP Basic still forwards until
-# Config.basic_auth_sunset, with a deprecation note in every result; from that
-# day a Basic tools/call is 401 here.
+# ``Authorization: Bearer hk_…`` and VERIFIED BY DJANGO (this server never
+# validates it; it forwards it verbatim).
+# TASK-3730 (W2a gate fix, D25 amended 15-10-26) — and ONLY an agent key: a
+# tools/call carrying HTTP Basic or any other Bearer token (a GeoNode OAuth
+# token) is 401 here, with no grace period. Such a caller would act as the
+# user while skipping the key level, the kill switch, the spend cap/consent
+# and the agent activity log. Django keeps Basic for QGIS/scripts.
 AGENT_KEY_HEADER = "Authorization: Bearer hk_..."
+AGENT_KEY_PREFIX = "hk_"
 
 
 def _agent_keys_url() -> str:
     return f"{_ui_origin()}/agents/"
 
 
-def _basic_sunset() -> date | None:
-    """The configured sunset day, or None (unset, or not an ISO date — never a lock-out)."""
-    try:
-        return date.fromisoformat(config.basic_auth_sunset) if config.basic_auth_sunset else None
-    except ValueError:
-        return None
-
-
-def _basic_expired() -> bool:
-    sunset = _basic_sunset()
-    return sunset is not None and date.today() >= sunset
-
-
-def _auth_scheme(value: str) -> str:
-    return value.strip().partition(" ")[0].lower()
-
-
-def _basic_deprecation_note() -> str | None:
-    """The note a Basic caller gets in every tool result; None for any other credential."""
-    auth = get_http_headers(include={"authorization"}).get("authorization", "")
-    if _auth_scheme(auth) != "basic":
-        return None
-    sunset = _basic_sunset()
-    until = f" and stops working on {sunset.isoformat()}" if sunset else " and will stop working soon"
-    return (
-        f"Signing in to the Hydrata MCP server with HTTP Basic credentials is deprecated{until}. "
-        f"Ask the account owner to create an agent key at {_agent_keys_url()} and send it as the "
-        f"header '{AGENT_KEY_HEADER}' instead."
-    )
+def _is_agent_key(value: str) -> bool:
+    """True when Django's ``bearer_agent_key`` (apps/agents/keys.py) would read
+    ``value`` as an agent key: scheme ``Bearer`` in any case, then the token
+    after extra spaces, starting ``hk_``. Same parse, so the two never disagree
+    on what is a key. The prefix only; Django verifies the key itself."""
+    scheme, _, token = value.strip().partition(" ")
+    return scheme.lower() == "bearer" and token.strip().startswith(AGENT_KEY_PREFIX)
 
 
 class RequireAuthForToolsCall:
@@ -81,11 +62,17 @@ class RequireAuthForToolsCall:
     ``Authorization`` header — an agent key, ``Bearer hk_…`` (TASK-3508) — which
     :class:`HydrataClient` forwards verbatim to the REST API, where Django verifies
     it, so results are scoped by the real user's project permissions and the grant's
-    level, and the audit trail names them. Missing it, the request is answered here
-    with ``401`` + ``WWW-Authenticate: Bearer realm="hydrata.com"`` and a
-    JSON-RPC-shaped error body (code ``-32001``) that an MCP client can surface,
-    before fastmcp ever runs a tool. A Basic ``tools/call`` on or after
-    Config.basic_auth_sunset gets the same 401.
+    level, and the audit trail names them. Without exactly one such header — none,
+    HTTP Basic, a non-``hk_`` Bearer token, or two Authorization headers
+    (TASK-3730) — the request is answered here with ``401`` +
+    ``WWW-Authenticate: Bearer realm="hydrata.com"`` and a JSON-RPC-shaped error
+    body (code ``-32001``) that an MCP client can surface, before fastmcp ever
+    runs a tool.
+
+    Why refuse two headers: the client forwards the LAST Authorization
+    (fastmcp's ``get_http_headers`` builds a dict), so checking any one of
+    several would let ``Bearer hk_…`` + ``Basic …`` pass here and go upstream
+    as Basic.
 
     Why only ``tools/call`` (decision D2 on TASK-2467, a deliberate deviation from
     TASK-1389's "reject anonymous tools/list"): the tool catalog is public on GitHub
@@ -143,22 +130,21 @@ class RequireAuthForToolsCall:
                 break
 
         # ASGI header names are lowercase bytes; a blank value is not a credential.
-        auth = next(
-            (value.decode("latin-1") for name, value in scope.get("headers", [])
-             if name == b"authorization" and value.strip()),
-            "",
-        )
+        auths = [value.decode("latin-1") for name, value in scope.get("headers", [])
+                 if name == b"authorization"]
+        credentials = [a for a in auths if a.strip()]
         refusal = None
-        if needs_auth and not auth:
+        if needs_auth and not credentials:
             refusal = (
                 f"Authentication required: send a Hydrata agent key as the header "
                 f"'{AGENT_KEY_HEADER}' (create one at {_agent_keys_url()})"
             )
-        elif needs_auth and _auth_scheme(auth) == "basic" and _basic_expired():
+        elif needs_auth and (len(auths) != 1 or not _is_agent_key(auths[0])):
+            # TASK-3730: never echo the credential back — only what to send instead.
             refusal = (
-                f"HTTP Basic sign-in to the Hydrata MCP server ended on "
-                f"{_basic_sunset().isoformat()}. Create an agent key at {_agent_keys_url()} and send "
-                f"it as the header '{AGENT_KEY_HEADER}'"
+                f"Only a Hydrata agent key is accepted for tool calls: send exactly one header "
+                f"'{AGENT_KEY_HEADER}'. Sign-in with HTTP Basic or any other token is not "
+                f"accepted here. Create an agent key at {_agent_keys_url()}"
             )
 
         if refusal:
@@ -284,28 +270,14 @@ def _structured_result(text: str) -> ToolResult:
 
     structuredContent must be an object, so a non-object JSON value (or text that
     is not JSON) is carried as {"result": value}.
-
-    TASK-3508: a caller still on HTTP Basic gets ``auth_deprecation`` in EVERY
-    result — in the JSON text and structuredContent alike (they stay equal, the
-    TASK-3449 invariant); a non-object result carries the note as a second
-    text block.
     """
     try:
         parsed = json.loads(text)
     except (TypeError, ValueError):
         parsed = text
-    note = _basic_deprecation_note()
-    if note is None:
-        return ToolResult(
-            content=text,
-            structured_content=parsed if isinstance(parsed, dict) else {"result": parsed},
-        )
-    if isinstance(parsed, dict):
-        parsed = {**parsed, "auth_deprecation": note}
-        return ToolResult(content=json.dumps(parsed, indent=2), structured_content=parsed)
     return ToolResult(
-        content=[TextContent(type="text", text=text), TextContent(type="text", text=note)],
-        structured_content={"result": parsed, "auth_deprecation": note},
+        content=text,
+        structured_content=parsed if isinstance(parsed, dict) else {"result": parsed},
     )
 
 
@@ -328,15 +300,7 @@ def _tool(name: str):
     def decorate(fn):
         @functools.wraps(fn)
         async def registered(*args, **kwargs):
-            try:
-                text = await fn(*args, **kwargs)
-            except (ToolError, HydrataAPIError) as exc:
-                # TASK-3508: an error result carries the Basic deprecation note too.
-                note = _basic_deprecation_note()
-                if note is None:
-                    raise
-                raise type(exc)(f"{exc}\n\n{note}") from exc
-            return _structured_result(text)
+            return _structured_result(await fn(*args, **kwargs))
 
         register(registered)
         return fn

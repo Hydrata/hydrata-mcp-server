@@ -31,12 +31,6 @@ class Config:
     # the API URL's own origin. Localhost's hot-reload dev server sets
     # HYDRATA_UI_ORIGIN=http://localhost:8081.
     ui_origin: str = ""
-    # TASK-3508 (W2a, epic 3200, D25) — the day HTTP Basic on /mcp/ stops
-    # working (ISO date, e.g. "2026-11-20"). Until then a Basic caller gets a
-    # deprecation note in every tool result; from that day a Basic tools/call
-    # is answered 401 pointing to agent keys. Unset: note only, never 401 —
-    # the deploy sets it ~30 days after agent keys ship.
-    basic_auth_sunset: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -50,5 +44,4 @@ class Config:
             host=os.environ.get("HYDRATA_MCP_HOST", "127.0.0.1"),
             api_host=os.environ.get("HYDRATA_API_HOST", ""),
             ui_origin=os.environ.get("HYDRATA_UI_ORIGIN", "").rstrip("/"),
-            basic_auth_sunset=os.environ.get("HYDRATA_MCP_BASIC_SUNSET", "").strip(),
         )

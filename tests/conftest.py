@@ -14,7 +14,6 @@ def _clean_env(monkeypatch):
         "HYDRATA_UI_ORIGIN",  # TASK-3203
         "HYDRATA_MCP_PORT",
         "HYDRATA_MCP_HOST",
-        "HYDRATA_MCP_BASIC_SUNSET",  # TASK-3508
     ):
         monkeypatch.delenv(key, raising=False)
 

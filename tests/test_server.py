@@ -197,10 +197,7 @@ MCP_HEADERS = {
 # TASK-3508 (W2a, epic 3200, D25): the caller's credential is an hk_ agent key,
 # verified by Django; the MCP server forwards it verbatim and never parses it.
 CALLER_KEY = "Bearer hk_0123456789ab_c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA"
-# foo:bar — a password caller, deprecated on /mcp/ (still forwarded verbatim
-# until the sunset). Deliberately NOT the env_vars credential: httpx lets a
-# constructor-level BasicAuth overwrite a per-request Authorization header, so a
-# build that still held a server-side credential could pass by coincidence.
+# foo:bar — a password caller, refused on /mcp/ tools/call since TASK-3730.
 CALLER_BASIC = "Basic Zm9vOmJhcg=="
 UPSTREAM_OK = {"count": 0, "results": []}
 
@@ -287,7 +284,7 @@ class TestPassthrough:
         assert resp.json()["id"] == 2
 
     @respx.mock
-    async def test_basic_header_forwarded_verbatim(self, _server):
+    async def test_agent_key_header_forwarded_verbatim(self, _server):
         upstream = respx.get(f"{BASE}/projects/").mock(
             return_value=httpx.Response(200, json={"count": 3, "results": []})
         )
@@ -2911,10 +2908,12 @@ class TestStructuredContent:
 
 # ---------------------------------------------------------------------------
 # TASK-3508 (W2a, epic 3200, D25) — agent keys replace the password on /mcp/.
-# The tool text never asks for a password; a Basic caller still works (the
-# header is forwarded verbatim) but every result carries a deprecation note
-# until HYDRATA_MCP_BASIC_SUNSET, after which a Basic tools/call is 401.
-# Stored proof: -k agent_key.
+# TASK-3730 (W2a gate fix, D25 amended 15-10-26) — and ONLY agent keys: a
+# tools/call whose Authorization is not ``Bearer hk_…`` (HTTP Basic, a GeoNode
+# OAuth Bearer token, anything else) is 401 here, the same shape as an
+# anonymous call. No grace period: the Basic sunset machinery is gone. Such a
+# caller would bypass the key level, the kill switch, the spend cap/consent
+# and the agent activity log. Stored proof: -k agent_key.
 # ---------------------------------------------------------------------------
 async def _catalog(srv):
     """Every string an agent reads before calling: instructions + tool + parameter text."""
@@ -2935,6 +2934,43 @@ async def _call(srv, auth, name="list_projects", arguments=None):
     async with _asgi_client(srv) as c:
         return await c.post("/", headers={**MCP_HEADERS, "Authorization": auth},
                             json=_tools_call(name, arguments))
+
+
+def _assert_agent_key_401(resp, request_id=1):
+    """The anonymous-call refusal shape (TASK-3730 AC1/AC2): 401, Bearer challenge, -32001."""
+    assert resp.status_code == 401
+    assert resp.headers["www-authenticate"] == 'Bearer realm="hydrata.com"'
+    body = resp.json()
+    assert body["jsonrpc"] == "2.0"
+    assert body["id"] == request_id
+    assert body["error"]["code"] == -32001
+    message = body["error"]["message"]
+    assert "/agents/" in message and "Authorization: Bearer hk_" in message
+    assert "password" not in message.lower()
+    return message
+
+
+# A GeoNode OAuth2 access token (30 alnum chars, the shape django-oauth-toolkit
+# issues) — what the /gs/ blocker (TASK-3728) let an agent harvest.
+CALLER_OAUTH = "Bearer 7fQ2xLm9RtY4vW1zKp8sNd3hJc6bGa"
+# 'Basic base64(user:hk_…)': a key smuggled inside Basic must not count as one.
+CALLER_BASIC_HOLDING_KEY = "Basic dXNlcjpoa18wMTIzNDU2Nzg5YWJfYzJWamNtVjA="
+
+# Header forms Django's bearer_agent_key (apps/agents/keys.py) does NOT read as
+# a key — so neither may this server. Each must be refused before any tool runs.
+NOT_AN_AGENT_KEY = [
+    pytest.param(CALLER_BASIC, id="basic"),
+    pytest.param(CALLER_BASIC_HOLDING_KEY, id="basic-holding-a-key"),
+    pytest.param(CALLER_OAUTH, id="oauth-bearer"),
+    pytest.param("Bearer", id="bearer-no-token"),
+    pytest.param("Bearer hk", id="bearer-hk-no-underscore"),
+    pytest.param("Bearer HK_0123456789ab_c2VjcmV0", id="bearer-uppercase-prefix"),
+    pytest.param("Bearer x hk_0123456789ab_c2VjcmV0", id="bearer-key-not-first"),
+    pytest.param("Token hk_0123456789ab_c2VjcmV0", id="token-scheme"),
+    pytest.param("Bearerhk_0123456789ab_c2VjcmV0", id="no-space"),
+    pytest.param("Bearer\thk_0123456789ab_c2VjcmV0", id="tab-separator"),
+    pytest.param("hk_0123456789ab_c2VjcmV0", id="bare-key-no-scheme"),
+]
 
 
 class TestAgentKeys:
@@ -2961,71 +2997,111 @@ class TestAgentKeys:
         assert "auth_deprecation" not in result["structuredContent"]
         assert "auth_deprecation" not in json.loads(result["content"][0]["text"])
 
+    @pytest.mark.parametrize("auth", [
+        pytest.param(CALLER_KEY, id="canonical"),
+        pytest.param("bearer  " + CALLER_KEY.split(" ", 1)[1], id="lowercase-double-space"),
+        pytest.param("BEARER " + CALLER_KEY.split(" ", 1)[1], id="uppercase-scheme"),
+    ])
     @respx.mock
-    async def test_agent_key_basic_caller_gets_the_deprecation_note_in_every_result(self, _server):
+    async def test_agent_key_scheme_case_and_spacing_forwarded_unchanged(self, _server, auth):
+        """AC3: the scheme matches case-insensitively with extra spaces, like Django's
+        bearer_agent_key; the header goes upstream exactly as the caller sent it."""
         upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
-        resp = await _call(_server, CALLER_BASIC)
+        resp = await _call(_server, auth)
         assert resp.status_code == 200
-        assert upstream.calls[0].request.headers["authorization"] == CALLER_BASIC  # still verbatim
-        result = _parse(resp)["result"]
-        note = result["structuredContent"]["auth_deprecation"]
-        assert "deprecated" in note and "/agents/" in note and "Bearer hk_" in note
-        assert "password" not in note.lower()
-        text = json.loads(result["content"][0]["text"])
-        assert text["auth_deprecation"] == note
-        assert result["structuredContent"] == text  # the TASK-3449 invariant holds
+        assert "error" not in _parse(resp)
+        assert upstream.calls[0].request.headers["authorization"] == auth
 
     @respx.mock
-    async def test_agent_key_basic_caller_gets_the_note_on_an_error_result_too(self, _server):
+    async def test_agent_key_basic_tools_call_is_401_and_never_forwarded(self, _server):
+        """AC1: no grace period — HTTP Basic is refused on the first call."""
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, CALLER_BASIC)
+        _assert_agent_key_401(resp)
+        assert not upstream.calls
+
+    @respx.mock
+    async def test_agent_key_oauth_bearer_tools_call_is_401_and_never_forwarded(self, _server):
+        """AC2: a GeoNode OAuth token is not an agent key (gate call 2, until TASK-3512)."""
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, CALLER_OAUTH)
+        _assert_agent_key_401(resp)
+        assert not upstream.calls
+
+    @pytest.mark.parametrize("auth", NOT_AN_AGENT_KEY)
+    @respx.mock
+    async def test_agent_key_every_non_key_form_is_401(self, _server, auth):
+        upstream = respx.route().mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(_server, auth)
+        _assert_agent_key_401(resp)
+        assert not upstream.calls
+
+    @pytest.mark.parametrize("auth", [CALLER_BASIC, CALLER_OAUTH], ids=["basic", "oauth-bearer"])
+    @respx.mock
+    async def test_agent_key_non_key_refused_on_every_tool(self, _server, auth):
+        """The refusal is per method, not per tool: a write tool is refused the same way."""
+        upstream = respx.route().mock(return_value=httpx.Response(201, json={"id": 1}))
+        resp = await _call(_server, auth, "create_project", {"name": "x", "projection": "EPSG:32756"})
+        _assert_agent_key_401(resp)
+        assert not upstream.calls
+
+    @pytest.mark.parametrize("auth", [CALLER_BASIC, CALLER_OAUTH], ids=["basic", "oauth-bearer"])
+    @respx.mock
+    async def test_agent_key_batch_with_a_non_key_tools_call_is_401(self, _server, auth):
+        upstream = respx.route().mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": auth},
+                                json=[_rpc("tools/list", id=1), _tools_call(id=2)])
+        _assert_agent_key_401(resp, request_id=2)
+        assert not upstream.calls
+
+    @pytest.mark.parametrize("second", [CALLER_BASIC, CALLER_OAUTH, CALLER_KEY],
+                             ids=["then-basic", "then-oauth-bearer", "then-the-same-key"])
+    @respx.mock
+    async def test_agent_key_two_authorization_headers_are_401(self, _server, second):
+        """The forwarded header is the LAST Authorization (fastmcp's get_http_headers
+        builds a dict), so a key first + Basic second must not pass a first-header
+        check and then go upstream as Basic. Any second header is refused."""
+        upstream = respx.route().mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        headers = [*MCP_HEADERS.items(), ("Authorization", CALLER_KEY), ("Authorization", second)]
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=headers, json=_tools_call())
+        _assert_agent_key_401(resp)
+        assert not upstream.calls
+
+    @pytest.mark.parametrize("auth", [None, CALLER_BASIC, CALLER_OAUTH], ids=["anonymous", "basic", "oauth-bearer"])
+    @pytest.mark.parametrize("method,params", [
+        ("tools/list", {}),
+        ("ping", {}),
+        ("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "0"}}),
+    ])
+    async def test_agent_key_catalog_methods_stay_open_whatever_the_header(self, _server, method, params, auth):
+        """AC4: initialize / tools/list / ping answer anonymously (D2 on TASK-2467),
+        and a non-key header does not turn them into a 401 either."""
+        headers = dict(MCP_HEADERS) if auth is None else {**MCP_HEADERS, "Authorization": auth}
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=headers, json=_rpc(method, params))
+        assert resp.status_code == 200
+        assert "error" not in _parse(resp)
+
+    @respx.mock
+    async def test_agent_key_error_result_carries_no_auth_note(self, _server):
         respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(403, json={"detail": "no"}))
-        result = _parse(await _call(_server, CALLER_BASIC))["result"]
-        assert result["isError"] is True
-        assert "deprecated" in result["content"][0]["text"]
         result = _parse(await _call(_server, CALLER_KEY))["result"]
         assert result["isError"] is True
-        assert "deprecated" not in result["content"][0]["text"]
+        assert "deprecat" not in result["content"][0]["text"].lower()
 
-    @respx.mock
-    async def test_agent_key_basic_note_names_the_sunset_date_before_it(self, _server, monkeypatch):
-        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "2999-01-01")
-        importlib.reload(_server)
-        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
-        resp = await _call(_server, CALLER_BASIC)
-        assert resp.status_code == 200
-        assert "2999-01-01" in _parse(resp)["result"]["structuredContent"]["auth_deprecation"]
-
-    @respx.mock
-    async def test_agent_key_basic_is_401_after_the_sunset(self, _server, monkeypatch):
-        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "2000-01-01")
-        importlib.reload(_server)
-        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
-        resp = await _call(_server, CALLER_BASIC)
-        assert resp.status_code == 401
-        assert resp.headers["www-authenticate"] == 'Bearer realm="hydrata.com"'
-        message = resp.json()["error"]["message"]
-        assert "/agents/" in message and "Bearer hk_" in message
-        assert not upstream.calls
-        # The key keeps working after the sunset.
-        resp = await _call(_server, CALLER_KEY)
-        assert resp.status_code == 200
-        assert upstream.calls
-
-    async def test_agent_key_basic_catalog_stays_open_after_the_sunset(self, _server, monkeypatch):
-        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "2000-01-01")
-        importlib.reload(_server)
-        async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_BASIC},
-                                json=_rpc("tools/list"))
-        assert resp.status_code == 200
-
-    @respx.mock
-    async def test_agent_key_bad_sunset_value_never_locks_basic_out(self, _server, monkeypatch):
-        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", "next tuesday")
-        importlib.reload(_server)
-        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
-        resp = await _call(_server, CALLER_BASIC)
-        assert resp.status_code == 200
-        assert "auth_deprecation" in _parse(resp)["result"]["structuredContent"]
+    async def test_agent_key_no_basic_grace_period_remains(self, _server):
+        """AC5: the sunset setting is gone from the code, tests and docs of this repo."""
+        import pathlib
+        root = pathlib.Path(_server.__file__).resolve().parent.parent
+        needles = ("BASIC" + "_SUNSET", "basic_auth" + "_sunset", "_basic" + "_expired",
+                   "_basic" + "_deprecation_note")
+        files = [*root.glob("hydrata_mcp/*.py"), *root.glob("tests/*.py"),
+                 root / "README.md", root / "server.json", root / "pyproject.toml"]
+        hits = [(f.name, n) for f in files for n in needles if n in f.read_text()]
+        assert not hits
 
 
 # ---------------------------------------------------------------------------

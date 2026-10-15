@@ -21,8 +21,10 @@ class TestFromEnv:
         monkeypatch.setenv("HYDRATA_API_URL", "https://example.com")
         cfg = Config.from_env()
         assert cfg.api_url == "https://example.com"
+        # TASK-3730: no Basic grace-period setting either: Basic on /mcp/ is
+        # refused outright, so there is nothing to configure.
         assert {f.name for f in fields(cfg)} == {
-            "api_url", "port", "host", "api_host", "ui_origin", "basic_auth_sunset"}
+            "api_url", "port", "host", "api_host", "ui_origin"}
 
     def test_valid_env_produces_config(self, env_vars):
         cfg = Config.from_env()
@@ -44,14 +46,3 @@ class TestFromEnv:
         monkeypatch.setenv("HYDRATA_MCP_HOST", "0.0.0.0")
         cfg = Config.from_env()
         assert cfg.host == "0.0.0.0"
-
-
-class TestBasicAuthSunset:
-    """TASK-3508: HYDRATA_MCP_BASIC_SUNSET is read verbatim (parsed where it is used)."""
-
-    def test_unset_is_empty(self, env_vars):
-        assert Config.from_env().basic_auth_sunset == ""
-
-    def test_set_is_read(self, monkeypatch, env_vars):
-        monkeypatch.setenv("HYDRATA_MCP_BASIC_SUNSET", " 2026-11-20 ")
-        assert Config.from_env().basic_auth_sunset == "2026-11-20"
