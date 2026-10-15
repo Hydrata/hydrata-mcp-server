@@ -293,6 +293,22 @@ class TestComposedTextEnvelope:
         assert data["outcome"] == "unsigned_inputs"
         assert f"{OPEN}{CANARY}{CLOSE} (boundary)" in data["say_to_user"]
 
+    @respx.mock
+    async def test_data_envelope_a_relayed_build_refusal_detail_naming_a_culvert_is_wrapped(self, _server):
+        """W2b sweep: Hydrata's 422 CULVERT_INVALID detail quotes the culvert's NAME (models/culvert.py
+        _feature_label), and build_scenario relays the body verbatim — the `detail` key itself is data,
+        not only the copy in say_to_user."""
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario("created")))
+        respx.get(f"{BASE}/projects/42/boundaries/27497/").mock(return_value=httpx.Response(
+            200, json={"id": 27497, "title": "Boundary 01", "gn_layer": 1, "has_features": True}))
+        _mock_build(422, {"error_code": "CULVERT_INVALID",
+                          "detail": f"Culvert '{CANARY}' has no shape. Fix it on the map, then build again."})
+        _mock_project(name="p")
+        data = _assert_enveloped(await _call_as_caller(_server, "build_scenario", {
+            "project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}))
+        assert data["detail"].startswith(OPEN) and data["detail"].endswith(CLOSE), data["detail"]
+        assert CANARY not in _bare(json.dumps(data))
+
     async def test_data_envelope_culvert_problems_wrap_the_culvert_name_and_attribute_values(self, _server):
         collection = {"type": "FeatureCollection", "features": [{
             "type": "Feature", "geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]},

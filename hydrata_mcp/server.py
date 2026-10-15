@@ -2553,6 +2553,10 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
     elif result.get("outcome") == "error":
         say = f"The build failed: {_data(result.get('error_message') or result.get('user_message'))}"
     elif "http_status" in result and result.get("http_status", 0) >= 400:
+        # A relayed refusal's detail can quote a person's text (422 CULVERT_INVALID names the
+        # culvert), so the `detail` key is data too, not only its copy in say_to_user (TASK-3511).
+        if isinstance(result.get("detail"), str):
+            result["detail"] = _data(result["detail"])
         say = f"The build was refused by the server: {_data(str(result.get('detail') or result))}"
     else:
         say = f"The scenario's latest run is {result.get('outcome')}. Open the link to see it."
