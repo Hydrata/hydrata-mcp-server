@@ -483,7 +483,7 @@ def _terrain(pk, status, **extra):
 
 class TestCreateProjectTool:
     @respx.mock
-    async def test_create_project_posts_name_projection_and_forwards_basic(self, _server):
+    async def test_create_project_posts_name_projection_and_forwards_the_key(self, _server):
         route = respx.post(f"{BASE}/projects/").mock(
             return_value=httpx.Response(
                 201, json={"id": 42, "name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
@@ -511,7 +511,7 @@ class TestCreateProjectTool:
 
 class TestPresignTerrainUploadTool:
     @respx.mock
-    async def test_presign_terrain_upload_posts_filename_type_size_and_forwards_basic(
+    async def test_presign_terrain_upload_posts_filename_type_size_and_forwards_the_key(
         self, _server
     ):
         presigned = {
@@ -564,7 +564,7 @@ class TestPresignTerrainUploadTool:
 
 class TestFinalizeTerrainUploadTool:
     @respx.mock
-    async def test_finalize_terrain_upload_posts_key_process_title_and_forwards_basic(
+    async def test_finalize_terrain_upload_posts_key_process_title_and_forwards_the_key(
         self, _server
     ):
         route = respx.post(f"{BASE}/projects/42/terrain/upload/finalize/").mock(
@@ -617,7 +617,7 @@ class TestFinalizeTerrainUploadTool:
 
 class TestGetTerrainTool:
     @respx.mock
-    async def test_get_terrain_polls_until_ready_and_forwards_basic(self, _server):
+    async def test_get_terrain_polls_until_ready_and_forwards_the_key(self, _server):
         route = respx.get(f"{BASE}/projects/42/terrain/7/").mock(
             side_effect=[
                 httpx.Response(200, json=_terrain(7, "creating")),
@@ -882,7 +882,7 @@ def _tool_error_text(result):
 
 class TestCreateTimeSeriesTool:
     @respx.mock
-    async def test_create_time_series_posts_series_type_and_units_top_level_and_forwards_basic(
+    async def test_create_time_series_posts_series_type_and_units_top_level_and_forwards_the_key(
         self, _server
     ):
         route = respx.post(f"{BASE}/projects/42/time-series/").mock(
@@ -1069,7 +1069,7 @@ class TestAttachInputLayerTool:
 
     @pytest.mark.parametrize("kind", list(INPUT_LAYER_ROUTES))
     @respx.mock
-    async def test_attach_input_layer_patches_the_default_row_and_forwards_basic(
+    async def test_attach_input_layer_patches_the_default_row_and_forwards_the_key(
         self, _server, kind
     ):
         route_name = INPUT_LAYER_ROUTES[kind]
