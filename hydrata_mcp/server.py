@@ -1707,7 +1707,13 @@ LIST_TIME_SERIES_MAX_PAGES = 20
 
 
 async def _feature_count(alternate) -> int | None:
-    """WFS resultType=hits for one layer, or None (best effort)."""
+    """WFS resultType=hits for one layer, or None (best effort).
+
+    None on ANY failure, never an error: under an hk_ agent key Hydrata refuses
+    every /gs/ request (403 AGENT_KEY_SCOPE, TASK-3728 — GeoNode's proxy would
+    hand GeoServer the user's own OAuth token), so with a key this is always
+    None and callers report the count as unknown.
+    """
     try:
         xml = await client.get_text_from_origin("/gs/ows", params={
             "service": "WFS", "version": "2.0.0", "request": "GetFeature",
@@ -1731,7 +1737,9 @@ async def list_inputs(
     `has_features` comes from the API for boundary, rainfall and mesh_region;
     for friction, inflow and building (whose records do not carry it) it is a
     WFS feature count, at most 24 lookups per call — past that, or when a
-    lookup fails, it is null (unknown, not false). A row with no `gn_layer`
+    lookup fails, it is null (unknown, not false). `has_features` MAY BE NULL:
+    with an agent key the map server (/gs/) refuses the lookup, so those three
+    kinds report null; treat null as unknown, not as empty. A row with no `gn_layer`
     has no layer yet (`has_features` false). Use the row ids with
     create_scenario; this is the listing primitive — no need to probe files.
     """

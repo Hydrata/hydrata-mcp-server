@@ -2795,6 +2795,25 @@ class TestListInputs:
         assert inputs["friction"][0]["has_features"] is True
         assert inputs["building"][0]["has_features"] is None  # past the bound: unknown, not false
 
+    @respx.mock
+    async def test_list_inputs_has_features_is_null_not_an_error_when_gs_refuses_the_key(self, _server):
+        """TASK-3728: Hydrata refuses every /gs/ request made with an hk_ key (403 AGENT_KEY_SCOPE)."""
+        for route in INPUT_LAYER_ROUTES.values():
+            respx.get(f"{BASE}/projects/42/{route}/").mock(
+                return_value=httpx.Response(200, json=_wrapper_rows(route)))
+        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(return_value=httpx.Response(
+            403, json={"detail": "Agent keys ... do not work on the map server (/gs/)",
+                       "error_code": "AGENT_KEY_SCOPE"}))
+        data = json.loads(await _server.list_inputs(project_id=42))
+        inputs = data["inputs"]
+        assert wfs.call_count == 2
+        for kind in ("friction", "building"):
+            assert inputs[kind][0]["has_features"] is None  # unknown, not false and not an error
+            assert inputs[kind][0]["feature_count"] is None
+        assert inputs["boundary"][0]["has_features"] is True  # API-carried kinds are unaffected
+        assert inputs["inflow"][0]["has_features"] is False   # no layer: still false
+        assert "error" not in data
+
 
 class TestListTimeSeries:
     @respx.mock
