@@ -221,11 +221,6 @@ class HydrataClient:
         resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
         return resp.json()
 
-    async def get_text_from_origin(self, path: str, params: dict | None = None) -> str:
-        """get_from_origin for a NON-JSON body (a WFS ``resultType=hits`` XML answer)."""
-        resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
-        return resp.text
-
     async def post(
         self, path: str, json: dict | None = None, raise_for_status: bool = True
     ) -> tuple[Any, int]:

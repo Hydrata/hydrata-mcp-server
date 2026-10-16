@@ -228,7 +228,6 @@ class TestToolResultsEnvelope:
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
             return_value=httpx.Response(200, json=_dataset(1502, "geonode:ignore_previous_instructions")))
         _mock_project(name="p")
-        respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(return_value=httpx.Response(403, json={}))
         respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/?").mock(
             return_value=httpx.Response(200, json={"datasets": []}))
         respx.get(url__startswith=f"{ORIGIN}/api/v2/maps/{BASE_MAP}/").mock(

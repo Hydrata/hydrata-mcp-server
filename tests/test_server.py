@@ -2413,10 +2413,28 @@ class TestBuildScenarioElidesPresignedUrls:
 UI_URL_RE = r"^https?://.+/catalogue/#/map/\d+"
 BASE_MAP = 1525
 BOUNDARY_ALTERNATE = "geonode:bdy_42_boundary_01"
-WFS_HITS = (
-    '<?xml version="1.0" encoding="UTF-8"?><wfs:FeatureCollection '
-    'numberMatched="4" numberReturned="0" timeStamp="2026-10-02T00:00:00Z"/>'
-)
+
+
+def _gs_tripwire(server, monkeypatch):
+    """TASK-3749: a transport that fails on any map-server (/gs/) URL, and records it.
+
+    Since TASK-3728 Hydrata refuses /gs/ for every agent key, and since TASK-3730
+    every tools/call carries one, so the MCP must never ask /gs/ anything. Every
+    request goes through HydrataClient._send; this wraps it. A /gs/ URL is recorded
+    and raises; tests assert the record is EMPTY, because a best-effort caller
+    could swallow the raise.
+    """
+    hits: list = []
+    original = server.client._send
+
+    async def send(method, url, path, *args, **kwargs):
+        if "/gs/" in url or path.startswith("/gs/"):
+            hits.append(url)
+            raise AssertionError(f"TASK-3749: the MCP made a /gs/ request ({url})")
+        return await original(method, url, path, *args, **kwargs)
+
+    monkeypatch.setattr(server.client, "_send", send)
+    return hits
 
 
 def _mock_project(base_map=BASE_MAP):
@@ -2435,8 +2453,7 @@ def _assert_hand_back(data, **params):
     assert isinstance(data["say_to_user"], str) and data["say_to_user"].strip()
 
 
-def _mock_layer_summary(alternate, count=4, on_map=True):
-    respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(return_value=httpx.Response(200, text=WFS_HITS))
+def _mock_layer_summary(alternate, on_map=True):
     respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/?").mock(
         return_value=httpx.Response(200, json={"datasets": [{"alternate": alternate, "ll_bbox_polygon": {
             "type": "Polygon",
@@ -2501,25 +2518,47 @@ class TestHandBackUiUrl:
         assert data["summary"]["first_timestamp"] == ROW_DATA[0]["timestamp"]
         assert data["summary"]["last_timestamp"] == ROW_DATA[-1]["timestamp"]
 
-    @respx.mock
-    async def test_ui_url_attach_input_layer_frames_the_layer_with_feature_count(self, _server):
+    @staticmethod
+    def _mock_attach(has_features):
+        """A boundary attach whose PATCH answer is the live serializer's row (has_features carried)."""
         _mock_project()
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/boundaries/").mock(
             return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
-        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
-            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+        patched = dict(_row(27497, "Boundary 01", gn_layer=1502), has_features=has_features)
+        respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(return_value=httpx.Response(200, json=patched))
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
             return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
         _mock_layer_summary(BOUNDARY_ALTERNATE)
+
+    @respx.mock
+    async def test_ui_url_attach_input_layer_frames_the_layer_with_api_has_features(self, _server, monkeypatch):
+        """TASK-3749: no /gs/ feature count (always refused under a key); has_features is the API's."""
+        gs = _gs_tripwire(_server, monkeypatch)
+        self._mock_attach(has_features=True)
         data = json.loads(await _server.attach_input_layer(
             project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        assert gs == []
         _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
-        assert data["summary"]["feature_count"] == 4
+        assert data["summary"]["has_features"] is True
+        assert "feature_count" not in data["summary"]
         assert data["summary"]["bbox_wgs84"] == [150.89, -34.38, 150.91, -34.37]
         assert data["summary"]["map_updated"] is True
-        assert "4 feature" in data["say_to_user"] and "sign it off" in data["say_to_user"]
+        assert "it has features" in data["say_to_user"] and "sign it off" in data["say_to_user"]
+        assert "unknown" not in data["say_to_user"]
         assert "WARNING" not in data["say_to_user"]
+
+    @respx.mock
+    async def test_say_to_user_attach_names_an_empty_layer_from_the_api(self, _server, monkeypatch):
+        """TASK-3749: the API says the attached layer is empty, so the user hears it plainly."""
+        gs = _gs_tripwire(_server, monkeypatch)
+        self._mock_attach(has_features=False)
+        data = json.loads(await _server.attach_input_layer(
+            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        assert gs == []
+        assert data["outcome"] == "attached"
+        assert data["summary"]["has_features"] is False
+        assert "no features" in data["say_to_user"]
 
     @respx.mock
     async def test_say_to_user_attach_warns_when_the_map_still_shows_the_old_layer(self, _server):
@@ -2782,11 +2821,16 @@ def _wrapper_rows(route):
     rows = {
         "boundaries": [{"id": 1, "title": "Boundary 01", "gn_layer": 11, "gn_layer_name": "bdy_42_boundary_01",
                         "has_features": True, "has_external_feature": True}],
-        "frictions": [{"id": 2, "title": "Friction 01", "gn_layer": 12, "gn_layer_name": "fri_42_friction_01"}],
-        "inflows": [{"id": 3, "title": "Inflow 01", "gn_layer": None, "gn_layer_name": None}],
+        # TASK-3603 (friction, building) + TASK-3487 (inflow): every wrapper
+        # serializer now carries has_features, so list_inputs never asks /gs/.
+        "frictions": [{"id": 2, "title": "Friction 01", "gn_layer": 12, "gn_layer_name": "fri_42_friction_01",
+                       "has_features": True}],
+        "inflows": [{"id": 3, "title": "Inflow 01", "gn_layer": None, "gn_layer_name": None,
+                     "has_features": False}],
         "rainfalls": [{"id": 4, "title": "Rainfall 01", "gn_layer": 14, "gn_layer_name": "rai_42_rainfall_01",
                        "has_features": False}],
-        "buildings": [{"id": 5, "title": "Building 01", "gn_layer": 15, "gn_layer_name": "str_42_building_01"}],
+        "buildings": [{"id": 5, "title": "Building 01", "gn_layer": 15, "gn_layer_name": "str_42_building_01",
+                       "has_features": False}],
         "mesh-regions": [{"id": 6, "title": "MeshRegion 01", "gn_layer": 16, "gn_layer_name": "mes_42_meshregion_01",
                           "has_features": True}],
         # TASK-3641: CulvertSerializerV2 carries has_features (no WFS lookup).
@@ -2798,62 +2842,60 @@ def _wrapper_rows(route):
 
 class TestListInputs:
     @respx.mock
-    async def test_list_inputs_every_kind_with_alternate_and_has_features(self, _server):
+    async def test_list_inputs_every_kind_with_alternate_and_has_features(self, _server, monkeypatch):
+        """TASK-3749: every kind's has_features is the API's; no /gs/ request at all."""
+        gs = _gs_tripwire(_server, monkeypatch)
         for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
             respx.get(f"{BASE}/projects/42/{route}/").mock(
                 return_value=httpx.Response(200, json=_wrapper_rows(route)))
-
-        def hits(request):
-            name = request.url.params["typeNames"]
-            n = {"geonode:fri_42_friction_01": 3, "geonode:str_42_building_01": 0}[name]
-            return httpx.Response(200, text=f'<wfs:FeatureCollection numberMatched="{n}"/>')
-        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(side_effect=hits)
         data = json.loads(await _server.list_inputs(project_id=42))
         inputs = data["inputs"]
+        assert gs == []
         assert set(inputs) == {*INPUT_LAYER_ROUTES, "culvert"}  # TASK-3641
         assert inputs["culvert"][0] == {"row_id": 7, "title": "Culvert 01", "gn_layer": 17,
                                         "dataset_alternate": "geonode:cul_42_culvert_01", "has_features": True}
         assert inputs["boundary"][0] == {"row_id": 1, "title": "Boundary 01", "gn_layer": 11,
                                          "dataset_alternate": "geonode:bdy_42_boundary_01",
                                          "has_features": True, "has_external_feature": True}
-        assert inputs["friction"][0]["has_features"] is True and inputs["friction"][0]["feature_count"] == 3
+        assert inputs["friction"][0] == {"row_id": 2, "title": "Friction 01", "gn_layer": 12,
+                                         "dataset_alternate": "geonode:fri_42_friction_01", "has_features": True}
         assert inputs["building"][0]["has_features"] is False
         assert inputs["inflow"][0] == {"row_id": 3, "title": "Inflow 01", "gn_layer": None,
                                        "dataset_alternate": None, "has_features": False}
-        assert inputs["rainfall"][0]["has_features"] is False  # from the API, no WFS
-        assert wfs.call_count == 2  # only the two kinds without has_features, with a layer
+        assert inputs["rainfall"][0]["has_features"] is False
+        assert all("feature_count" not in row for rows in inputs.values() for row in rows)
 
     @respx.mock
-    async def test_list_inputs_feature_lookups_are_bounded(self, _server, monkeypatch):
-        monkeypatch.setattr(_server, "LIST_INPUTS_MAX_FEATURE_LOOKUPS", 1)
-        for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
-            respx.get(f"{BASE}/projects/42/{route}/").mock(
-                return_value=httpx.Response(200, json=_wrapper_rows(route)))
-        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(
-            return_value=httpx.Response(200, text='<x numberMatched="5"/>'))
-        inputs = json.loads(await _server.list_inputs(project_id=42))["inputs"]
-        assert wfs.call_count == 1
-        assert inputs["friction"][0]["has_features"] is True
-        assert inputs["building"][0]["has_features"] is None  # past the bound: unknown, not false
+    async def test_list_inputs_row_without_has_features_is_null_without_a_gs_lookup(self, _server, monkeypatch):
+        """TASK-3749 AC1: a row whose record lacks has_features (an older API) is null, unknown —
+        never a /gs/ WFS count, which Hydrata refuses for every agent key (TASK-3728)."""
+        gs = _gs_tripwire(_server, monkeypatch)
 
-    @respx.mock
-    async def test_list_inputs_has_features_is_null_not_an_error_when_gs_refuses_the_key(self, _server):
-        """TASK-3728: Hydrata refuses every /gs/ request made with an hk_ key (403 AGENT_KEY_SCOPE)."""
+        def stale(route):
+            rows = _wrapper_rows(route)
+            if route in ("frictions", "buildings"):
+                rows = [{k: v for k, v in row.items() if k != "has_features"} for row in rows]
+            return rows
         for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
-            respx.get(f"{BASE}/projects/42/{route}/").mock(
-                return_value=httpx.Response(200, json=_wrapper_rows(route)))
-        wfs = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(return_value=httpx.Response(
-            403, json={"detail": "Agent keys ... do not work on the map server (/gs/)",
-                       "error_code": "AGENT_KEY_SCOPE"}))
+            respx.get(f"{BASE}/projects/42/{route}/").mock(return_value=httpx.Response(200, json=stale(route)))
         data = json.loads(await _server.list_inputs(project_id=42))
         inputs = data["inputs"]
-        assert wfs.call_count == 2
+        assert gs == []
         for kind in ("friction", "building"):
             assert inputs[kind][0]["has_features"] is None  # unknown, not false and not an error
-            assert inputs[kind][0]["feature_count"] is None
+            assert "feature_count" not in inputs[kind][0]
         assert inputs["boundary"][0]["has_features"] is True  # API-carried kinds are unaffected
         assert inputs["inflow"][0]["has_features"] is False   # no layer: still false
         assert "error" not in data
+
+    @respx.mock
+    async def test_gs_tripwire_negative_control_catches_a_request_the_client_makes(self, _server, monkeypatch):
+        """Negative control for the two tests above: the tripwire really matches the /gs/ URL
+        the MCP's own client builds, so `call_count == 0` there is not vacuous."""
+        gs = _gs_tripwire(_server, monkeypatch)
+        with pytest.raises(AssertionError, match="TASK-3749"):
+            await _server.client.get_from_origin("/gs/ows", params={"service": "WFS"})
+        assert len(gs) == 1
 
 
 class TestListTimeSeries:

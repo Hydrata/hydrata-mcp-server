@@ -662,17 +662,16 @@ async def _hand_back(result: dict, project_id, summary: dict, say_to_user: str, 
 
 
 async def _layer_summary(alternate) -> dict:
-    """feature_count (WFS resultType=hits) + bbox_wgs84 of a published vector layer.
+    """bbox_wgs84 of a published vector layer, from GeoNode's datasets API.
 
-    Both best effort: each failure is a null plus an `*_error` string. The WFS
-    goes through GeoNode's /gs/ows proxy at the API origin, so it rides the
-    caller's own credential and, on prod, the loopback listener (which proxies
-    only Django, never /geoserver/ directly).
+    Best effort: a failure is a null plus a `bbox_error` string. No feature
+    count: that needed a WFS hits request through /gs/, which Hydrata refuses
+    for every agent key (TASK-3728), so it was always null (TASK-3749). The
+    caller reports `has_features` from the input row the API returns instead.
     """
-    summary: dict = {"layer": alternate, "feature_count": None, "bbox_wgs84": None}
+    summary: dict = {"layer": alternate, "bbox_wgs84": None}
     if not alternate:
         return summary
-    summary["feature_count"] = await _feature_count(alternate)
     try:
         listing = await client.get_from_origin(
             "/api/v2/datasets/", params={"filter{alternate}": alternate}
@@ -2129,8 +2128,8 @@ async def attach_input_layer(
             "http_status": status_code,
         }
     )
-    # The WFS typename, so the agent can count features without a GeoNode
-    # tool of its own. Best effort: the attach already happened.
+    # The layer's typename (workspace:name), the name the map link frames.
+    # Best effort: the attach already happened.
     try:
         result["dataset_alternate"] = await _dataset_alternate(dataset_pk)
     except HydrataAPIError as exc:
@@ -2139,15 +2138,23 @@ async def attach_input_layer(
     alternate = result["dataset_alternate"]
     summary = await _layer_summary(alternate)
     summary["row_id"] = row["id"]
+    # TASK-3749: whether the layer has features is the API's own answer (every
+    # input wrapper serializer carries has_features); null when it is absent.
+    has_features = body.get("has_features") if isinstance(body, dict) else None
+    summary["has_features"] = has_features
     # TASK-3188's perform_update swaps the map's MapLayer but swallows a swap
     # failure and still answers 200 (W0 sweep, handover §7c) — the human would
     # open the link and see the OLD layer. Check the map actually carries it.
     summary["map_updated"] = await _map_carries_layer(project_id, alternate)
-    count = summary.get("feature_count")
+    if has_features is True:
+        contents = "it has features"
+    elif has_features is False:
+        contents = "it has no features: check the file you uploaded"
+    else:
+        contents = "whether it has features is unknown"
     say = (
-        f"{label.capitalize()} attached ({count if count is not None else 'an unknown number of'} "
-        f"feature(s)). Open the link and confirm it is the right {label}, in the right "
-        "place; sign it off there."
+        f"{label.capitalize()} attached ({contents}). Open the link and confirm it is the "
+        f"right {label}, in the right place; sign it off there."
     )
     if culvert_report is not None:
         summary["culvert_problems"] = len(result["culvert_problems"])
@@ -2231,31 +2238,8 @@ async def _map_carries_layer(project_id, alternate) -> bool | None:
 # TASK-3204 (W1, epic 3200) — the two listing primitives. The 09-21 drive made
 # 17 `file://` probes because nothing listed what a project already holds.
 # ---------------------------------------------------------------------------
-# WFS feature-count lookups list_inputs may make for the kinds whose wrapper
-# serializer carries no has_features (friction, inflow, building): one GET per
-# row, so bounded. Rows past the bound report has_features null.
-LIST_INPUTS_MAX_FEATURE_LOOKUPS = 24
 # list_time_series follows the paginated list at most this many pages.
 LIST_TIME_SERIES_MAX_PAGES = 20
-
-
-async def _feature_count(alternate) -> int | None:
-    """WFS resultType=hits for one layer, or None (best effort).
-
-    None on ANY failure, never an error: under an hk_ agent key Hydrata refuses
-    every /gs/ request (403 AGENT_KEY_SCOPE, TASK-3728 — GeoNode's proxy would
-    hand GeoServer the user's own OAuth token), so with a key this is always
-    None and callers report the count as unknown.
-    """
-    try:
-        xml = await client.get_text_from_origin("/gs/ows", params={
-            "service": "WFS", "version": "2.0.0", "request": "GetFeature",
-            "typeNames": alternate, "resultType": "hits",
-        })
-    except Exception:
-        return None
-    match = re.search(r'numberMatched="(\d+)"', xml)
-    return int(match.group(1)) if match else None
 
 
 @_tool("list_inputs")
@@ -2267,16 +2251,11 @@ async def list_inputs(
     For each of boundary, friction, inflow, rainfall, building, mesh_region and culvert:
     the rows (`row_id`, `title`, `gn_layer` — the dataset pk — and
     `dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.
-    `has_features` comes from the API for boundary, rainfall, mesh_region and culvert;
-    for friction, inflow and building (whose records do not carry it) it is a
-    WFS feature count, at most 24 lookups per call — past that, or when a
-    lookup fails, it is null (unknown, not false). `has_features` MAY BE NULL:
-    with an agent key the map server (/gs/) refuses the lookup, so those three
-    kinds report null; treat null as unknown, not as empty. A row with no `gn_layer`
-    has no layer yet (`has_features` false). Use the row ids with
+    `has_features` is the API's own answer for every kind. It is null only when
+    a row's record does not carry it: treat null as unknown, not as empty. A row
+    with no `gn_layer` has no layer yet (`has_features` false). Use the row ids with
     create_scenario; this is the listing primitive — no need to probe files.
     """
-    lookups = 0
     kinds: dict = {}
     for kind, route in INPUT_LAYER_ROUTES.items():
         listing = await client.get(f"/projects/{project_id}/{route}/")
@@ -2292,15 +2271,13 @@ async def list_inputs(
                 "gn_layer": row.get("gn_layer"),
                 "dataset_alternate": alternate,
             }
+            # TASK-3749: never a /gs/ WFS count (refused for every agent key since
+            # TASK-3728). Every wrapper serializer carries has_features (friction
+            # and building TASK-3603, inflow TASK-3487); absent = unknown.
             if "has_features" in row:
                 entry["has_features"] = row.get("has_features")
             elif alternate is None:
                 entry["has_features"] = False
-            elif lookups < LIST_INPUTS_MAX_FEATURE_LOOKUPS:
-                lookups += 1
-                count = await _feature_count(alternate)
-                entry["feature_count"] = count
-                entry["has_features"] = None if count is None else count > 0
             else:
                 entry["has_features"] = None
             if kind == "boundary" and "has_external_feature" in row:
