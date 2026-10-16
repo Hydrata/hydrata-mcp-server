@@ -801,6 +801,10 @@ async def start_simulation(
 ) -> str:
     """Start a flood simulation run for a built scenario.
 
+    Needs a launch-level agent key (a run spends compute); a read or draft key
+    gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the
+    site's Agent keys page (/agents/).
+
     The scenario must be in 'built' status. Returns 202 with the new run.
     The run transitions through: built → queued → computing → processing → complete.
 
@@ -1006,6 +1010,9 @@ async def cancel_run(
 ) -> str:
     """Cancel an in-flight simulation run.
 
+    Needs a launch-level agent key; a read or draft key gets 403
+    AGENT_LEVEL_INSUFFICIENT.
+
     Works on runs in built, queued, or computing status. Cleans up
     compute resources (terminates EC2 instance, Celery task, or Batch job).
 
@@ -1033,6 +1040,9 @@ async def retry_run(
     run_id: Annotated[int, "The run ID to retry"],
 ) -> str:
     """Retry a failed simulation run.
+
+    Needs a launch-level agent key (a retry rebuilds the package and can start
+    AWS Batch); a read or draft key gets 403 AGENT_LEVEL_INSUFFICIENT.
 
     Resets an errored run back to 'created' status and triggers a new
     package build. The same run ID is reused. Only valid when
