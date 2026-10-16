@@ -3249,3 +3249,44 @@ class TestStartSimulationConsent:
         assert not {"confirm", "consent", "unattended"} & set(params)
         source = inspect.getsource(_server)
         assert "HYDRATA_MCP_UNATTENDED" not in source and "elicit" not in source
+
+
+# ---------------------------------------------------------------------------
+# TASK-3766 (W2c, epic 3200) — the tools whose API route Django puts at the
+# 'launch' level (apps/agents/middleware.py LAUNCH_URL_NAMES, TASK-3744: a build
+# or a terrain import can start AWS Batch) say so in their OWN descriptions, so
+# an agent picks the right key up front instead of learning it from a 403
+# AGENT_LEVEL_INSUFFICIENT. presign stays at 'draft' on the server (no Terrain
+# row, no task), so its description says the IMPORT needs launch, not the presign.
+# There is no MCP tool for the bbox terrain fetch (v2-terrain-create-from-bbox);
+# get_terrain is a GET (read level) and must NOT claim launch.
+# ---------------------------------------------------------------------------
+class TestLaunchKeyDescriptions:
+    async def _tools(self, srv):
+        async with _asgi_client(srv) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        return {t["name"]: t["description"] for t in _parse(resp)["result"]["tools"]}
+
+    async def test_build_and_finalize_say_they_need_a_launch_key(self, _server):
+        tools = await self._tools(_server)
+        for name in ("build_scenario", "finalize_terrain_upload"):
+            text = tools[name]
+            assert "launch-level agent key" in text, name
+            assert "AGENT_LEVEL_INSUFFICIENT" in text, name
+            assert "/agents/" in text, name
+
+    async def test_presign_says_the_import_needs_launch_not_the_presign(self, _server):
+        presign = (await self._tools(_server))["presign_terrain_upload"]
+        assert "launch-level agent key" in presign
+        assert "AGENT_LEVEL_INSUFFICIENT" in presign
+        # The truth on the server: a draft key may presign; finalize and the
+        # multipart fallback are the launch-level steps.
+        assert "draft key can presign" in presign
+        assert "finalize_terrain_upload" in presign and "fallback" in presign
+
+    async def test_read_and_draft_tools_do_not_claim_launch(self, _server):
+        """Negative control: the wording is not pasted on every tool — get_terrain is
+        a read, create_scenario/attach_input_layer are draft writes."""
+        tools = await self._tools(_server)
+        for name in ("get_terrain", "create_scenario", "attach_input_layer", "list_inputs"):
+            assert "launch-level agent key" not in tools[name], name

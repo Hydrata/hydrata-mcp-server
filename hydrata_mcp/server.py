@@ -1178,6 +1178,10 @@ async def presign_terrain_upload(
 ) -> str:
     """Step 1 of a terrain import: get a presigned S3 PUT URL for a GeoTIFF DEM.
 
+    The import needs a launch-level agent key: a draft key can presign, but
+    finalize_terrain_upload (and the multipart fallback below) answer a read or
+    draft key 403 AGENT_LEVEL_INSUFFICIENT — check the key before moving bytes.
+
     The agent moves the bytes itself — no tool accepts file contents. After this
     call, PUT the file straight to `upload_url`, sending the SAME Content-Type
     you passed here (it is part of the signature; a mismatch is a 403
@@ -1222,6 +1226,10 @@ async def finalize_terrain_upload(
     title: Annotated[str, "Terrain title (default: the filename without .tif)"] = "",
 ) -> str:
     """Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.
+
+    Needs a launch-level agent key (the import can start AWS Batch); a read or
+    draft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key
+    on the site's Agent keys page (/agents/).
 
     Call this only after the presigned PUT returned 200. Creates the Terrain row
     (status `creating`) and queues the import chain — reproject to UTM, publish
@@ -2714,6 +2722,10 @@ async def build_scenario(
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
     """Build a scenario's package (mesh + inputs) after showing what it will cost, and poll until built.
+
+    Needs a launch-level agent key (a build can start AWS Batch); a read or
+    draft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key
+    on the site's Agent keys page (/agents/).
 
     Order of operations, so the number is shown before anything is spent:
 
