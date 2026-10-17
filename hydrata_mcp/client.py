@@ -251,3 +251,13 @@ class HydrataClient:
         """
         resp = await self._send("PATCH", f"{self._base}{path}", path, json=json or {})
         return self._body(resp), resp.status_code
+
+    async def delete(self, path: str) -> int:
+        """DELETE request; returns the status code (the API answers 204, no body).
+
+        TASK-3812 (epic 3801) — delete_observation removes ONE feature of a flood
+        observation layer (and its photos). Same headers and error mapping as
+        every other verb: a 404 for a missing feature is a HydrataAPIError.
+        """
+        resp = await self._send("DELETE", f"{self._base}{path}", path)
+        return resp.status_code

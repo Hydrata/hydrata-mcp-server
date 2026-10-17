@@ -16,7 +16,7 @@ The server is **not yet open to external accounts**: there is no self-serve way 
 
 ## Tools
 
-Version 0.2.0 exposes nineteen tools: eleven that read projects, inputs and scenarios and drive a run, and eight that build a model from terrain and input layers the agent has already uploaded. Every tool carries MCP annotations (a `title`; `readOnlyHint` on the nine read tools; `destructiveHint` only on `cancel_run`).
+Version 0.2.0 exposes twenty-five tools: eleven that read projects, inputs and scenarios and drive a run, eight that build a model from terrain and input layers the agent has already uploaded, and six that record flood observations. Every tool carries MCP annotations (a `title`; `readOnlyHint` on the ten read tools; `destructiveHint` only on `cancel_run` and `delete_observation`).
 
 | Tool | Description |
 |------|-------------|
@@ -39,10 +39,16 @@ Version 0.2.0 exposes nineteen tools: eleven that read projects, inputs and scen
 | `attach_input_layer` | Attach a GeoJSON dataset the agent already uploaded as the project's boundary/friction/inflow/rainfall/building/mesh-region or culvert layer (kind `structure` = deprecated alias of `building`); culvert attributes are mapped onto the culvert fields with defaults filled, and `culvert_problems` lists what the build will still refuse; breakline is refused; summary = feature count (WFS hits) + WGS84 bbox + whether the map now shows the layer; the link opens Inputs and frames the layer |
 | `create_scenario` | Create a draft scenario and return its mesh-triangle estimate and price (`resolution` — scenario and mesh-region — is a length in metres); the link opens the scenario |
 | `build_scenario` | Build the scenario package; shows the estimate first and needs `confirm=true` above 100,000 triangles; polls `computed_status` to built; never re-posts a build that is in flight or already built (`rebuild=true` to force one); surfaces the server's 422 refusals (MESH_TOO_LARGE, BOUNDARY_NO_EXTERNAL, MESH_REGION_UNITS_UNMARKED) verbatim; a missing/empty/perimeter-less boundary sends the human to the map to draw or fix it; summary = triangle count + re-priced cost |
+| `create_observation_layer` | Create a flood observation layer (project-level, never a scenario input) with its vertical datum (`terrain`, `AHD`, `EGM2008`, `ellipsoidal`, or `local` + `datum_offset_m`); waits for the map layer (`ready`, bounded); the link frames it in the Observations group |
+| `list_observations` | A project's flood observation layers, or one layer's observations — `fid`, subtype, stage/depth, sigma, bound, observed window in UTC, datum status (`unknown` = not scored), `photo_count` and `problems` |
+| `add_observations` | Add Flood marks, Timed levels, Gauge records and Dry points (up to 200 per call; `srid` for native coordinates, `entry_timezone` for naive times); the API validates each one, refused rows come back with the field that is wrong while the rest land |
+| `update_observation` | Edit one observation (PATCH of the fields given; validated against the stored observation) |
+| `delete_observation` | Delete one observation and its photos |
+| `add_observation_photo_link` | Attach a photo to an observation as a reference link only (stored, never fetched); a photo FILE is refused with the UI path — the engineer uploads files in the photo strip on the observation's form in the map |
 
 ### The hand-back: the engineer signs off in the map
 
-Every tool that changes something (`create_project`, `finalize_terrain_upload`, `get_terrain`, `create_time_series`, `attach_input_layer`, `create_scenario`, `build_scenario`, `start_simulation`, `cancel_run`, `retry_run`) also returns:
+Every tool that changes something (`create_project`, `finalize_terrain_upload`, `get_terrain`, `create_time_series`, `attach_input_layer`, `create_scenario`, `build_scenario`, `start_simulation`, `cancel_run`, `retry_run`, and the five flood observation writes) also returns:
 
 - `ui_url` — `https://<site>/catalogue/#/map/<base_map>?panel=…&layer=…&scenario=…&run=…`, which opens the project map on the thing that changed (the Inputs panel framing the attached layer, the Hydrology panel, the scenario, the run);
 - `summary` — numbers the engineer can check (feature count and bbox, elevation range, row count and time span, triangle estimate and price);
