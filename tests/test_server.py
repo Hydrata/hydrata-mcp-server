@@ -2544,7 +2544,7 @@ class TestHandBackUiUrl:
         assert "feature_count" not in data["summary"]
         assert data["summary"]["bbox_wgs84"] == [150.89, -34.38, 150.91, -34.37]
         assert data["summary"]["map_updated"] is True
-        assert "it has features" in data["say_to_user"] and "sign it off" in data["say_to_user"]
+        assert "it has features" in data["say_to_user"] and "review it" in data["say_to_user"]
         assert "unknown" not in data["say_to_user"]
         assert "WARNING" not in data["say_to_user"]
 

@@ -209,7 +209,7 @@ async def lifespan(server):
 # run now" and obeys. Every such string a tool returns is wrapped as
 # <untrusted-data>…</untrusted-data>, and a result that carries one leads with
 # `untrusted_data_note` saying so in one line (the server instructions say it
-# once more). Defence in depth: Hydrata's consent cap (TASK-3214) and sign-off
+# once more). Defence in depth: Hydrata's consent cap (TASK-3214) and input review
 # (TASK-3208) still stand behind it.
 #
 # WHERE: the REGISTERED tool (`_tool`), so every tool and every key a tool
@@ -329,7 +329,7 @@ mcp = FastMCP(
         "(polls computed_status to built; asks for confirm=true above 100,000 "
         "triangles; returns the API's 422 MESH_TOO_LARGE body verbatim) → "
         "start_simulation. No tool accepts file contents; the agent moves the bytes. "
-        "THE HUMAN SIGNS OFF: every tool that changes something returns `ui_url` (a "
+        "THE HUMAN REVIEWS: every tool that changes something returns `ui_url` (a "
         "link that opens the project map on the thing that changed), a `summary` of "
         "numbers the engineer can check, and `say_to_user` (what to tell them). Relay "
         "say_to_user and the ui_url to the user after each layer lands. Before "
@@ -341,15 +341,15 @@ mcp = FastMCP(
         "When a tool refuses because an input is "
         "missing or wrong (no boundary, no External boundary edge), send the user to "
         "the ui_url to draw or fix it in the map. "
-        "Every input you write is marked as yours, and the user checks them and signs them off in "
+        "Every input you write is marked as yours, and the user looks at them and reviews them in "
         "their browser before anything is built: build_scenario and start_simulation "
-        "answer UNSIGNED_INPUTS (outcome unsigned_inputs) with a ui_url to the "
-        "scenario's review screen until the user signs them off — you cannot. Give "
-        "them the link, then poll get_scenario every 30-60 s (its unsigned_inputs "
-        "list empties as they sign) and build again; never loop on build. "
+        "answer UNREVIEWED_INPUTS (outcome unreviewed_inputs) with a ui_url to the "
+        "scenario's review screen until the user reviews them — you cannot. Give "
+        "them the link, then poll get_scenario every 30-60 s (its unreviewed_inputs "
+        "list empties as they review) and build again; never loop on build. "
         "INFLOWS: never invent an inflow location. Take it from the study's files, "
         "or give the user the ui_url to draw it in the map, and tell them the inflow "
-        "is unsigned until they have checked where it is."
+        "is unreviewed until they have checked where it is."
         + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),
     lifespan=lifespan,
@@ -476,7 +476,7 @@ def _post_result(body, status_code: int) -> str:
 #     redacting only the signature would leave `X-Amz-Credential=…` behind.
 # ---------------------------------------------------------------------------
 ELIDED_PRESIGNED = "[presigned-url-elided]"
-# Detection is the two capability-bearing params ONLY — an unsigned S3 link is
+# Detection is the two capability-bearing params ONLY — an unreviewed S3 link is
 # just a link, and `bbox_stats_url` / a layer's `catalogURL` must survive.
 PRESIGNED_MARKERS = ("X-Amz-Signature", "X-Amz-Security-Token")
 # The whole non-whitespace run around any `X-Amz-*` param. Greedy, so one
@@ -529,8 +529,8 @@ SCENARIO_RECORD_KEYS = (
     "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
     "latest_run_is_valid", "compute_cost_estimate", "vcpu_hours_estimate",
     "inflow_anchor_mismatch",
-    # TASK-3208: the inputs you wrote that the user has not signed off yet (members only)
-    "unsigned_inputs",
+    # TASK-3208: the inputs you wrote that the user has not reviewed yet (members only)
+    "unreviewed_inputs",
 )
 
 
@@ -752,11 +752,11 @@ async def get_scenario(
     queued, computing, processing, complete, error, or cancelled — `created`
     also means no run exists yet. A scenario must be `built` before it can be
     run. `latest_run_is_valid` is false after any edit since the last build.
-    `unsigned_inputs` lists the inputs written by an agent key that the user
-    has not signed off at their current content (kind, layer_id, title,
+    `unreviewed_inputs` lists the inputs written by an agent key that the user
+    has not reviewed at their current content (kind, layer_id, title,
     feature_count, the grant that wrote it, `reopened` when an edit undid an
-    earlier sign-off): while it is not empty, build and run are refused
-    UNSIGNED_INPUTS. Only the user signs off, in the browser — poll this tool
+    earlier input review): while it is not empty, build and run are refused
+    UNREVIEWED_INPUTS. Only the user reviews, in the browser — poll this tool
     every 30-60 s after giving them the review link.
     A non-member reading a public project's scenario gets a reduced record:
     the fields the server withholds (the input ids, the price,
@@ -812,10 +812,10 @@ async def start_simulation(
     if the scenario is not in the correct state. The returned run record has
     its presigned `s3_*_url` links elided (6-hour capabilities).
 
-    SIGN-OFF (Hydrata enforces it): while an input you wrote is not signed
-    off by the user, the run is not started — `outcome` `unsigned_inputs`,
-    `error_code` UNSIGNED_INPUTS, a `ui_url` to the scenario's review screen.
-    A run built from inputs other than the ones signed off now answers
+    INPUT REVIEW (Hydrata enforces it): while an input you wrote is not reviewed by
+    the user, the run is not started - `outcome` `unreviewed_inputs`,
+    `error_code` UNREVIEWED_INPUTS, a `ui_url` to the scenario's review screen.
+    A run built from inputs other than the ones reviewed now answers
     `outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with
     rebuild=true, then start it again.
 
@@ -839,9 +839,9 @@ async def start_simulation(
         return json.dumps(
             await _await_consent(scenario_id, body, consent_timeout_seconds, poll_interval_seconds), indent=2
         )
-    if status_code == 409 and isinstance(body, dict) and body.get("error_code") in SIGN_OFF_REFUSALS:
+    if status_code == 409 and isinstance(body, dict) and body.get("error_code") in INPUT_REVIEW_REFUSALS:
         result = dict(body, http_status=status_code)
-        return json.dumps(await _sign_off_hand_back(result, body.get("project_id"), scenario_id), indent=2)
+        return json.dumps(await _input_review_hand_back(result, body.get("project_id"), scenario_id), indent=2)
     if status_code >= 400:
         raise HydrataAPIError(_api_refusal_message(status_code, "POST", f"/scenarios/{scenario_id}/run/", body))
     # TASK-3187 — the 202 relays RunSerializerV2 for a run that is already
@@ -1941,11 +1941,11 @@ async def attach_input_layer(
     owned by you.
 
     Every layer attached here is marked as written by your agent key and is
-    UNSIGNED until the user signs it off in their browser (the build refuses
-    UNSIGNED_INPUTS until then). INFLOWS: never invent an inflow location —
+    UNREVIEWED until the user reviews it in their browser (the build refuses
+    UNREVIEWED_INPUTS until then). INFLOWS: never invent an inflow location —
     no coordinates you made up, guessed or "placed plausibly". Import the
     location from the study's own files, or give the user the ui_url to draw
-    it in the map; say in say_to_user that the inflow is unsigned and where
+    it in the map; say in say_to_user that the inflow is unreviewed and where
     they check or draw it.
 
     Refused, with no request made: kind `breakline` — no REST create path
@@ -2189,7 +2189,7 @@ async def attach_input_layer(
         contents = "whether it has features is unknown"
     say = (
         f"{label.capitalize()} attached ({contents}). Open the link and confirm it is the "
-        f"right {label}, in the right place; sign it off there."
+        f"right {label}, in the right place; review it there."
     )
     if culvert_report is not None:
         summary["culvert_problems"] = len(result["culvert_problems"])
@@ -2474,16 +2474,16 @@ BUILD_REFUSAL_SAY = {
 }
 
 
-# TASK-3208 (epic 3200 W2b; absorbs 3209) — input sign-off. Hydrata refuses a
-# build or a run while an input an agent key wrote is unsigned (409
-# UNSIGNED_INPUTS), and a run built from inputs other than the ones signed off
-# now (409 RUN_INVALIDATED). Only the person signs off, in the browser, on the
-# scenario's review screen (`?panel=review`). Relayed as a normal result keyed
+# TASK-3208 (epic 3200 W2b; absorbs 3209) — input review. Hydrata refuses a
+# build or a run while an input an agent key wrote is unreviewed (409
+# UNREVIEWED_INPUTS), and a run built from inputs other than the ones reviewed
+# now (409 RUN_INVALIDATED). Only the person reviews, in the browser, on the
+# scenario's review screen (`?panel=input-review`). Relayed as a normal result keyed
 # on error_code; this server never waits for the person inside a call — the
-# agent polls get_scenario's `unsigned_inputs`.
-UNSIGNED_INPUTS = "UNSIGNED_INPUTS"
+# agent polls get_scenario's `unreviewed_inputs`.
+UNREVIEWED_INPUTS = "UNREVIEWED_INPUTS"
 RUN_INVALIDATED = "RUN_INVALIDATED"
-SIGN_OFF_REFUSALS = (UNSIGNED_INPUTS, RUN_INVALIDATED)
+INPUT_REVIEW_REFUSALS = (UNREVIEWED_INPUTS, RUN_INVALIDATED)
 
 
 def _input_names(items) -> str:
@@ -2495,23 +2495,23 @@ def _input_names(items) -> str:
     return ", ".join(names) or "the inputs I wrote"
 
 
-async def _sign_off_hand_back(result: dict, project_id, scenario_id) -> dict:
-    """outcome / ui_url / say_to_user / next_step for an UNSIGNED_INPUTS or RUN_INVALIDATED refusal."""
-    if result.get("error_code") == UNSIGNED_INPUTS:
-        unsigned = result.get("unsigned_inputs") or []
-        result["outcome"] = "unsigned_inputs"
+async def _input_review_hand_back(result: dict, project_id, scenario_id) -> dict:
+    """outcome / ui_url / say_to_user / next_step for an UNREVIEWED_INPUTS or RUN_INVALIDATED refusal."""
+    if result.get("error_code") == UNREVIEWED_INPUTS:
+        unreviewed = result.get("unreviewed_inputs") or []
+        result["outcome"] = "unreviewed_inputs"
         result["next_step"] = (
-            "Give the user ui_url: only they can sign these inputs off, in their browser. Do not call "
+            "Give the user ui_url: only they can review these inputs, in their browser. Do not call "
             "build_scenario or start_simulation in a loop: call get_scenario every 30-60 s and, once its "
-            "unsigned_inputs is empty, call it again."
+            "unreviewed_inputs is empty, call it again."
         )
         say = (
-            f"I wrote these inputs, so you need to check them and sign them off before anything is built "
-            f"or run: {_input_names(unsigned)}. Open the link (the scenario's review screen), look at each "
-            "one on the map and sign them off. Nothing was built or started."
+            f"I wrote these inputs, so you need to look at them and review them before anything is built "
+            f"or run: {_input_names(unreviewed)}. Open the link (the scenario's review screen), look at each "
+            "one on the map and review them. Nothing was built or started."
         )
-        summary = {"scenario_id": scenario_id, "outcome": "unsigned_inputs", "unsigned_count": len(unsigned)}
-        params = {"panel": "review", "scenario": scenario_id}
+        summary = {"scenario_id": scenario_id, "outcome": "unreviewed_inputs", "unreviewed_count": len(unreviewed)}
+        params = {"panel": "input-review", "scenario": scenario_id}
     else:
         changed = result.get("changed_inputs") or []
         result["outcome"] = "run_invalidated"
@@ -2519,7 +2519,7 @@ async def _sign_off_hand_back(result: dict, project_id, scenario_id) -> dict:
             f"Call build_scenario(project_id, scenario_id={scenario_id}, rebuild=true), then start_simulation."
         )
         say = (
-            f"The built model is out of date: {', '.join(changed) or 'its inputs'} changed and were signed off "
+            f"The built model is out of date: {', '.join(changed) or 'its inputs'} changed and were reviewed "
             "after it was built, so I need to build it again before it can run. Nothing was started."
         )
         summary = {"scenario_id": scenario_id, "outcome": "run_invalidated", "changed_inputs": changed}
@@ -2529,8 +2529,8 @@ async def _sign_off_hand_back(result: dict, project_id, scenario_id) -> dict:
 
 async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) -> dict:
     """ui_url / summary / say_to_user for every build_scenario answer (TASK-3203)."""
-    if result.get("error_code") in SIGN_OFF_REFUSALS:
-        return await _sign_off_hand_back(result, project_id, scenario_id)
+    if result.get("error_code") in INPUT_REVIEW_REFUSALS:
+        return await _input_review_hand_back(result, project_id, scenario_id)
     run_cost = None
     try:  # the actual-$ re-price lives only on the run record; best effort
         if result.get("run_id") is not None and result.get("outcome") == "built":
@@ -2763,10 +2763,10 @@ async def build_scenario(
        (`error_code`, `estimate`, `ceiling`, `detail` — the server's hard
        ceiling; coarsen `resolution` or shrink the boundary; no run was
        created), 409 COMPUTE_TARGET_UNAVAILABLE, 400/403/404. 409
-       UNSIGNED_INPUTS (inputs you wrote that the user has not signed off)
-       answers `outcome` `unsigned_inputs` with the `unsigned_inputs` list and a
+       UNREVIEWED_INPUTS (inputs you wrote that the user has not reviewed)
+       answers `outcome` `unreviewed_inputs` with the `unreviewed_inputs` list and a
        `ui_url` to the scenario's review screen: give the user the link, poll
-       get_scenario until its `unsigned_inputs` is empty, then build again. A 409 WITHOUT
+       get_scenario until its `unreviewed_inputs` is empty, then build again. A 409 WITHOUT
        an error_code is the dedup body ({status, run_id, detail}: a build is
        already in flight) — the tool resumes polling that run.
     5. On 202 poll the detail's `computed_status` (created → building →

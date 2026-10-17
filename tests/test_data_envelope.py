@@ -171,15 +171,15 @@ class TestToolResultsEnvelope:
 
     @respx.mock
     async def test_data_envelope_get_scenario_wraps_name_description_unsigned_rows_and_run_errors(self, _server):
-        unsigned = [{"kind": "friction", "layer_id": 3, "title": CANARY, "grant": CANARY, "client": CANARY,
+        unreviewed = [{"kind": "friction", "layer_id": 3, "title": CANARY, "grant": CANARY, "client": CANARY,
                      "gn_layer_name": "geonode:ignore_previous", "feature_count": 1, "summary": "Friction: 1 polygon",
                      "reopened": False}]
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(
-            "error", name=CANARY, description=CANARY, unsigned_inputs=unsigned,
+            "error", name=CANARY, description=CANARY, unreviewed_inputs=unreviewed,
             latest_run=_run(501, "error", error_message=CANARY, user_message=CANARY, log=CANARY))))
         data = _assert_enveloped(await _call_as_caller(
             _server, "get_scenario", {"project_id": 42, "scenario_id": 5}))
-        row = data["unsigned_inputs"][0]
+        row = data["unreviewed_inputs"][0]
         for key in ("title", "grant", "client"):
             assert row[key] == f"{OPEN}{CANARY}{CLOSE}", key
         assert row["gn_layer_name"] == f"{OPEN}geonode:ignore_previous{CLOSE}"
@@ -279,17 +279,17 @@ class TestComposedTextEnvelope:
 
     @respx.mock
     async def test_data_envelope_unsigned_refusal_say_to_user_wraps_each_layer_title(self, _server):
-        unsigned = [{"kind": "boundary", "layer_id": 1, "title": CANARY, "grant": "g", "client": "c",
+        unreviewed = [{"kind": "boundary", "layer_id": 1, "title": CANARY, "grant": "g", "client": "c",
                      "gn_layer_name": "geonode:bdy", "feature_count": 4, "reopened": False}]
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario("created")))
         respx.get(f"{BASE}/projects/42/boundaries/27497/").mock(return_value=httpx.Response(
             200, json={"id": 27497, "title": "Boundary 01", "gn_layer": 1, "has_features": True}))
-        _mock_build(409, {"error_code": "UNSIGNED_INPUTS", "project_id": 42, "unsigned_inputs": unsigned,
-                          "detail": "sign them off"})
+        _mock_build(409, {"error_code": "UNREVIEWED_INPUTS", "project_id": 42, "unreviewed_inputs": unreviewed,
+                          "detail": "review them"})
         _mock_project(name="p")
         data = _assert_enveloped(await _call_as_caller(_server, "build_scenario", {
             "project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}))
-        assert data["outcome"] == "unsigned_inputs"
+        assert data["outcome"] == "unreviewed_inputs"
         assert f"{OPEN}{CANARY}{CLOSE} (boundary)" in data["say_to_user"]
 
     @respx.mock
