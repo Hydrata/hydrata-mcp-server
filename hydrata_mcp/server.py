@@ -1845,24 +1845,35 @@ def _map_culvert_collection(collection) -> tuple[dict, dict]:
     return out, report
 
 
-async def _read_culvert_features(alternate) -> dict:
-    """The uploaded layer's features as GeoJSON, in its native CRS (WFS 1.0.0: x/y order)."""
+async def _read_culvert_features(dataset_pk) -> dict:
+    """The uploaded layer's features as GeoJSON, in its native CRS.
+
+    TASK-3797: read through Hydrata's own GET /datasets/<pk>/features/ (gated by
+    the key owner's view permission), never GeoServer's map proxy: an agent key
+    has no scope there (TASK-3728), so that read was refused for every key.
+    """
     try:
-        collection = await client.get_from_origin("/gs/ows", params={
-            "service": "WFS", "version": "1.0.0", "request": "GetFeature",
-            "typeName": alternate, "outputFormat": "application/json",
-            "maxFeatures": CULVERT_MAX_FEATURES + 1,
-        })
-    except (HydrataAPIError, ValueError) as exc:
-        raise ToolError(
-            f"could not read the uploaded culverts back from {alternate} over WFS ({exc}); "
-            "nothing was attached — call again with the same arguments"
-        )
+        collection = await client.get(f"/datasets/{dataset_pk}/features/")
+    except HydrataAPIError as exc:
+        message = str(exc)
+        if re.search(r"returned (401|403|404)\b", message):
+            # A refusal is final: the key's owner cannot read this dataset. Say STOP so the
+            # agent does not retry into the refusal cap.
+            raise ToolError(
+                f"Hydrata refused to let this key read dataset {dataset_pk} ({message}); "
+                "nothing was attached. Do not retry and do not try another route: stop and hand back "
+                "to the person, who must check that they can view the uploaded layer."
+            )
+        raise ToolError(f"could not read the uploaded culverts back from dataset {dataset_pk} ({message}); "
+                        "nothing was attached")
+    except ValueError as exc:
+        raise ToolError(f"the read of dataset {dataset_pk} returned no feature collection ({exc}); "
+                        "nothing was attached")
     if not isinstance(collection, dict) or not isinstance(collection.get("features"), list):
-        raise ToolError(f"the WFS read of {alternate} returned no feature collection; nothing was attached")
+        raise ToolError(f"the read of dataset {dataset_pk} returned no feature collection; nothing was attached")
     if len(collection["features"]) > CULVERT_MAX_FEATURES:
         raise ToolError(
-            f"{alternate} holds more than {CULVERT_MAX_FEATURES} culverts; split the file — "
+            f"dataset {dataset_pk} holds more than {CULVERT_MAX_FEATURES} culverts; split the file — "
             "nothing was attached"
         )
     return collection
@@ -2059,7 +2070,7 @@ async def attach_input_layer(
         source_alternate = await _dataset_alternate(dataset_pk)
         if not source_alternate:
             raise ToolError(f"dataset {dataset_pk} has no layer name to read the culverts from; nothing was attached")
-        collection, culvert_report = _map_culvert_collection(await _read_culvert_features(source_alternate))
+        collection, culvert_report = _map_culvert_collection(await _read_culvert_features(dataset_pk))
         rewrite = culvert_report.pop("rewrite")
         result["culvert_problems"] = culvert_report.pop("problems")
         result["mapped"] = dict(culvert_report, source_dataset_pk=dataset_pk, reuploaded=rewrite)

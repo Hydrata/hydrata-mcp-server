@@ -99,12 +99,8 @@ def _mock_attach(fc, rows=None, source_alternate="geonode:towradgi_culverts"):
             return_value=httpx.Response(200, json={"id": 42, "base_map": 1525})),
     }
 
-    def ows(request):
-        if request.url.params.get("request") == "GetFeature" and \
-                request.url.params.get("outputFormat") == "application/json":
-            return httpx.Response(200, json=fc)
-        return httpx.Response(200, text='<wfs:FeatureCollection numberMatched="2"/>')
-    routes["ows"] = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(side_effect=ows)
+    # TASK-3797: the read-back is Hydrata's own features route (an agent key has no /gs/ scope).
+    routes["ows"] = respx.get(f"{BASE}/datasets/1502/features/").mock(return_value=httpx.Response(200, json=fc))
     respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/").mock(
         return_value=httpx.Response(200, json={"datasets": []}))
     respx.get(url__startswith=f"{ORIGIN}/api/v2/maps/").mock(
@@ -298,12 +294,34 @@ class TestCulvertKindAttach:
     @respx.mock
     async def test_culvert_kind_unreadable_upload_attaches_nothing(self, _server):
         routes = _mock_attach(_fc())
-        routes["ows"].side_effect = None
         routes["ows"].return_value = httpx.Response(200, text="<ows:ExceptionReport/>")
         text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
             "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
         assert "nothing was attached" in text
         assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    @pytest.mark.parametrize("refusal", [401, 403, 404])
+    async def test_culvert_kind_refused_read_says_stop_never_call_again(self, _server, refusal):
+        """TASK-3797: a refusal is final; the text must not invite a retry."""
+        routes = _mock_attach(_fc())
+        routes["ows"].return_value = httpx.Response(refusal, json={"detail": "No such dataset, or you cannot view it."})
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "stop and hand back to the person" in text
+        assert "call again" not in text.lower() and "try again" not in text.lower()
+        assert "nothing was attached" in text
+        assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    async def test_culvert_kind_reads_features_from_hydrata_never_gs(self, _server):
+        """TASK-3797: the read is the Hydrata route; no request goes to /gs/."""
+        gs = respx.get(url__startswith=f"{ORIGIN}/gs/").mock(return_value=httpx.Response(403))
+        routes = _mock_attach(_fc(_d10()))
+        data = await _attach(_server)
+        assert data["outcome"] == "attached"
+        assert routes["ows"].call_count == 1
+        assert not gs.called
 
 
 class TestCulvertKindScenario:
