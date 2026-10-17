@@ -353,3 +353,76 @@ class TestCulvertKindReview:
         await _attach(_server, timeout_seconds=10_000)
         assert budgets[0] == _server.POLL_MAX_TIMEOUT_SECONDS
         assert all(b <= _server.POLL_MAX_TIMEOUT_SECONDS for b in budgets) and len(budgets) == 2
+
+
+class TestCulvertKindLeftoverDatasets:
+    """TASK-3660 (operator AC0 = REPORT): list the datasets the attach left
+    unreferenced, with a hint; never delete anything."""
+
+    @staticmethod
+    def _assert_no_delete():
+        assert not [c for c in respx.calls if c.request.method == "DELETE"]
+
+    @respx.mock
+    async def test_culvert_attach_reports_leftover_datasets_raw_upload(self, _server):
+        _mock_attach(_fc(RAW_BOX, RAW_PIPE))
+        data = await _attach(_server)
+        assert data["outcome"] == "attached" and data["dataset_pk"] == 1600
+        assert data["leftover_datasets"] == [
+            {"dataset_pk": 1502, "name": "geonode:towradgi_culverts", "reason": "raw_upload"},
+        ]
+        assert "delete" in data["leftover_hint"].lower()
+        self._assert_no_delete()
+
+    @respx.mock
+    async def test_culvert_attach_reports_leftover_datasets_raw_upload_and_factory_layer(self, _server):
+        respx.get(f"{ORIGIN}/api/v2/datasets/1450/").mock(
+            return_value=httpx.Response(200, json=_dataset(1450, "geonode:cul_42_culvert_01")))
+        _mock_attach(_fc(RAW_BOX), rows=[])
+        respx.post(CULVERTS).mock(return_value=httpx.Response(201, json=_row(9, "Culvert 01")))
+        respx.get(f"{CULVERTS}9/").mock(
+            return_value=httpx.Response(200, json=_row(9, "Culvert 01", gn_layer=1450)))
+        data = await _attach(_server)
+        assert data["outcome"] == "attached" and data["created_row"] is True
+        assert data["leftover_datasets"] == [
+            {"dataset_pk": 1502, "name": "geonode:towradgi_culverts", "reason": "raw_upload"},
+            {"dataset_pk": 1450, "name": "geonode:cul_42_culvert_01", "reason": "empty_factory_layer"},
+        ]
+        self._assert_no_delete()
+
+    @respx.mock
+    async def test_culvert_attach_reports_leftover_datasets_factory_layer_only(self, _server):
+        respx.get(f"{ORIGIN}/api/v2/datasets/1450/").mock(
+            return_value=httpx.Response(200, json=_dataset(1450, "geonode:cul_42_culvert_01")))
+        _mock_attach(_fc(_d10()), rows=[])
+        respx.post(CULVERTS).mock(return_value=httpx.Response(201, json=_row(9, "Culvert 01")))
+        respx.get(f"{CULVERTS}9/").mock(
+            return_value=httpx.Response(200, json=_row(9, "Culvert 01", gn_layer=1450)))
+        data = await _attach(_server)
+        assert data["leftover_datasets"] == [
+            {"dataset_pk": 1450, "name": "geonode:cul_42_culvert_01", "reason": "empty_factory_layer"},
+        ]
+        self._assert_no_delete()
+
+    @respx.mock
+    async def test_culvert_attach_reports_leftover_datasets_empty_when_nothing_left(self, _server):
+        _mock_attach(_fc(_d10()))
+        data = await _attach(_server)
+        assert data["outcome"] == "attached" and data["dataset_pk"] == 1502
+        assert data["leftover_datasets"] == []
+        assert "leftover_hint" not in data
+        self._assert_no_delete()
+
+    @respx.mock
+    async def test_culvert_attach_reports_leftover_datasets_name_lookup_is_best_effort(self, _server):
+        respx.get(f"{ORIGIN}/api/v2/datasets/1450/").mock(return_value=httpx.Response(500, json={}))
+        routes = _mock_attach(_fc(_d10()), rows=[])
+        respx.post(CULVERTS).mock(return_value=httpx.Response(201, json=_row(9, "Culvert 01")))
+        respx.get(f"{CULVERTS}9/").mock(
+            return_value=httpx.Response(200, json=_row(9, "Culvert 01", gn_layer=1450)))
+        data = await _attach(_server)
+        assert data["outcome"] == "attached" and routes["patch"].called
+        assert data["leftover_datasets"] == [
+            {"dataset_pk": 1450, "name": None, "reason": "empty_factory_layer"},
+        ]
+        self._assert_no_delete()

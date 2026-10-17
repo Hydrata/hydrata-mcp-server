@@ -1923,6 +1923,10 @@ async def attach_input_layer(
     mapped culverts and attaches THAT layer (`mapped`: renamed, filled,
     source_dataset_pk). `culvert_problems` lists what the build will still
     refuse (typically missing inverts) — the user fixes those in the map.
+    `leftover_datasets` lists the datasets the attach left unreferenced (the
+    raw upload when it was re-uploaded; the empty factory layer of a
+    'Culvert 01' created here), each {dataset_pk, name, reason}, with a
+    `leftover_hint`; the tool deletes nothing — the user may delete them.
     The culvert engine conveys flow through each culvert in a run (GPU
     lanes and localhost; the multi-core CPU lanes refuse a culvert scenario).
 
@@ -2047,6 +2051,9 @@ async def attach_input_layer(
         )
 
     culvert_report = None
+    # TASK-3660 (operator AC0 = REPORT): datasets this attach leaves
+    # unreferenced. Reported only, never deleted (accountable agents, epic 3200).
+    leftovers: list = []
     if kind == "culvert":
         # TASK-3641 — read back, map onto D10, re-upload when anything changed.
         source_alternate = await _dataset_alternate(dataset_pk)
@@ -2086,6 +2093,7 @@ async def attach_input_layer(
                     result, {"execution_status": mapped_upload["execution_status"]},
                     "The mapped culverts failed to re-import, so nothing was attached.",
                 )
+            leftovers.append({"dataset_pk": dataset_pk, "name": source_alternate, "reason": "raw_upload"})
             dataset_pk = mapped_upload["dataset_pk"]
             result["dataset_pk"] = dataset_pk
 
@@ -2125,6 +2133,10 @@ async def attach_input_layer(
                 result, {"row_id": result["row_id"]},
                 "The project's culvert layer is still being created; I am still waiting on it.",
             )
+    # The layer this tool's own POST had the factory make (empty) and the PATCH
+    # below replaces. A pre-existing row's previous layer is the user's own
+    # data, so it is not reported as leftover.
+    factory_pk = row.get("gn_layer") if result.get("created_row") else None
     body, status_code = await client.patch(
         f"/projects/{project_id}/{route}/{row['id']}/", json={"gn_layer": dataset_pk}
     )
@@ -2146,6 +2158,19 @@ async def attach_input_layer(
         result["dataset_alternate"] = None
         result["dataset_lookup_error"] = str(exc)
     alternate = result["dataset_alternate"]
+    if kind == "culvert":
+        if factory_pk is not None and factory_pk != dataset_pk:
+            try:
+                factory_name = await _dataset_alternate(factory_pk)
+            except HydrataAPIError:
+                factory_name = None  # best effort: the pk alone identifies it
+            leftovers.append({"dataset_pk": factory_pk, "name": factory_name, "reason": "empty_factory_layer"})
+        result["leftover_datasets"] = leftovers
+        if leftovers:
+            result["leftover_hint"] = (
+                f"{len(leftovers)} dataset(s) are no longer used by the project (nothing was deleted); "
+                "the user may delete them from their GeoNode dataset list if they wish."
+            )
     summary = await _layer_summary(alternate)
     summary["row_id"] = row["id"]
     # TASK-3749: whether the layer has features is the API's own answer (every
