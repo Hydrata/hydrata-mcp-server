@@ -2482,6 +2482,32 @@ NO_COMPARISON_WORDS = (
 )
 
 
+def _headline_sentence(headline) -> str | None:
+    """TASK-3845 — the English headline from the API's numbers (the map words
+    the same numbers per locale): '47 observations · 31 within ±0.30 m (66%) ·
+    bias -0.12 m · RMSE 0.35 m · 1 excluded'. A sentence (an older server) or
+    None passes through."""
+    if not isinstance(headline, dict):
+        return headline
+    n, excluded = int(headline.get("n") or 0), int(headline.get("excluded") or 0)
+    tol = f"±{float(headline.get('tolerance_m') or 0):.2f} m"
+    noun = "observation" if n == 1 else "observations"
+    parts = [f"{n} {noun}"]
+    if n and headline.get("within_pct") is not None:
+        parts.append(f"{int(headline.get('within') or 0)} within {tol} ({headline['within_pct']:.0f}%)")
+    else:
+        parts.append(f"{int(headline.get('within') or 0)} within {tol}")
+    if n and headline.get("bias_m") is not None:
+        parts.append(f"bias {headline['bias_m']:+.2f} m")
+    if n and headline.get("rmse_m") is not None:
+        parts.append(f"RMSE {headline['rmse_m']:.2f} m")
+    parts.append(f"{excluded} excluded")
+    needs_date = int(headline.get("needs_date") or 0)
+    if needs_date:
+        parts.append(f"{needs_date} {'needs' if needs_date == 1 else 'need'} a date")
+    return " · ".join(parts)
+
+
 def _comparison_path(run_id, tail: str = "") -> str:
     return f"/runs/{run_id}/comparison/{tail}"
 
@@ -2511,7 +2537,7 @@ async def _comparison_headline(run_id) -> tuple[str | None, str | None]:
         return None, str(exc)
     if status_code != 200 or not isinstance(body, dict):
         return None, f"Hydrata API returned {status_code}"
-    return body.get("headline"), None
+    return _headline_sentence(body.get("headline")), None
 
 
 @_tool("get_observation_comparison")
@@ -2531,7 +2557,8 @@ async def get_observation_comparison(
     """Compare a run with the project's flood observations: how well does it match them?
 
     Returns `headline` (the figures to tell the user, e.g. "47 observations · 31
-    within ±0.30 m (66%) · bias -0.12 m · RMSE 0.35 m · 1 excluded"), `statistics`
+    within ±0.30 m (66%) · bias -0.12 m · RMSE 0.35 m · 1 excluded"),
+    `headline_numbers` (the same as numbers), `statistics`
     (the API's summary: n, within, within_pct, bias_m, rmse_m, weighted_rmse_m, mae_m, max_abs_m,
     excluded, not_scored by reason, gauges), `gauges` (Gauge records: peak error,
     timing error, NSE), `datum_checks` (warn the user on a `mismatch` or `unknown`)
@@ -2560,6 +2587,9 @@ async def get_observation_comparison(
     if status_code != 200 or not isinstance(body, dict):
         raise _comparison_refusal(body, status_code, f"get_observation_comparison for run {run_id}")
     result = {"has_comparison": True, **_elide_presigned(body)}
+    # TASK-3845: the API's headline is numbers; keep them and say the English.
+    result["headline_numbers"] = result.get("headline")
+    result["headline"] = _headline_sentence(result.get("headline"))
     # The API's `summary` (the figures) would be overwritten by the hand-back's
     # own `summary` key, so it is relayed as `statistics`.
     result["statistics"] = result.pop("summary", None)

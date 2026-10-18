@@ -85,7 +85,9 @@ PAYLOAD = {
     "run": RUN, "clock_kind": "historic",
     "run_window": {"start": "1998-08-16T23:00:00Z", "end": "1998-08-17T23:00:00Z"},
     "tolerance_m": 0.3, "tolerance_presets_m": [0.15, 0.3, 0.4],
-    "headline": "2 observations · 1 within ±0.30 m (50%) · bias -0.40 m · RMSE 0.45 m · 1 excluded",
+    # TASK-3845: the API sends the headline as numbers; MCP words it in English.
+    "headline": {"n": 2, "within": 1, "within_pct": 50.0, "tolerance_m": 0.3, "bias_m": -0.4,
+                 "rmse_m": 0.45, "weighted_rmse_m": 0.44, "excluded": 1, "gauges": 1, "needs_date": 0},
     "summary": {"n": 2, "within": 1, "within_pct": 50.0, "bias_m": -0.4, "rmse_m": 0.45,
                 "weighted_rmse_m": 0.44, "mae_m": 0.4, "max_abs_m": 0.6, "tolerance_m": 0.3,
                 "excluded": 1, "not_scored": {"no_model": 0}, "gauges": 1},
@@ -101,6 +103,7 @@ PAYLOAD = {
              gauge=GAUGE, modelled_series=SERIES),
     ],
 }
+HEADLINE = "2 observations · 1 within ±0.30 m (50%) · bias -0.40 m · RMSE 0.45 m · 1 excluded"
 NO_COMPARISON = {"error_code": "NO_COMPARISON",
                  "detail": "Compare with observations is available only for historic runs (every clocked "
                            "forcing series recorded); this run is not one."}
@@ -128,7 +131,8 @@ class TestGetComparison:
         assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
         assert "tolerance" not in route.calls[0].request.url.params  # the API's 0.3 m default
         assert data["has_comparison"] is True
-        assert data["headline"] == PAYLOAD["headline"]
+        assert data["headline"] == HEADLINE  # English, built from the numbers
+        assert data["headline_numbers"] == PAYLOAD["headline"]
         assert data["statistics"] == PAYLOAD["summary"] and data["gauges"] == PAYLOAD["gauges"]
         assert data["datum_checks"] == PAYLOAD["datum_checks"]
         assert [row["fid"] for row in data["rows"]] == [17, 18, 19, 49]  # excluded ones too
@@ -137,7 +141,7 @@ class TestGetComparison:
         # hand-back: the run on its scenario in the map; the headline is what to say
         assert f"/catalogue/#/map/{BASE_MAP}" in data["ui_url"]
         assert f"run={RUN}" in data["ui_url"] and "scenario=489" in data["ui_url"]
-        assert PAYLOAD["headline"] in data["say_to_user"]
+        assert HEADLINE in data["say_to_user"]
         for word in ("pass", "fail", "footprint", "calibration target"):
             assert word not in data["say_to_user"].lower(), word
 
@@ -210,6 +214,27 @@ class TestGetComparison:
         assert "None" not in data["say_to_user"]
 
 
+class TestHeadlineSentence:
+    """TASK-3845: hydrata sends the headline's numbers (the map words them per
+    locale); MCP keeps the English sentence beside them."""
+
+    async def test_sentence_from_numbers(self, _server):
+        h = dict(PAYLOAD["headline"])
+        assert _server._headline_sentence(h) == HEADLINE
+        h.update(n=1, within=1, within_pct=100.0, bias_m=0.123, rmse_m=0.123, excluded=0, needs_date=2)
+        assert _server._headline_sentence(h) == (
+            "1 observation · 1 within ±0.30 m (100%) · bias +0.12 m · RMSE 0.12 m · 0 excluded · 2 need a date")
+
+    async def test_nothing_scored_has_no_figures(self, _server):
+        h = {"n": 0, "within": 0, "within_pct": None, "tolerance_m": 0.15, "bias_m": None, "rmse_m": None,
+             "weighted_rmse_m": None, "excluded": 3, "gauges": 0, "needs_date": 1}
+        assert _server._headline_sentence(h) == "0 observations · 0 within ±0.15 m · 3 excluded · 1 needs a date"
+
+    async def test_an_older_server_sentence_passes_through(self, _server):
+        assert _server._headline_sentence("2 observations · ...") == "2 observations · ..."
+        assert _server._headline_sentence(None) is None
+
+
 class TestNegativeControls:
     @respx.mock
     async def test_get_comparison_design_run_has_none_and_is_not_an_error(self, _server):
@@ -263,7 +288,7 @@ class TestExclusion:
         assert json.loads(route.calls[0].request.content) == {
             "layer": 239, "fid": 17, "excluded": True, "reason": "mark on a fence, not the flood"}
         assert data["excluded"] is True and data["by"] == "dave" and data["http_status"] == 201
-        assert data["headline_after"] == PAYLOAD["headline"]
+        assert data["headline_after"] == HEADLINE
         assert "excluded" in data["say_to_user"] and "mark on a fence" in data["say_to_user"]
         assert f"run={RUN}" in data["ui_url"]
 
