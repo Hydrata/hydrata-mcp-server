@@ -2270,7 +2270,9 @@ async def add_observations(
         "x/y with srid), value_kind (stage | depth) + stage_m or depth_m, optional name, "
         "uncertainty_grade (H/M/L) or uncertainty_m, bound (exact | at_least | at_most), "
         "observed_start/observed_end (ISO 8601; naive times read in entry_timezone), "
-        "mark_type, flood_name, source, licence, notes; a gauge_record needs "
+        "mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say "
+        "which flood it is: a date window (observed_start / observed_end) or flood_name "
+        "(ask the user; never guess a date); a gauge_record needs "
         "data_timeseries_id (+ gauge_zero_m). At most 200 per call",
     ],
     srid: Annotated[
@@ -2350,6 +2352,12 @@ async def add_observations(
            f"({_datum_words(layer)}).")
     if rejected:
         say += f" {len(rejected)} were refused; each is listed with the field that is wrong."
+        # TASK-3847: a Flood mark / Dry point must say which flood it is.
+        if any(isinstance(r.get("problems"), dict) and {"observed_start", "flood_name"} <= set(r["problems"])
+               for r in rejected):
+            say += (" A Flood mark or Dry point must say which flood it is: ask the user which flood "
+                    "(its name, or the dates it was observed) and send flood_name or "
+                    "observed_start / observed_end; never guess a date.")
     if stopped is not None:
         why = f"HTTP {stopped['http_status']}" if stopped["http_status"] else stopped["error"]
         say += (f" The batch stopped at row {stopped['index']} ({why}); that row and "
@@ -2372,7 +2380,8 @@ async def update_observation(
     changes: Annotated[
         dict,
         "Only the fields to change, in the add_observations write shape (e.g. {\"stage_m\": 2.5} "
-        "or a new geometry); validated by the API against the stored observation",
+        "or a new geometry); validated by the API against the stored observation (a flood_mark "
+        "or dry_point must keep a date window or a flood_name)",
     ],
 ) -> str:
     """Edit one flood observation (PATCH; only the fields given change).

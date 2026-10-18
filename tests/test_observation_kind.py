@@ -203,6 +203,39 @@ class TestTowradgiRoundTrip:
         assert "srid" not in table.bodies[0]["geometry"]  # no srid given: the API's EPSG:4326 default
 
     @respx.mock
+    async def test_an_undated_unnamed_mark_is_refused_and_the_agent_asks_which_flood(self, _server):
+        """TASK-3847: a Flood mark / Dry point needs a date window or a flood
+        name; the API's 400 names both fields and the agent is told to ask the
+        user which flood (never guess a date)."""
+        table = FakeLayerTable()
+        _mock_table(table)
+        message = ("Say which flood this is: give the date window (observed_start / observed_end) "
+                   "or the flood name (flood_name).")
+        problems = {"error_code": "VALIDATION_ERROR",
+                    "problems": {"observed_start": message, "flood_name": message}}
+
+        def create(request):
+            body = json.loads(request.content)
+            if not (body.get("flood_name") or body.get("observed_start") or body.get("observed_end")):
+                return httpx.Response(400, json=problems)
+            return table.create(request)
+        respx.post(OBSERVATIONS).mock(side_effect=create)
+        undated = {k: v for k, v in _towradgi_marks()[0].items() if k != "flood_name"}
+        data = _tool_json(await _call_as_caller(_server, "add_observations", {
+            "project_id": 42, "layer_id": 239, "observations": [_towradgi_marks()[1], undated]}))
+        assert data["created_count"] == 1 and data["rejected_count"] == 1
+        assert set(data["rejected"][0]["problems"]) == {"observed_start", "flood_name"}
+        assert "which flood" in data["say_to_user"] and "ask the user" in data["say_to_user"]
+
+    async def test_add_and_update_descriptions_say_a_date_or_flood_name_is_needed(self, _server):
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        for name in ("add_observations", "update_observation"):
+            text = json.dumps(tools[name])
+            assert "flood_name" in text and "date window" in text, name
+
+    @respx.mock
     async def test_observation_add_refuses_a_layer_still_being_created(self, _server):
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer(gn_layer=None)))
         post = respx.post(OBSERVATIONS).mock(return_value=httpx.Response(201, json={}))
