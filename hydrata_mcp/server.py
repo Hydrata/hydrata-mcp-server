@@ -2580,6 +2580,11 @@ async def get_observation_comparison(
     and one row per observation: observed_m / modelled_m / residual_m (modelled -
     observed, + = model high), within, scored / not_scored_reason, match
     (`outside_run_window` = not this flood), excluded + exclusion {reason, by, at}.
+    `sampling` counts how the modelled values were read: `centroid` (the peak
+    of the mesh triangle the observation sits in), `nearest_node_fallback` (an
+    older run without that peak: the nearest mesh node's value, tell the user)
+    and `nearest_node` (just outside the mesh); each row's `sample.method` says
+    which.
     There is no pass or fail: report the figures. A run that is not historic has
     none (`has_comparison` false) — do not retry it.
     """
@@ -2638,6 +2643,11 @@ async def get_observation_comparison(
                 and check.get("message")]
     if warnings:
         say += " Datum warning: " + " ".join(warnings)
+    # TASK-3843: an older run's store has no per-triangle peak; say so.
+    fallback = (result.get("sampling") or {}).get("nearest_node_fallback") or 0
+    if fallback:
+        say += (f" This is an older run: {fallback} observation{'s' if fallback != 1 else ''} "
+                "read the nearest mesh node's value, not the peak of the triangle it sits in.")
     await _hand_back(
         result, project_id,
         {"run_id": run_id, "headline": result.get("headline"), "tolerance_m": result.get("tolerance_m"),

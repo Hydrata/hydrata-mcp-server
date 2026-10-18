@@ -69,7 +69,7 @@ def _row(fid, name, **overrides):
         "datum": {"layer_datum": "AHD", "offset_m": 0.0, "status": "known", "reason": None},
         "match": "matched", "observed_m": 4.32, "modelled_m": 4.12, "residual_m": -0.2,
         "scored": True, "not_scored_reason": None, "within": True,
-        "sample": {"outcome": "wet", "in_mesh": True, "method": "containing_triangle"},
+        "sample": {"outcome": "wet", "in_mesh": True, "method": "centroid"},
         "time": None, "excluded": False, "exclusion": None,
         "computed_at": "2026-10-18T00:01:02.123+00:00",
     }
@@ -145,6 +145,29 @@ class TestGetComparison:
         assert HEADLINE in data["say_to_user"]
         for word in ("pass", "fail", "footprint", "calibration target"):
             assert word not in data["say_to_user"].lower(), word
+
+    @respx.mock
+    async def test_an_older_run_read_at_the_nearest_node_is_said(self, _server):
+        """TASK-3843: rows of a run whose store predates the per-triangle centroid
+        peak are read at the nearest node; the tool tells the user (an older run's
+        corner value), and says nothing for a current run."""
+        _mock_run()
+        older = copy.deepcopy(PAYLOAD)
+        older["sampling"] = {"centroid": 0, "nearest_node_fallback": 3, "nearest_node": 0}
+        respx.get(COMPARISON).mock(return_value=httpx.Response(200, json=older))
+        data = _tool_json(await _call_as_caller(_server, "get_observation_comparison", {"run_id": RUN}))
+        assert data["sampling"] == older["sampling"]
+        assert "older run" in data["say_to_user"] and "nearest mesh node" in data["say_to_user"]
+        assert "3 observations" in data["say_to_user"]
+
+    @respx.mock
+    async def test_negative_control_a_centroid_run_has_no_older_run_note(self, _server):
+        _mock_run()
+        current = copy.deepcopy(PAYLOAD)
+        current["sampling"] = {"centroid": 4, "nearest_node_fallback": 0, "nearest_node": 0}
+        respx.get(COMPARISON).mock(return_value=httpx.Response(200, json=current))
+        data = _tool_json(await _call_as_caller(_server, "get_observation_comparison", {"run_id": RUN}))
+        assert "older run" not in data["say_to_user"]
 
     @respx.mock
     async def test_get_comparison_elides_gauge_series_unless_asked(self, _server):
