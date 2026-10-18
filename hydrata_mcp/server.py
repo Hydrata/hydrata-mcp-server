@@ -1,6 +1,7 @@
 """Hydrata MCP Server — 19 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
+import base64
 import functools
 import json
 import math
@@ -81,8 +82,27 @@ def _resource_metadata_url() -> str:
     return f"{parts.scheme}://{parts.netloc}/.well-known/oauth-protected-resource{parts.path}"
 
 
-def _www_authenticate() -> bytes:
+def _connect_token_expired(value: str) -> bool:
+    """True when a connect-flow token's ``exp`` has passed (read unverified; RFC 6750 §3.1).
+
+    An OAuth client refreshes on a 401 ``invalid_token``; forwarded to Django, an
+    expired token only came back as a tool error inside a 200, so the client never
+    refreshed. A payload without a readable numeric ``exp`` is left to Django.
+    """
+    token = value.strip().partition(" ")[2].strip()
+    try:
+        segment = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+        exp = claims["exp"]
+    except (IndexError, KeyError, TypeError, ValueError):
+        return False
+    return isinstance(exp, (int, float)) and not isinstance(exp, bool) and exp <= time.time()
+
+
+def _www_authenticate(error: str = "") -> bytes:
     challenge = 'Bearer realm="hydrata.com"'
+    if error:
+        challenge += f', error="{error}"'
     if config.resource_url:
         challenge += f', resource_metadata="{_resource_metadata_url()}"'
     return challenge.encode()
@@ -168,6 +188,7 @@ class RequireAuthForToolsCall:
                  if name == b"authorization"]
         credentials = [a for a in auths if a.strip()]
         refusal = None
+        token_error = ""
         if needs_auth and not credentials:
             refusal = (
                 f"Authentication required: send a Hydrata agent key as the header "
@@ -180,6 +201,9 @@ class RequireAuthForToolsCall:
                 f"'{AGENT_KEY_HEADER}'. Sign-in with HTTP Basic or any other token is not "
                 f"accepted here. Create an agent key at {_agent_keys_url()}"
             )
+        elif needs_auth and _is_connect_token(auths[0]) and _connect_token_expired(auths[0]):
+            token_error = "invalid_token"
+            refusal = "The access token has expired: refresh it, or connect again from your AI assistant."
 
         if refusal:
             payload = json.dumps(
@@ -196,7 +220,7 @@ class RequireAuthForToolsCall:
                     "headers": [
                         (b"content-type", b"application/json"),
                         (b"content-length", str(len(payload)).encode()),
-                        (b"www-authenticate", _www_authenticate()),
+                        (b"www-authenticate", _www_authenticate(token_error)),
                     ],
                 }
             )

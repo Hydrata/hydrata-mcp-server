@@ -4,7 +4,10 @@ With HYDRATA_MCP_RESOURCE_URL set, a 401 names the protected-resource metadata
 and a ``Bearer <JWT>`` tools/call is forwarded to Django verbatim (Django
 verifies it; this server never does). Unset, nothing changes: agent keys only.
 """
+import base64
 import importlib
+import json
+import time
 
 import httpx
 import pytest
@@ -65,3 +68,45 @@ class TestConnectOff:
         assert resp.status_code == 401
         assert resp.headers["www-authenticate"] == 'Bearer realm="hydrata.com"'
         assert not upstream.calls
+
+
+def _jwt(payload: dict) -> str:
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+    return f"Bearer {seg({'alg': 'RS256', 'kid': 'k1'})}.{seg(payload)}.c2lnbmF0dXJl"
+
+
+class TestExpiredConnectToken:
+    """An expired connect-flow token is an HTTP 401, not a 200 with a tool error.
+
+    The MCP authorization spec says invalid or expired tokens get HTTP 401; an OAuth
+    client (claude.ai) refreshes on that 401. Forwarded to Django, the expiry only
+    came back as ``isError`` inside a 200 stream, so the client never refreshed and
+    the person was told to reconnect about an hour after connecting (W2e live setup,
+    18-10-26). Only ``exp`` is read here, unverified; Django still checks everything.
+    """
+
+    @respx.mock
+    async def test_expired_is_401_naming_invalid_token(self, connect_server):
+        upstream = respx.route().mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(connect_server, _jwt({"sub": "user_01", "exp": int(time.time()) - 10}))
+        assert resp.status_code == 401
+        challenge = resp.headers["www-authenticate"]
+        assert 'error="invalid_token"' in challenge
+        assert f'resource_metadata="{METADATA}"' in challenge
+        assert not upstream.calls
+
+    @respx.mock
+    async def test_unexpired_is_forwarded(self, connect_server):
+        token = _jwt({"sub": "user_01", "exp": int(time.time()) + 600})
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        resp = await _call(connect_server, token)
+        assert resp.status_code == 200
+        assert upstream.calls[0].request.headers["authorization"] == token
+
+    @pytest.mark.parametrize("token", [JWT, "Bearer eyJhIjoxfQ.bm90IGpzb24.c2ln",
+                                       _jwt({"sub": "user_01", "exp": "soon"})])
+    @respx.mock
+    async def test_no_readable_exp_is_left_to_django(self, connect_server, token):
+        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
+        assert (await _call(connect_server, token)).status_code == 200
