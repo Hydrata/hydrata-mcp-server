@@ -37,6 +37,12 @@ class Config:
     # control (merewether-injected run with the envelope disabled must be able
     # to fail). Never set it on a served site.
     data_envelope: bool = True
+    # TASK-3512 (W2e, epic 3200) — the canonical MCP resource URL, WITH the trailing
+    # slash (https://hydrata.com/mcp/). Set: a 401 names the protected-resource
+    # metadata (RFC 9728 / MCP authorization spec) and a Bearer JWT from the
+    # one-click connect flow is passed through to Django, which verifies it.
+    # Unset (the default): hk_ agent keys only, exactly as before.
+    resource_url: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -50,6 +56,7 @@ class Config:
             host=os.environ.get("HYDRATA_MCP_HOST", "127.0.0.1"),
             api_host=os.environ.get("HYDRATA_API_HOST", ""),
             ui_origin=os.environ.get("HYDRATA_UI_ORIGIN", "").rstrip("/"),
+            resource_url=os.environ.get("HYDRATA_MCP_RESOURCE_URL", "").strip(),
             data_envelope=os.environ.get("HYDRATA_MCP_DATA_ENVELOPE", "on").strip().lower()
             not in ("off", "0", "false", "no"),
         )

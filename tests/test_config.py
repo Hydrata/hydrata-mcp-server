@@ -23,9 +23,10 @@ class TestFromEnv:
         assert cfg.api_url == "https://example.com"
         # TASK-3730: no Basic grace-period setting either: Basic on /mcp/ is
         # refused outright, so there is nothing to configure.
+        # TASK-3512: resource_url is a public URL (the connect flow switch), not a credential.
         # TASK-3511: data_envelope is the harness's negative-control switch, not a credential.
         assert {f.name for f in fields(cfg)} == {
-            "api_url", "port", "host", "api_host", "ui_origin", "data_envelope"}
+            "api_url", "port", "host", "api_host", "ui_origin", "data_envelope", "resource_url"}
 
     @pytest.mark.parametrize("raw,expected", [
         (None, True), ("on", True), ("1", True), ("off", False), ("OFF", False), ("0", False),

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from http import HTTPStatus
 from typing import Annotated
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import uvicorn
 from fastmcp import FastMCP
@@ -57,6 +57,37 @@ def _is_agent_key(value: str) -> bool:
     return scheme.lower() == "bearer" and token.strip().startswith(AGENT_KEY_PREFIX)
 
 
+_JWT_SHAPE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$")
+
+
+def _is_connect_token(value: str) -> bool:
+    """TASK-3512: True for ``Bearer <JWT>`` when the one-click connect flow is configured here.
+
+    Shape only, and only with ``HYDRATA_MCP_RESOURCE_URL`` set. This server never
+    validates the token (it holds no key and no identity): it is forwarded verbatim
+    and Django checks signature, issuer, audience and the grant on every call.
+    A GeoNode OAuth token is opaque (no dots), so it is still refused.
+    """
+    if not config.resource_url:
+        return False
+    scheme, _, token = value.strip().partition(" ")
+    token = token.strip()
+    return scheme.lower() == "bearer" and not token.startswith(AGENT_KEY_PREFIX) and bool(_JWT_SHAPE.match(token))
+
+
+def _resource_metadata_url() -> str:
+    """Where the protected-resource metadata for ``config.resource_url`` is served (RFC 9728 §3.1)."""
+    parts = urlsplit(config.resource_url)
+    return f"{parts.scheme}://{parts.netloc}/.well-known/oauth-protected-resource{parts.path}"
+
+
+def _www_authenticate() -> bytes:
+    challenge = 'Bearer realm="hydrata.com"'
+    if config.resource_url:
+        challenge += f', resource_metadata="{_resource_metadata_url()}"'
+    return challenge.encode()
+
+
 class RequireAuthForToolsCall:
     """Pure-ASGI middleware: 401 an anonymous ``tools/call``; every other method stays open.
 
@@ -89,10 +120,11 @@ class RequireAuthForToolsCall:
     a 500 from here. Batches (arrays) are inspected element-wise as defence in
     depth; the MCP SDK itself rejects them downstream.
 
-    Expected side effect: OAuth-aware MCP clients that see the 401 probe
-    ``/.well-known/oauth-protected-resource`` and get a 404. That is fine — we
-    are not an OAuth resource server (yet: WorkOS connect is TASK-3512); the
-    agent key is the credential.
+    TASK-3512 (W2e): with ``HYDRATA_MCP_RESOURCE_URL`` set, the 401 also carries
+    ``resource_metadata="…"`` so an OAuth-aware client (claude.ai, ChatGPT) can
+    find the authorization server, and a ``Bearer <JWT>`` from that flow is let
+    through and forwarded verbatim — Django verifies it (this server never does).
+    With it unset, the agent key is the only credential and the PRM stays a 404.
     """
 
     def __init__(self, app):
@@ -141,7 +173,7 @@ class RequireAuthForToolsCall:
                 f"Authentication required: send a Hydrata agent key as the header "
                 f"'{AGENT_KEY_HEADER}' (create one at {_agent_keys_url()})"
             )
-        elif needs_auth and (len(auths) != 1 or not _is_agent_key(auths[0])):
+        elif needs_auth and (len(auths) != 1 or not (_is_agent_key(auths[0]) or _is_connect_token(auths[0]))):
             # TASK-3730: never echo the credential back — only what to send instead.
             refusal = (
                 f"Only a Hydrata agent key is accepted for tool calls: send exactly one header "
@@ -164,7 +196,7 @@ class RequireAuthForToolsCall:
                     "headers": [
                         (b"content-type", b"application/json"),
                         (b"content-length", str(len(payload)).encode()),
-                        (b"www-authenticate", b'Bearer realm="hydrata.com"'),
+                        (b"www-authenticate", _www_authenticate()),
                     ],
                 }
             )
