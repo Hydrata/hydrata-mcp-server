@@ -2142,6 +2142,10 @@ def _observation_layer_entry(layer: dict) -> dict:
         "vertical_datum": layer.get("vertical_datum"),
         "datum_offset_m": layer.get("datum_offset_m"),
         "has_features": layer.get("has_features"),
+        # TASK-3875: the zone naive observation times are read in by default,
+        # derived by the API from where the project is (None: no location).
+        "default_timezone": layer.get("default_timezone"),
+        "default_timezone_source": layer.get("default_timezone_source"),
     }
 
 
@@ -2267,10 +2271,12 @@ async def add_observations(
     observations: Annotated[
         list[dict],
         "Observations, each the API write body: subtype (flood_mark | timed_level | "
-        "gauge_record | dry_point), geometry {type: Point, coordinates: [lon, lat]} (or native "
-        "x/y with srid), value_kind (stage | depth) + stage_m or depth_m, optional name, "
+        "gauge_record | dry_point), name (required: a short label, e.g. the survey mark id), "
+        "geometry {type: Point, coordinates: [lon, lat]} (or native "
+        "x/y with srid), value_kind (stage | depth) + stage_m or depth_m, "
         "uncertainty_grade (H/M/L) or uncertainty_m, bound (exact | at_least | at_most), "
-        "observed_start/observed_end (ISO 8601; naive times read in entry_timezone), "
+        "observed_start/observed_end (ISO 8601; naive times read in entry_timezone, by default "
+        "the project's own zone), "
         "mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say "
         "which flood it is: a date window (observed_start / observed_end) or flood_name "
         "(ask the user; never guess a date); a gauge_record needs "
@@ -2284,7 +2290,8 @@ async def add_observations(
     entry_timezone: Annotated[
         str | None,
         "IANA zone for naive observed_start/observed_end on rows that do not carry their own "
-        "entry_timezone (where the times were read, e.g. 'Europe/Berlin'; ask the user)",
+        "entry_timezone; omit to use the project's zone (derived from where the project is, "
+        "reported back as entry_timezone). Give it only when the times were read elsewhere",
     ] = None,
 ) -> str:
     """Add flood observations (Flood mark, Timed level, Gauge record, Dry point) to a layer.
@@ -2314,6 +2321,14 @@ async def add_observations(
             "try again in a few seconds"
         )
     path = f"/projects/{project_id}/flood-observations/{layer_id}/observations/"
+    # TASK-3875: no zone given -> the project's own (never a constant).
+    if entry_timezone:
+        zone = {"timezone": entry_timezone, "source": "given"}
+    else:
+        zone = {"timezone": layer.get("default_timezone"),
+                "source": layer.get("default_timezone_source") if layer.get("default_timezone") else None}
+    entry_timezone = zone["timezone"]
+    zone_filled = False
     created, rejected, stopped = [], [], None
     for index, row in enumerate(observations):
         body = dict(row)
@@ -2322,6 +2337,7 @@ async def add_observations(
             body["geometry"] = {**geometry, "srid": srid}
         if entry_timezone and "entry_timezone" not in body:
             body["entry_timezone"] = entry_timezone
+            zone_filled = zone_filled or bool(body.get("observed_start") or body.get("observed_end"))
         try:
             answer, status_code = await client.post(path, json=body, raise_for_status=False)
         except HydrataAPIError as exc:
@@ -2345,12 +2361,15 @@ async def add_observations(
     result = {"layer_id": layer_id, "dataset_alternate": layer["dataset_alternate"],
               "vertical_datum": layer["vertical_datum"], "datum_offset_m": layer["datum_offset_m"],
               "created_count": len(created), "rejected_count": len(rejected),
-              "created": created, "rejected": rejected}
+              "created": created, "rejected": rejected, "entry_timezone": zone}
     if stopped is not None:
         result["stopped"] = stopped
         result["not_sent_count"] = len(observations) - stopped["index"] - 1
     say = (f"{len(created)} flood observation(s) added to '{layer['title']}' "
            f"({_datum_words(layer)}).")
+    if zone_filled:
+        where = "from the project location" if zone["source"] == "project_location" else "as given"
+        say += f" Times are in {zone['timezone']} ({where})."
     if rejected:
         say += f" {len(rejected)} were refused; each is listed with the field that is wrong."
         # TASK-3847: a Flood mark / Dry point must say which flood it is.

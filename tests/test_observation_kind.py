@@ -12,6 +12,7 @@ historic_1998_flood_levels_towradgi_ck.csv, copied to tests/fixtures/) round-tri
 add_observations sends 48 POSTs, list_observations reads the same 48 back.
 """
 
+import contextlib
 import csv
 import importlib
 import json
@@ -420,3 +421,52 @@ class TestObservationToolSurface:
             assert "footprint" not in description.lower() and "calibration target" not in description.lower()
         assert "Flood mark" in tools["add_observations"]["description"]
         assert "photo strip" in tools["add_observation_photo_link"]["description"]
+
+
+@contextlib.contextmanager
+def _zone_routes(table, **layer_fields):
+    """A private router (TASK-3875 tests): the layer answers with `layer_fields`."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get(LAYER).mock(return_value=httpx.Response(200, json=_layer(**layer_fields)))
+        router.post(OBSERVATIONS).mock(side_effect=table.create)
+        router.get(f"{BASE}/projects/42/").mock(
+            return_value=httpx.Response(200, json={"id": 42, "name": "p", "base_map": BASE_MAP}))
+        yield router
+
+
+class TestObservationDefaultTimezone:
+    """TASK-3875 (W3.8-b): with no entry_timezone, add_observations reads naive
+    times in the PROJECT's zone (the layer API's default_timezone, derived
+    from where the project is) and says so; an explicit zone wins; a project
+    with no location sends no zone (the API then asks for one)."""
+
+    def _timed(self, **extra):
+        return {"subtype": "timed_level", "name": "T1", "value_kind": "stage", "stage_m": 3.1,
+                "observed_start": "1998-08-17T09:00",
+                "geometry": {"type": "Point", "coordinates": [151.74, -32.92]}, **extra}
+
+    async def test_project_zone_is_used_and_reported(self, _server):
+        table = FakeLayerTable()
+        with _zone_routes(table, default_timezone="Europe/Amsterdam", default_timezone_source="project_location"):
+            data = _tool_json(await _call_as_caller(_server, "add_observations", {
+                "project_id": 42, "layer_id": 239, "observations": [self._timed()]}))
+        assert table.bodies[0]["entry_timezone"] == "Europe/Amsterdam"
+        assert data["entry_timezone"] == {"timezone": "Europe/Amsterdam", "source": "project_location"}
+        assert "Europe/Amsterdam" in data["say_to_user"] and "project location" in data["say_to_user"]
+
+    async def test_negative_control_an_explicit_zone_wins(self, _server):
+        table = FakeLayerTable()
+        with _zone_routes(table, default_timezone="Europe/Amsterdam", default_timezone_source="project_location"):
+            data = _tool_json(await _call_as_caller(_server, "add_observations", {
+                "project_id": 42, "layer_id": 239, "entry_timezone": "America/Chicago",
+                "observations": [self._timed(), self._timed(name="T2", entry_timezone="Asia/Tokyo")]}))
+        assert [b["entry_timezone"] for b in table.bodies] == ["America/Chicago", "Asia/Tokyo"]
+        assert data["entry_timezone"] == {"timezone": "America/Chicago", "source": "given"}
+
+    async def test_no_project_location_sends_no_zone(self, _server):
+        table = FakeLayerTable()
+        with _zone_routes(table, default_timezone=None, default_timezone_source=None):
+            data = _tool_json(await _call_as_caller(_server, "add_observations", {
+                "project_id": 42, "layer_id": 239, "observations": [self._timed()]}))
+        assert "entry_timezone" not in table.bodies[0]
+        assert data["entry_timezone"] == {"timezone": None, "source": None}
