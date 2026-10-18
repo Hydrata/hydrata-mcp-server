@@ -49,7 +49,8 @@ RUN = 1591
 COMPARISON = f"{BASE}/runs/{RUN}/comparison/"
 EXCLUSIONS = f"{COMPARISON}exclusions/"
 HISTORY = f"{COMPARISON}history/"
-COMPARISON_TOOLS = {"get_observation_comparison", "set_observation_exclusion"}
+COMPARISON_TOOLS = {"get_observation_comparison", "set_observation_exclusion", "set_comparison_tolerance"}
+TOLERANCE = f"{BASE}/projects/42/comparison-tolerance/"
 
 
 @pytest.fixture
@@ -328,6 +329,42 @@ class TestExclusion:
         text = _tool_error_text(await _call_as_caller(_server, "set_observation_exclusion", args))
         assert "has no row" in text
 
+class TestSavedTolerance:
+    """TASK-3848: an Editor saves the project's default tolerance; the read
+    uses it unless the agent passes `tolerance` (which saves nothing)."""
+
+    @respx.mock
+    async def test_set_comparison_tolerance_saves_it(self, _server):
+        _mock_run()
+        route = respx.patch(TOLERANCE).mock(return_value=httpx.Response(
+            200, json={"project": 42, "tolerance_m": 0.4}))
+        data = _tool_json(await _call_as_caller(
+            _server, "set_comparison_tolerance", {"project_id": 42, "tolerance_m": 0.4}))
+        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert json.loads(route.calls[0].request.content) == {"tolerance_m": 0.4}
+        assert data["tolerance_m"] == 0.4 and "±0.40 m" in data["say_to_user"]
+        assert f"/catalogue/#/map/{BASE_MAP}" in data["ui_url"]
+
+    @respx.mock
+    async def test_negative_control_a_viewer_cannot_save(self, _server):
+        respx.patch(TOLERANCE).mock(return_value=httpx.Response(
+            403, json={"detail": "Editor role or higher required."}))
+        text = _tool_error_text(await _call_as_caller(
+            _server, "set_comparison_tolerance", {"project_id": 42, "tolerance_m": 0.4}))
+        assert "403" in text
+
+    @respx.mock
+    async def test_a_tolerance_on_the_read_is_forwarded_and_not_saved(self, _server):
+        _mock_run()
+        saved = respx.patch(TOLERANCE).mock(return_value=httpx.Response(200, json={}))
+        respx.get(COMPARISON).mock(return_value=httpx.Response(200, json={
+            **PAYLOAD, "tolerance_m": 0.15, "default_tolerance_m": 0.4}))
+        data = _tool_json(await _call_as_caller(
+            _server, "get_observation_comparison", {"run_id": RUN, "tolerance": 0.15}))
+        assert (data["tolerance_m"], data["default_tolerance_m"]) == (0.15, 0.4)
+        assert saved.call_count == 0
+
+
 class TestComparisonToolList:
     async def test_comparison_tools_are_listed_with_their_hints(self, _server):
         async with _asgi_client(_server) as c:
@@ -335,9 +372,10 @@ class TestComparisonToolList:
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert COMPARISON_TOOLS <= set(tools)
         assert tools["get_observation_comparison"]["annotations"]["readOnlyHint"] is True
-        ann = tools["set_observation_exclusion"]["annotations"]
-        assert ann["readOnlyHint"] is False and ann["destructiveHint"] is False
-        assert ann["idempotentHint"] is True
+        for name in ("set_observation_exclusion", "set_comparison_tolerance"):
+            ann = tools[name]["annotations"]
+            assert ann["readOnlyHint"] is False and ann["destructiveHint"] is False, name
+            assert ann["idempotentHint"] is True, name
 
     async def test_no_calibration_wording_and_no_role_tool(self, _server):
         """TASK-3844: no tool is named or described as Calibration, and the

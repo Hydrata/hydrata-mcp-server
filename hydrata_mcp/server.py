@@ -1,4 +1,4 @@
-"""Hydrata MCP Server — 27 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 28 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
 import functools
@@ -193,7 +193,9 @@ mcp = FastMCP(
         "map's photo strip. "
         "get_observation_comparison reads how a historic run compares with them (there is no "
         "pass or fail: report the headline); set_observation_exclusion excludes one with the "
-        "engineer's reason (ask for it, never invent one) or includes it again."
+        "engineer's reason (ask for it, never invent one) or includes it again; "
+        "set_comparison_tolerance saves the project's default tolerance (an Editor's choice: "
+        "to try another, pass tolerance to get_observation_comparison instead)."
     ),
     lifespan=lifespan,
 )
@@ -240,6 +242,8 @@ TOOL_ANNOTATIONS = {
     "get_observation_comparison": ("Compare a run with flood observations", True, False, True),
     "set_observation_exclusion": ("Exclude or include a flood observation in a run's comparison",
                                   False, False, True),
+    # TASK-3848: a saved setting, overwritten by the next save; not destructive.
+    "set_comparison_tolerance": ("Save a project's default comparison tolerance", False, False, True),
 }
 
 
@@ -2545,8 +2549,9 @@ async def get_observation_comparison(
     run_id: Annotated[int, "The run ID (a historic run; others are not compared with observations)"],
     tolerance: Annotated[
         float | None,
-        "Metres within which a residual counts as within (default 0.3; presets 0.15, 0.3, 0.4; "
-        "above 0 and at most 5). Not stored: it only changes this answer",
+        "Metres within which a residual counts as within (default: the project's saved tolerance, "
+        "0.3 unless an Editor changed it; presets 0.15, 0.3, 0.4; above 0 and at most 5). "
+        "Not stored: it only changes this answer",
     ] = None,
     layer_id: Annotated[int | None, "With fid: narrow the rows to ONE flood observation and add its history"] = None,
     fid: Annotated[int | None, "With layer_id: the observation's fid (list_observations)"] = None,
@@ -2558,7 +2563,8 @@ async def get_observation_comparison(
 
     Returns `headline` (the figures to tell the user, e.g. "47 observations · 31
     within ±0.30 m (66%) · bias -0.12 m · RMSE 0.35 m · 1 excluded"),
-    `headline_numbers` (the same as numbers), `statistics`
+    `headline_numbers` (the same as numbers), `tolerance_m` (used) and
+    `default_tolerance_m` (the project's saved one), `statistics`
     (the API's summary: n, within, within_pct, bias_m, rmse_m, weighted_rmse_m, mae_m, max_abs_m,
     excluded, not_scored by reason, gauges), `gauges` (Gauge records: peak error,
     timing error, NSE), `datum_checks` (warn the user on a `mismatch` or `unknown`)
@@ -2688,6 +2694,32 @@ async def set_observation_exclusion(
         {"run_id": run_id, "layer_id": layer_id, "fid": fid, "excluded": result.get("excluded"),
          "reason": result.get("reason")},
         say, panel="scenarios", scenario=scenario_id, run=run_id,
+    )
+    return json.dumps(result, indent=2)
+
+
+@_tool("set_comparison_tolerance")
+async def set_comparison_tolerance(
+    project_id: Annotated[int, "The project ID"],
+    tolerance_m: Annotated[
+        float, "The project's default tolerance in metres (above 0 and at most 5; presets 0.15, 0.3, 0.4)"
+    ],
+) -> str:
+    """Save a project's default tolerance for comparing runs with flood observations.
+
+    Needs Editor (or above). Every later get_observation_comparison (and the map's
+    Compare with observations tab) uses it unless a tolerance is passed. Only
+    save it when the user asks to change the project's default; to show the
+    figures at another tolerance, pass `tolerance` to get_observation_comparison.
+    """
+    body, status_code = await client.patch(
+        f"/projects/{project_id}/comparison-tolerance/", json={"tolerance_m": tolerance_m})
+    result = {**(body if isinstance(body, dict) else {"response": body}), "http_status": status_code}
+    saved = result.get("tolerance_m", tolerance_m)
+    await _hand_back(
+        result, project_id, {"project_id": project_id, "tolerance_m": saved},
+        f"Project {project_id}'s default comparison tolerance is now ±{float(saved):.2f} m.",
+        panel="scenarios",
     )
     return json.dumps(result, indent=2)
 
