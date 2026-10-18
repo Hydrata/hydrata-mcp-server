@@ -265,8 +265,8 @@ class HydrataClient:
     async def get_with_status(self, path: str, params: dict | None = None) -> tuple[Any, int]:
         """GET that hands a 4xx BACK as ``(body, status)`` instead of raising.
 
-        TASK-3816 (epic 3801) — get_calibration must tell a run that has no
-        Calibration (404 ``NO_CALIBRATION``: a design or unlabelled run, a
+        TASK-3816 (epic 3801) — get_observation_comparison must tell a run that
+        has no comparison (404 ``NO_COMPARISON``: a design or unlabelled run, a
         normal answer) from a 404 that IS an error (a stranger's run). Same
         headers; a ConnectError, a timeout and every 5xx still raise.
         """

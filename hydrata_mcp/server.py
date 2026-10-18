@@ -1,4 +1,4 @@
-"""Hydrata MCP Server — 28 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 27 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
 import functools
@@ -9,7 +9,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated
 from urllib.parse import quote, urlencode
 
 import uvicorn
@@ -186,15 +186,14 @@ mcp = FastMCP(
         "missing or wrong (no boundary, no External boundary edge), send the user to "
         "the ui_url to draw or fix it in the map. "
         "To record real flood evidence (Flood marks, Timed levels, Gauge records, Dry "
-        "points) that historic runs are scored against (Calibration): "
+        "points) that a historic run is compared with (Compare with observations): "
         "create_observation_layer → add_observations → list_observations; edit with "
         "update_observation / delete_observation. Photos go on by link only "
         "(add_observation_photo_link); photo files are uploaded by the engineer in the "
         "map's photo strip. "
-        "A historic run is scored against them: get_calibration reads its figures (there is no "
+        "get_observation_comparison reads how a historic run compares with them (there is no "
         "pass or fail: report the headline); set_observation_exclusion excludes one with the "
-        "engineer's reason (ask for it, never invent one) or includes it again; "
-        "set_observation_role marks it calibration or validation."
+        "engineer's reason (ask for it, never invent one) or includes it again."
     ),
     lifespan=lifespan,
 )
@@ -236,12 +235,11 @@ TOOL_ANNOTATIONS = {
     "update_observation": ("Edit one flood observation", False, False, True),
     "delete_observation": ("Delete one flood observation", False, True, True),
     "add_observation_photo_link": ("Attach a photo link to a flood observation", False, False, False),
-    # TASK-3816 (epic 3801): Calibration. Exclusions / roles are logged and
-    # reversible (include it again, change the role back), so not destructive.
-    "get_calibration": ("Read a run's Calibration against flood observations", True, False, True),
-    "set_observation_exclusion": ("Exclude or include a flood observation in a run's Calibration",
+    # TASK-3816 / TASK-3844 (epic 3801): Compare with observations. Exclusions
+    # are logged and reversible (include it again), so not destructive.
+    "get_observation_comparison": ("Compare a run with flood observations", True, False, True),
+    "set_observation_exclusion": ("Exclude or include a flood observation in a run's comparison",
                                   False, False, True),
-    "set_observation_role": ("Set a flood observation's calibration / validation role", False, False, True),
 }
 
 
@@ -2177,8 +2175,8 @@ async def create_observation_layer(
     """Create a flood observation layer in a project and wait for its map layer.
 
     A flood observation layer holds real flood evidence (Flood marks, Timed
-    levels, Gauge records, Dry points) that every historic run is scored
-    against (Calibration). It is project-level: it is never a scenario input.
+    levels, Gauge records, Dry points) that every historic run is compared
+    with (Compare with observations). It is project-level: it is never a scenario input.
     POSTs /projects/<id>/flood-observations/, then polls the layer until its
     GeoServer layer exists (`ready`), usually a few seconds; until then
     add_observations refuses. On `timed_out`, call list_observations later.
@@ -2463,28 +2461,29 @@ async def add_observation_photo_link(
 
 
 # ---------------------------------------------------------------------------
-# TASK-3816 (W2, epic 3801) — Calibration: read a run's result, exclude /
-# include an observation, set its role.
+# TASK-3816 (W2) + TASK-3844 (W3.5), epic 3801 — Compare with observations:
+# read how a run compares with the project's flood observations, exclude /
+# include an observation.
 #
-# Every historic run (clock_kind "historic") is scored against the project's
-# flood observations worker-side; hydrata serves the result at
-# /runs/<id>/calibration/ (headline, summary, by_role, gauges, datum_checks,
-# one row per observation INCLUDING the unscored and excluded ones). D9: there
-# is no PASS / FAIL — the headline is a set of figures at a tolerance (0.3 m
-# default, presets 0.15 / 0.3 / 0.4), which is derived per request, never
-# stored. A design or unlabelled run answers 404 NO_CALIBRATION: a normal
-# answer ("this run has no Calibration"), not an error to retry. Exclusions
-# and roles are logged per (run, layer, fid); an exclusion needs the
-# engineer's reason, which a tool must never invent.
+# Every historic run (clock_kind "historic") is compared with the project's
+# flood observations worker-side; hydrata serves it at /runs/<id>/comparison/
+# (headline, summary, gauges, datum_checks, one row per observation INCLUDING
+# the unscored and excluded ones). D9: there is no PASS / FAIL — the headline
+# is a set of figures at a tolerance (0.3 m default, presets 0.15 / 0.3 /
+# 0.4), which is derived per request. A design or unlabelled run answers 404
+# NO_COMPARISON: a normal answer ("this run has no comparison"), not an error
+# to retry. Exclusions are logged per (run, layer, fid); an exclusion needs
+# the engineer's reason, which a tool must never invent. TASK-3844: the epic
+# compares; it does not calibrate or validate, so there is no role tool.
 # ---------------------------------------------------------------------------
-NO_CALIBRATION_WORDS = (
-    "this run has no Calibration (not a historic run: Calibration is computed only for runs "
-    "whose every clocked forcing series is a recorded one)"
+NO_COMPARISON_WORDS = (
+    "this run has no comparison with observations (not a historic run: only runs whose every "
+    "clocked forcing series is a recorded one are compared with flood observations)"
 )
 
 
-def _calibration_path(run_id, tail: str = "") -> str:
-    return f"/runs/{run_id}/calibration/{tail}"
+def _comparison_path(run_id, tail: str = "") -> str:
+    return f"/runs/{run_id}/comparison/{tail}"
 
 
 def _elide_series(rows: list) -> None:
@@ -2495,19 +2494,19 @@ def _elide_series(rows: list) -> None:
             row["modelled_series_points"] = len(series.get("time_s") or [])
 
 
-def _calibration_refusal(body, status_code: int, what: str) -> ToolError:
-    """A 4xx from a Calibration route as a ToolError the agent can act on."""
+def _comparison_refusal(body, status_code: int, what: str) -> ToolError:
+    """A 4xx from a comparison route as a ToolError the agent can act on."""
     body = body if isinstance(body, dict) else {"response": body}
-    if status_code == 404 and body.get("error_code") == "NO_CALIBRATION":
-        return ToolError(f"{what} refused: {NO_CALIBRATION_WORDS}.")
+    if status_code == 404 and body.get("error_code") == "NO_COMPARISON":
+        return ToolError(f"{what} refused: {NO_COMPARISON_WORDS}.")
     detail = body.get("problems") or body.get("detail") or body
     return ToolError(f"{what} refused: Hydrata API returned {status_code} — {json.dumps(detail)}")
 
 
-async def _calibration_headline(run_id) -> tuple[str | None, str | None]:
+async def _comparison_headline(run_id) -> tuple[str | None, str | None]:
     """(headline, error): the run's headline after a change, best effort."""
     try:
-        body, status_code = await client.get_with_status(_calibration_path(run_id))
+        body, status_code = await client.get_with_status(_comparison_path(run_id))
     except Exception as exc:  # the change already landed; never hide it behind a re-read
         return None, str(exc)
     if status_code != 200 or not isinstance(body, dict):
@@ -2515,9 +2514,9 @@ async def _calibration_headline(run_id) -> tuple[str | None, str | None]:
     return body.get("headline"), None
 
 
-@_tool("get_calibration")
-async def get_calibration(
-    run_id: Annotated[int, "The run ID (a historic run; others have no Calibration)"],
+@_tool("get_observation_comparison")
+async def get_observation_comparison(
+    run_id: Annotated[int, "The run ID (a historic run; others are not compared with observations)"],
     tolerance: Annotated[
         float | None,
         "Metres within which a residual counts as within (default 0.3; presets 0.15, 0.3, 0.4; "
@@ -2529,39 +2528,38 @@ async def get_calibration(
         bool, "Keep each Gauge record's modelled stage series (every saved frame); default false"
     ] = False,
 ) -> str:
-    """Read a run's Calibration: how well it matches the project's flood observations.
+    """Compare a run with the project's flood observations: how well does it match them?
 
     Returns `headline` (the figures to tell the user, e.g. "47 observations · 31
     within ±0.30 m (66%) · bias -0.12 m · RMSE 0.35 m · 1 excluded"), `statistics`
     (the API's summary: n, within, within_pct, bias_m, rmse_m, weighted_rmse_m, mae_m, max_abs_m,
-    excluded, not_scored by reason, gauges), `by_role` (calibration / validation
-    split), `gauges` (Gauge records: peak error, timing error, NSE), `datum_checks`
-    (warn the user on a `mismatch` or `unknown`) and one row per observation:
-    observed_m / modelled_m / residual_m (modelled - observed, + = model high),
-    within, scored / not_scored_reason, match (`outside_run_window` = not this
-    flood), excluded + exclusion {reason, by, at}, role. There is no pass or fail:
-    report the figures. A run that is not historic has none (`has_calibration`
-    false) — do not retry it.
+    excluded, not_scored by reason, gauges), `gauges` (Gauge records: peak error,
+    timing error, NSE), `datum_checks` (warn the user on a `mismatch` or `unknown`)
+    and one row per observation: observed_m / modelled_m / residual_m (modelled -
+    observed, + = model high), within, scored / not_scored_reason, match
+    (`outside_run_window` = not this flood), excluded + exclusion {reason, by, at}.
+    There is no pass or fail: report the figures. A run that is not historic has
+    none (`has_comparison` false) — do not retry it.
     """
     if (layer_id is None) != (fid is None):
         raise ToolError("give both layer_id and fid to read one observation, or neither for the whole run")
     params = {"tolerance": tolerance} if tolerance is not None else None
-    body, status_code = await client.get_with_status(_calibration_path(run_id), params=params)
+    body, status_code = await client.get_with_status(_comparison_path(run_id), params=params)
     project_id, scenario_id = None, None
-    if status_code == 404 and isinstance(body, dict) and body.get("error_code") == "NO_CALIBRATION":
+    if status_code == 404 and isinstance(body, dict) and body.get("error_code") == "NO_COMPARISON":
         project_id, scenario_id = await _run_project_and_scenario(run_id, None)
-        result = {"run": run_id, "has_calibration": False, "error_code": "NO_CALIBRATION",
+        result = {"run": run_id, "has_comparison": False, "error_code": "NO_COMPARISON",
                   "detail": body.get("detail"), "http_status": status_code}
         await _hand_back(
-            result, project_id, {"run_id": run_id, "has_calibration": False},
-            f"Run {run_id}: {NO_CALIBRATION_WORDS}. A design storm run is not scored against "
+            result, project_id, {"run_id": run_id, "has_comparison": False},
+            f"Run {run_id}: {NO_COMPARISON_WORDS}. A design storm run is not compared with "
             "flood observations.",
             panel="scenarios", scenario=scenario_id, run=run_id,
         )
         return json.dumps(result, indent=2)
     if status_code != 200 or not isinstance(body, dict):
-        raise _calibration_refusal(body, status_code, f"get_calibration for run {run_id}")
-    result = {"has_calibration": True, **_elide_presigned(body)}
+        raise _comparison_refusal(body, status_code, f"get_observation_comparison for run {run_id}")
+    result = {"has_comparison": True, **_elide_presigned(body)}
     # The API's `summary` (the figures) would be overwritten by the hand-back's
     # own `summary` key, so it is relayed as `statistics`.
     result["statistics"] = result.pop("summary", None)
@@ -2570,18 +2568,18 @@ async def get_calibration(
         rows = [row for row in rows if row.get("layer") == layer_id and row.get("fid") == fid]
         if not rows:
             raise ToolError(
-                f"run {run_id} has no Calibration row for layer {layer_id} fid {fid} (check the ids "
-                "with list_observations; an observation just added is scored a few seconds later)"
+                f"run {run_id} has no row for layer {layer_id} fid {fid} in its comparison (check "
+                "the ids with list_observations; an observation just added is compared a few seconds later)"
             )
         result["history"] = (await client.get(
-            _calibration_path(run_id, "history/"), params={"layer": layer_id, "fid": fid})).get("history")
+            _comparison_path(run_id, "history/"), params={"layer": layer_id, "fid": fid})).get("history")
     if not include_series:
         _elide_series(rows)
     result["rows"] = rows
     result["row_count"] = len(rows)
     project_id, scenario_id = await _run_project_and_scenario(run_id, None)
     headline = result.get("headline") or "no figures"
-    say = f"Calibration of run {run_id}: {headline}."
+    say = f"Run {run_id} compared with flood observations: {headline}."
     if layer_id is not None:
         row = rows[0]
         if row.get("scored") and row.get("residual_m") is not None:
@@ -2605,12 +2603,12 @@ async def get_calibration(
     return json.dumps(result, indent=2)
 
 
-async def _calibration_write(run_id, tail: str, payload: dict, what: str) -> dict:
-    body, status_code = await client.post(_calibration_path(run_id, tail), json=payload, raise_for_status=False)
+async def _comparison_write(run_id, tail: str, payload: dict, what: str) -> dict:
+    body, status_code = await client.post(_comparison_path(run_id, tail), json=payload, raise_for_status=False)
     if status_code not in (200, 201) or not isinstance(body, dict):
-        raise _calibration_refusal(body, status_code, what)
+        raise _comparison_refusal(body, status_code, what)
     result = {**body, "http_status": status_code}
-    result["headline_after"], headline_error = await _calibration_headline(run_id)
+    result["headline_after"], headline_error = await _comparison_headline(run_id)
     if headline_error:
         result["headline_error"] = headline_error
     return result
@@ -2628,7 +2626,7 @@ async def set_observation_exclusion(
     ] = "",
     excluded: Annotated[bool, "true to exclude (default), false to include it again"] = True,
 ) -> str:
-    """Exclude a flood observation from ONE run's Calibration, or include it again.
+    """Exclude a flood observation from ONE run's comparison with observations, or include it again.
 
     Needs Editor (or above) on the project. The exclusion is logged with the user
     and reason (nothing is overwritten) and keyed on (run, layer, fid), so it
@@ -2643,53 +2641,22 @@ async def set_observation_exclusion(
             "ask the user why this observation should be excluded, then call again with it. "
             "Nothing was changed."
         )
-    result = await _calibration_write(
+    result = await _comparison_write(
         run_id, "exclusions/", {"layer": layer_id, "fid": fid, "excluded": excluded, "reason": reason},
         f"set_observation_exclusion on run {run_id}",
     )
     project_id, scenario_id = await _run_project_and_scenario(run_id, None)
     if result.get("excluded"):
-        say = (f"Flood observation {fid} is excluded from run {run_id}'s Calibration "
+        say = (f"Flood observation {fid} is excluded from run {run_id}'s comparison "
                f"(reason: {result.get('reason') or reason}).")
     else:
-        say = f"Flood observation {fid} is included again in run {run_id}'s Calibration."
+        say = f"Flood observation {fid} is included again in run {run_id}'s comparison."
     if result.get("headline_after"):
         say += f" Now: {result['headline_after']}."
     await _hand_back(
         result, project_id,
         {"run_id": run_id, "layer_id": layer_id, "fid": fid, "excluded": result.get("excluded"),
          "reason": result.get("reason")},
-        say, panel="scenarios", scenario=scenario_id, run=run_id,
-    )
-    return json.dumps(result, indent=2)
-
-
-@_tool("set_observation_role")
-async def set_observation_role(
-    run_id: Annotated[int, "The run ID (a historic run)"],
-    layer_id: Annotated[int, "The flood observation layer id"],
-    fid: Annotated[int, "The observation's fid"],
-    role: Annotated[
-        Literal["calibration", "validation"],
-        "calibration (default for every observation) or validation (held back to check the model)",
-    ],
-    reason: Annotated[str, "Optional note, logged with the change"] = "",
-) -> str:
-    """Set a flood observation's role on ONE run: calibration or validation.
-
-    Needs Editor (or above). Logged like an exclusion. `by_role` in
-    get_calibration splits the figures by role.
-    """
-    result = await _calibration_write(
-        run_id, "roles/", {"layer": layer_id, "fid": fid, "role": role, "reason": (reason or "").strip()},
-        f"set_observation_role on run {run_id}",
-    )
-    project_id, scenario_id = await _run_project_and_scenario(run_id, None)
-    say = f"Flood observation {fid} is now a {result.get('role') or role} observation on run {run_id}."
-    if result.get("headline_after"):
-        say += f" Now: {result['headline_after']}."
-    await _hand_back(
-        result, project_id, {"run_id": run_id, "layer_id": layer_id, "fid": fid, "role": result.get("role")},
         say, panel="scenarios", scenario=scenario_id, run=run_id,
     )
     return json.dumps(result, indent=2)
