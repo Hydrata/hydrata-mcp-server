@@ -151,9 +151,36 @@ class TestObservationLayer:
         text = _tool_error_text(await _call_as_caller(_server, "create_observation_layer", {
             "project_id": 42, "title": "Gauge board", "vertical_datum": "local"}))
         assert "datum_offset_m" in text and not post.called
-        text = _tool_error_text(await _call_as_caller(_server, "create_observation_layer", {
-            "project_id": 42, "title": "x", "vertical_datum": "WGS84"}))
-        assert "terrain" in text and "AHD" in text and not post.called
+
+    @respx.mock
+    async def test_any_datum_in_the_world_goes_to_the_api(self, _server):
+        """TASK-3850 (operator grill Q5): no national list in the tool. An EPSG
+        vertical CRS or a datum's own name is posted; the API validates it."""
+        _mock_project()
+        post = respx.post(LAYERS).mock(return_value=httpx.Response(201, json=_layer(vertical_datum="NAVD88")))
+        respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer(vertical_datum="NAVD88")))
+        data = _tool_json(await _call_as_caller(_server, "create_observation_layer", {
+            "project_id": 42, "title": "Survey 2011", "vertical_datum": "NAVD88", "poll_interval_seconds": 0}))
+        assert json.loads(post.calls[0].request.content)["vertical_datum"] == "NAVD88"
+        assert data["vertical_datum"] == "NAVD88"
+        assert "NAVD88" in data["say_to_user"]
+
+    @respx.mock
+    async def test_negative_control_the_api_refusal_of_a_non_vertical_code_is_relayed(self, _server):
+        refusal = {"code": "invalid", "errors": ["vertical_datum: EPSG:4326 is not a vertical CRS; ..."],
+                   "success": False}
+        respx.post(LAYERS).mock(return_value=httpx.Response(400, json=refusal))
+        text = await _call_as_caller(_server, "create_observation_layer", {
+            "project_id": 42, "title": "x", "vertical_datum": "EPSG:4326"})
+        assert "is not a vertical CRS" in json.dumps(text)
+
+    async def test_the_datum_description_names_no_national_list(self, _server):
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        described = json.dumps(tools["create_observation_layer"]["inputSchema"])
+        assert "EPSG vertical CRS" in described
+        assert "AHD" not in described
 
 
 class TestTowradgiRoundTrip:

@@ -147,6 +147,29 @@ class TestGetComparison:
             assert word not in data["say_to_user"].lower(), word
 
     @respx.mock
+    async def test_a_terrain_with_no_recorded_datum_is_not_a_warning(self, _server):
+        """TASK-3850: 'not recorded' is stated, never warned about; a real
+        mismatch (both known, different) still is."""
+        _mock_run()
+        payload = copy.deepcopy(PAYLOAD)
+        payload["datum_checks"] = [{
+            "layer": 239, "layer_title": "Survey 1998", "layer_datum": "AHD", "terrain_datum": None,
+            "status": "not_recorded", "warning": False, "message": None,
+            "note": "Terrain datum not recorded - assumed the same as the observations."}]
+        route = respx.get(COMPARISON).mock(return_value=httpx.Response(200, json=payload))
+        data = _tool_json(await _call_as_caller(_server, "get_observation_comparison", {"run_id": RUN}))
+        assert "warning" not in data["say_to_user"].lower()
+        assert "Terrain datum not recorded - assumed the same as the observations." in data["say_to_user"]
+        payload["datum_checks"] = [{
+            "layer": 239, "layer_title": "Survey 1998", "layer_datum": "EPSG:3855",
+            "terrain_datum": {"value": "EPSG:5711", "label": "AHD height (EPSG:5711)", "source": "editor"},
+            "status": "mismatch", "warning": True, "message": "This layer's levels are on EGM2008 height ...",
+            "note": None}]
+        route.mock(return_value=httpx.Response(200, json=payload))
+        data = _tool_json(await _call_as_caller(_server, "get_observation_comparison", {"run_id": RUN}))
+        assert "Datum warning: This layer's levels are on EGM2008 height" in data["say_to_user"]
+
+    @respx.mock
     async def test_an_older_run_read_at_the_nearest_node_is_said(self, _server):
         """TASK-3843: rows of a run whose store predates the per-triangle centroid
         peak are read at the nearest node; the tool tells the user (an older run's

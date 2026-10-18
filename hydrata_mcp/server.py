@@ -2096,11 +2096,11 @@ async def list_time_series(
 # photo strip on the observation form in the map, which sniffs the format,
 # enforces 25 MB x 10, offers EXIF time/place and handles public consent.
 # ---------------------------------------------------------------------------
-OBSERVATION_DATUMS = {
+# TASK-3850 (operator grill Q5): two fixed words; otherwise ANY vertical datum
+# in the world (an EPSG vertical CRS such as 'EPSG:5703', or the datum's own
+# name), validated by the API. No national list.
+OBSERVATION_DATUM_WORDS = {
     "terrain": "Same as terrain",
-    "AHD": "AHD",
-    "EGM2008": "EGM2008",
-    "ellipsoidal": "Ellipsoidal",
     "local": "Local datum (constant offset)",
 }
 OBSERVATION_PHOTO_UI_PATH = (
@@ -2154,7 +2154,7 @@ async def _observation_layer(project_id, layer_id) -> dict:
 
 
 def _datum_words(layer: dict) -> str:
-    label = OBSERVATION_DATUMS.get(layer.get("vertical_datum"), layer.get("vertical_datum") or "unknown datum")
+    label = OBSERVATION_DATUM_WORDS.get(layer.get("vertical_datum"), layer.get("vertical_datum") or "unknown datum")
     offset = layer.get("datum_offset_m")
     return f"{label}, offset {offset} m" if offset not in (None, 0) else label
 
@@ -2165,8 +2165,10 @@ async def create_observation_layer(
     title: Annotated[str, "Layer title, e.g. 'August 1998 survey'"],
     vertical_datum: Annotated[
         str,
-        "The datum the layer's stages are on: terrain (default, 'Same as terrain'), AHD, "
-        "EGM2008, ellipsoidal or local ('Local datum (constant offset)', needs datum_offset_m)",
+        "The datum the layer's stages are on: terrain (default, 'Same as terrain'), local "
+        "('Local datum (constant offset)', needs datum_offset_m), or the vertical datum the "
+        "levels were surveyed on: an EPSG vertical CRS (e.g. 'EPSG:5703') or the datum's own "
+        "name (at most 32 characters). Ask the user; never assume one from the country",
     ] = "terrain",
     datum_offset_m: Annotated[
         float | None,
@@ -2185,8 +2187,7 @@ async def create_observation_layer(
     GeoServer layer exists (`ready`), usually a few seconds; until then
     add_observations refuses. On `timed_out`, call list_observations later.
     """
-    if vertical_datum not in OBSERVATION_DATUMS:
-        raise ToolError(f"vertical_datum {vertical_datum!r} is not one of {', '.join(OBSERVATION_DATUMS)}")
+    vertical_datum = (vertical_datum or "").strip() or "terrain"
     if vertical_datum == "local" and datum_offset_m is None:
         raise ToolError(
             "vertical_datum=local needs datum_offset_m: the metres added to every stage to "
@@ -2277,13 +2278,13 @@ async def add_observations(
     ],
     srid: Annotated[
         int | None,
-        "EPSG code for every geometry that does not carry its own `srid` (e.g. 28356 for "
-        "MGA56 eastings/northings); omit for [lon, lat] (EPSG:4326)",
+        "EPSG code for every geometry that does not carry its own `srid` (the projected CRS "
+        "its eastings/northings are in, e.g. a UTM zone); omit for [lon, lat] (EPSG:4326)",
     ] = None,
     entry_timezone: Annotated[
         str | None,
         "IANA zone for naive observed_start/observed_end on rows that do not carry their own "
-        "entry_timezone, e.g. 'Australia/Sydney'",
+        "entry_timezone (where the times were read, e.g. 'Europe/Berlin'; ask the user)",
     ] = None,
 ) -> str:
     """Add flood observations (Flood mark, Timed level, Gauge record, Dry point) to a layer.
@@ -2576,7 +2577,9 @@ async def get_observation_comparison(
     `default_tolerance_m` (the project's saved one), `statistics`
     (the API's summary: n, within, within_pct, bias_m, rmse_m, weighted_rmse_m, mae_m, max_abs_m,
     excluded, not_scored by reason, gauges), `gauges` (Gauge records: peak error,
-    timing error, NSE), `datum_checks` (warn the user on a `mismatch` or `unknown`)
+    timing error, NSE), `datum_checks` (warn the user only when `warning` is true:
+    both datums known and different; `not_recorded` = the terrain has no
+    recorded datum, stated in `note`, not a warning)
     and one row per observation: observed_m / modelled_m / residual_m (modelled -
     observed, + = model high), within, scored / not_scored_reason, match
     (`outside_run_window` = not this flood), excluded + exclusion {reason, by, at}.
@@ -2638,11 +2641,16 @@ async def get_observation_comparison(
             outcome = f"not scored ({row.get('not_scored_reason') or 'no residual'})"
         say += (f" {row.get('subtype_label') or 'Observation'} {row.get('name') or fid}: {outcome}"
                 + (" (excluded)" if row.get("excluded") else "") + ".")
-    warnings = [check.get("message") for check in result.get("datum_checks") or []
-                if isinstance(check, dict) and check.get("status") in ("mismatch", "unknown")
-                and check.get("message")]
+    # TASK-3850: warn only when both datums are known and differ (`warning`);
+    # a terrain with no recorded datum is stated, not warned about.
+    checks = [check for check in result.get("datum_checks") or [] if isinstance(check, dict)]
+    warnings = [check.get("message") for check in checks
+                if (check.get("warning") or check.get("status") == "mismatch") and check.get("message")]
     if warnings:
         say += " Datum warning: " + " ".join(warnings)
+    notes = sorted({check.get("note") for check in checks if check.get("note") and not check.get("warning")})
+    if notes:
+        say += " " + " ".join(notes)
     # TASK-3843: an older run's store has no per-triangle peak; say so.
     fallback = (result.get("sampling") or {}).get("nearest_node_fallback") or 0
     if fallback:
