@@ -16,7 +16,7 @@ The server is **not yet open to external accounts**: there is no self-serve way 
 
 ## Tools
 
-Version 0.2.0 exposes twenty-five tools: eleven that read projects, inputs and scenarios and drive a run, eight that build a model from terrain and input layers the agent has already uploaded, and six that record flood observations. Every tool carries MCP annotations (a `title`; `readOnlyHint` on the ten read tools; `destructiveHint` only on `cancel_run` and `delete_observation`).
+Version 0.2.0 exposes twenty-eight tools: eleven that read projects, inputs and scenarios and drive a run, eight that build a model from terrain and input layers the agent has already uploaded, six that record flood observations, and three that read and adjust a historic run's Calibration against them. Every tool carries MCP annotations (a `title`; `readOnlyHint` on the eleven read tools; `destructiveHint` only on `cancel_run` and `delete_observation`).
 
 | Tool | Description |
 |------|-------------|
@@ -45,10 +45,13 @@ Version 0.2.0 exposes twenty-five tools: eleven that read projects, inputs and s
 | `update_observation` | Edit one observation (PATCH of the fields given; validated against the stored observation) |
 | `delete_observation` | Delete one observation and its photos |
 | `add_observation_photo_link` | Attach a photo to an observation as a reference link only (stored, never fetched); a photo FILE is refused with the UI path — the engineer uploads files in the photo strip on the observation's form in the map |
+| `get_calibration` | A historic run's Calibration: `headline` (figures at a tolerance, 0.3 m default; no pass or fail), `statistics` (n, within, bias, RMSE, weighted RMSE, MAE, max), `by_role`, Gauge record peak/timing/NSE, datum checks and one row per observation (residual = modelled - observed; unscored and excluded rows included). `layer_id` + `fid` narrow it to one observation with its exclusion history; Gauge records' modelled series are elided unless `include_series`. A design or unlabelled run reports `has_calibration: false`, not an error |
+| `set_observation_exclusion` | Exclude one observation from a run's Calibration with the engineer's reason (required: the tool refuses a blank one and the agent must ask), or include it again; logged with user and reason; returns `headline_after` |
+| `set_observation_role` | Mark an observation `calibration` or `validation` on a run; logged; returns `headline_after` |
 
 ### The hand-back: the engineer signs off in the map
 
-Every tool that changes something (`create_project`, `finalize_terrain_upload`, `get_terrain`, `create_time_series`, `attach_input_layer`, `create_scenario`, `build_scenario`, `start_simulation`, `cancel_run`, `retry_run`, and the five flood observation writes) also returns:
+Every tool that changes something (`create_project`, `finalize_terrain_upload`, `get_terrain`, `create_time_series`, `attach_input_layer`, `create_scenario`, `build_scenario`, `start_simulation`, `cancel_run`, `retry_run`, the five flood observation writes, and the three Calibration tools) also returns:
 
 - `ui_url` — `https://<site>/catalogue/#/map/<base_map>?panel=…&layer=…&scenario=…&run=…`, which opens the project map on the thing that changed (the Inputs panel framing the attached layer, the Hydrology panel, the scenario, the run);
 - `summary` — numbers the engineer can check (feature count and bbox, elevation range, row count and time span, triangle estimate and price);

@@ -1921,7 +1921,7 @@ class TestBuildScenarioTool:
         assert "computed_status" in get_scenario
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
-        assert len(tools) == 25  # the module docstring's count (TASK-3812 added the six flood observation tools)
+        assert len(tools) == 28  # the module docstring's count (TASK-3816 added the three Calibration tools)
 
 
 # ---------------------------------------------------------------------------
@@ -2702,17 +2702,18 @@ class TestClientHeaders:
 # Stored proof: -k "annotations or list_inputs or list_time_series or phase".
 # ---------------------------------------------------------------------------
 READ_TOOLS = {"list_projects", "get_project", "get_scenario", "get_run_status", "get_run",
-              "list_runs", "get_terrain", "list_inputs", "list_time_series", "list_observations"}
+              "list_runs", "get_terrain", "list_inputs", "list_time_series", "list_observations",
+              "get_calibration"}
 # TASK-3812: a deleted observation (and its photos) cannot be brought back.
 DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation"}
 
 
 class TestToolAnnotations:
-    async def test_annotations_on_all_25_tools_read_hints_and_cancel_destructive(self, _server):
+    async def test_annotations_on_all_28_tools_read_hints_and_cancel_destructive(self, _server):
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
-        assert len(tools) == 25
+        assert len(tools) == 28
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name
