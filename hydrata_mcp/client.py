@@ -251,3 +251,24 @@ class HydrataClient:
         """
         resp = await self._send("PATCH", f"{self._base}{path}", path, json=json or {})
         return self._body(resp), resp.status_code
+
+    async def delete(self, path: str) -> int:
+        """DELETE request; returns the status code (the API answers 204, no body).
+
+        TASK-3812 (epic 3801) — delete_observation removes ONE feature of a flood
+        observation layer (and its photos). Same headers and error mapping as
+        every other verb: a 404 for a missing feature is a HydrataAPIError.
+        """
+        resp = await self._send("DELETE", f"{self._base}{path}", path)
+        return resp.status_code
+
+    async def get_with_status(self, path: str, params: dict | None = None) -> tuple[Any, int]:
+        """GET that hands a 4xx BACK as ``(body, status)`` instead of raising.
+
+        TASK-3816 (epic 3801) — get_observation_comparison must tell a run that
+        has no comparison (404 ``NO_COMPARISON``: a design or unlabelled run, a
+        normal answer) from a 404 that IS an error (a stranger's run). Same
+        headers; a ConnectError, a timeout and every 5xx still raise.
+        """
+        resp = await self._send("GET", f"{self._base}{path}", path, raise_for_status=False, params=params)
+        return self._body(resp), resp.status_code
