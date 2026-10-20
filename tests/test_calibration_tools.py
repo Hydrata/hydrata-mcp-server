@@ -32,7 +32,7 @@ import respx
 from tests.test_server import (
     BASE,
     BASE_MAP,
-    CALLER_BASIC,
+    CALLER_KEY,
     MCP_HEADERS,
     _asgi_client,
     _call_as_caller,
@@ -129,7 +129,7 @@ class TestGetComparison:
         _mock_run()
         route = respx.get(COMPARISON).mock(return_value=httpx.Response(200, json=PAYLOAD))
         data = _tool_json(await _call_as_caller(_server, "get_observation_comparison", {"run_id": RUN}))
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert "tolerance" not in route.calls[0].request.url.params  # the API's 0.3 m default
         assert data["has_comparison"] is True
         assert data["headline"] == HEADLINE  # English, built from the numbers
@@ -310,7 +310,7 @@ class TestNegativeControls:
         assert route.call_count == 0
         # a credential the API rejects is an error too, never an empty comparison
         text = _tool_error_text(await _call_as_caller(_server, "get_observation_comparison", {"run_id": RUN}))
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert "401" in text
 
     @respx.mock
@@ -331,7 +331,7 @@ class TestExclusion:
         respx.get(COMPARISON).mock(return_value=httpx.Response(200, json=PAYLOAD))
         data = _tool_json(await _call_as_caller(_server, "set_observation_exclusion", {
             "run_id": RUN, "layer_id": 239, "fid": 17, "reason": "mark on a fence, not the flood"}))
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert json.loads(route.calls[0].request.content) == {
             "layer": 239, "fid": 17, "excluded": True, "reason": "mark on a fence, not the flood"}
         assert data["excluded"] is True and data["by"] == "dave" and data["http_status"] == 201
@@ -386,7 +386,7 @@ class TestSavedTolerance:
             200, json={"project": 42, "tolerance_m": 0.4}))
         data = _tool_json(await _call_as_caller(
             _server, "set_comparison_tolerance", {"project_id": 42, "tolerance_m": 0.4}))
-        assert route.calls[0].request.headers["authorization"] == CALLER_BASIC
+        assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert json.loads(route.calls[0].request.content) == {"tolerance_m": 0.4}
         assert data["tolerance_m"] == 0.4 and "±0.40 m" in data["say_to_user"]
         assert f"/catalogue/#/map/{BASE_MAP}" in data["ui_url"]

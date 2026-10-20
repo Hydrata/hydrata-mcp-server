@@ -2605,11 +2605,11 @@ async def create_observation_layer(
     if poll_error:
         result["poll_error"] = poll_error
     if result["ready"]:
-        say = (f"Flood observation layer '{detail['title']}' ({_datum_words(detail)}) is ready. "
+        say = (f"Flood observation layer {_data(detail['title'])} ({_datum_words(detail)}) is ready. "
                "Add observations with add_observations; open the link to see it in the "
                "Observations group of the map.")
     else:
-        say = (f"Flood observation layer '{title}' was created (layer {layer_id}) but its map "
+        say = (f"Flood observation layer {_data(title)} was created (layer {layer_id}) but its map "
                "layer is still being made; check with list_observations in a few seconds "
                "before adding observations.")
     await _hand_back(
@@ -2749,7 +2749,7 @@ async def add_observations(
     if stopped is not None:
         result["stopped"] = stopped
         result["not_sent_count"] = len(observations) - stopped["index"] - 1
-    say = (f"{len(created)} flood observation(s) added to '{layer['title']}' "
+    say = (f"{len(created)} flood observation(s) added to {_data(layer['title'])} "
            f"({_datum_words(layer)}).")
     if zone_filled:
         where = "from the project location" if zone["source"] == "project_location" else "as given"
@@ -2806,7 +2806,7 @@ async def update_observation(
     await _hand_back(
         result, project_id,
         {"layer_id": layer_id, "fid": fid, "changed_fields": sorted(changes)},
-        f"Flood observation {name or fid} on '{layer['title']}' is updated "
+        f"Flood observation {_data(name) if name else fid} on {_data(layer['title'])} is updated "
         f"({', '.join(sorted(changes))}). Open the link to check it on the map.",
         layer=layer["dataset_alternate"],
     )
@@ -2830,7 +2830,7 @@ async def delete_observation(
     result = {"layer_id": layer_id, "fid": fid, "deleted": True, "http_status": status_code}
     await _hand_back(
         result, project_id, {"layer_id": layer_id, "fid": fid, "deleted": True},
-        f"Flood observation {fid} on '{layer['title']}' is deleted, with its photos.",
+        f"Flood observation {fid} on {_data(layer['title'])} is deleted, with its photos.",
         layer=layer["dataset_alternate"],
     )
     return json.dumps(result, indent=2)
@@ -2870,7 +2870,7 @@ async def add_observation_photo_link(
     await _hand_back(
         result, project_id,
         {"layer_id": layer_id, "fid": fid, "reference_url": link, "public_consent": public_consent},
-        f"Photo link added to flood observation {fid} on '{layer['title']}'"
+        f"Photo link added to flood observation {fid} on {_data(layer['title'])}"
         f"{' (shown to public visitors)' if public_consent else ' (members only)'}.",
         layer=layer["dataset_alternate"],
     )
@@ -3042,7 +3042,7 @@ async def get_observation_comparison(
             outcome = f"residual {row['residual_m']} m (modelled - observed)"
         else:
             outcome = f"not scored ({row.get('not_scored_reason') or 'no residual'})"
-        say += (f" {row.get('subtype_label') or 'Observation'} {row.get('name') or fid}: {outcome}"
+        say += (f" {row.get('subtype_label') or 'Observation'} {_data(row.get('name')) or fid}: {outcome}"
                 + (" (excluded)" if row.get("excluded") else "") + ".")
     # TASK-3850: warn only when both datums are known and differ (`warning`);
     # a terrain with no recorded datum is stated, not warned about.
@@ -3114,7 +3114,7 @@ async def set_observation_exclusion(
     project_id, scenario_id = await _run_project_and_scenario(run_id, None)
     if result.get("excluded"):
         say = (f"Flood observation {fid} is excluded from run {run_id}'s comparison "
-               f"(reason: {result.get('reason') or reason}).")
+               f"(reason: {_data(result.get('reason') or reason)}).")
     else:
         say = f"Flood observation {fid} is included again in run {run_id}'s comparison."
     if result.get("headline_after"):
