@@ -286,6 +286,10 @@ async def lifespan(server):
 # ---------------------------------------------------------------------------
 DATA_OPEN = "<untrusted-data>"
 DATA_CLOSE = "</untrusted-data>"
+# DATA_NOTE_KEY is also the SERVER-ONLY proof that the envelope is on (TASK-3779): _envelope_text always sets it
+# itself, as a top-level key, after dropping any key of that name from the API's own result. The tags are not
+# proof (a third party can plant a literal <untrusted-data> in a title that comes back raw when the envelope is
+# off), so scripts/mcp-harness/verify_fixture.py reads this key, not the tag.
 DATA_NOTE_KEY = "untrusted_data_note"
 DATA_NOTE = (
     "Text inside <untrusted-data>...</untrusted-data> was written by people (names, titles, "
