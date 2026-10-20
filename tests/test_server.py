@@ -1135,6 +1135,73 @@ class TestGetScenarioHydrologyCheck:
         assert "hydrology_check" not in data
 
 
+class TestGetScenarioUnboundSeries:
+    """TASK-3213 AC5: get_scenario warns, naming each project series no inflow or rainfall feature uses."""
+
+    CHECK = {"features": [
+        {"layer_kind": "inflow", "feature_id": "inf.1", "series": {"id": 7, "name": "Creek hydrograph"}},
+        {"layer_kind": "rainfall", "feature_id": "rai.1", "series": {"id": 6, "name": "Design storm"}}],
+        "warnings": []}
+
+    @staticmethod
+    def _listing(*rows):
+        return {"count": len(rows), "results": [
+            {"id": i, "name": n, "series_type": t, "units": "", "timezone": "UTC", "data": {"rowData": []}}
+            for i, n, t in rows]}
+
+    async def _scenario(self, _server, check, listing):
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
+            200, json={"id": 7, "computed_status": "created", "hydrology_check": check}))
+        respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(200, json=listing))
+        return _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
+
+    @respx.mock
+    async def test_unbound_series_names_each_series_no_feature_uses(self, _server):
+        data = await self._scenario(_server, self.CHECK, self._listing(
+            (7, "Creek hydrograph", "hydrograph"), (6, "Design storm", "hyetograph"),
+            (9, "Orphan gauge", "hyetograph"), (10, "Old flow", "hydrograph")))
+        assert data["unbound_series"] == [
+            {"id": 9, "name": "Orphan gauge", "series_type": "hyetograph"},
+            {"id": 10, "name": "Old flow", "series_type": "hydrograph"}]
+        assert "'Orphan gauge'" in data["say_to_user"] and "'Old flow'" in data["say_to_user"]
+        assert "'Creek hydrograph'" not in data["say_to_user"]
+
+    @respx.mock
+    async def test_unbound_series_every_series_used_adds_nothing(self, _server):
+        """NEGATIVE CONTROL: no warning, no key, no say_to_user."""
+        data = await self._scenario(_server, self.CHECK, self._listing(
+            (7, "Creek hydrograph", "hydrograph"), (6, "Design storm", "hyetograph")))
+        assert "unbound_series" not in data and "say_to_user" not in data
+
+    @respx.mock
+    async def test_unbound_series_a_stage_series_is_a_boundary_input_and_not_checked(self, _server):
+        data = await self._scenario(_server, self.CHECK, self._listing(
+            (7, "Creek hydrograph", "hydrograph"), (8, "Tide", "stage")))
+        assert "unbound_series" not in data
+
+    @respx.mock
+    async def test_unbound_series_an_unreadable_layer_means_no_guess(self, _server):
+        check = {**self.CHECK, "warnings": [{"error_code": "LAYER_UNREADABLE", "layer_kind": "rainfall"}]}
+        data = await self._scenario(_server, check, self._listing((9, "Orphan gauge", "hyetograph")))
+        assert "unbound_series" not in data
+
+    @respx.mock
+    async def test_unbound_series_a_failed_series_listing_never_breaks_get_scenario(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
+            200, json={"id": 7, "computed_status": "created", "hydrology_check": self.CHECK}))
+        respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(500, json={"detail": "x"}))
+        data = _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
+        assert data["scenario_id"] == 7 and "unbound_series" not in data
+
+    @respx.mock
+    async def test_unbound_series_without_a_hydrology_check_makes_no_listing_call(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
+            200, json={"id": 7, "computed_status": "created"}))
+        listing = respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(200, json={}))
+        await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7})
+        assert not listing.called
+
+
 class TestAttachInputLayerTool:
     @respx.mock
     async def test_attach_input_layer_legacy_structure_kind_patches_buildings_with_a_deprecation_note(

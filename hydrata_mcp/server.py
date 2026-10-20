@@ -837,7 +837,10 @@ async def get_scenario(
     model does, whose first value is then held backwards), and
     `hydrology_check` (when Hydrata sends it: for each inflow and rainfall
     feature, the series that drives it, its peak and volume, and structured
-    warnings — repeat those numbers to the user, never your own).
+    warnings — repeat those numbers to the user, never your own), and
+    `unbound_series` with a `say_to_user` warning when the project holds a
+    rainfall or flow series that no inflow or rainfall feature uses (the model
+    ignores it: tell the user and ask which input it belongs to).
 
     The `computed_status` field (there is NO `status` key on a scenario) is
     derived from the latest run and will be one of: created, building, built,
@@ -868,7 +871,17 @@ async def get_scenario(
     # whole return (including this `**extra`, which copies free text such as
     # `description` that the caller does not control), so there is no second
     # elision call here — W0 simplify pass.
-    return json.dumps(_build_state(detail, **_scenario_record(detail)), indent=2)
+    state = _build_state(detail, **_scenario_record(detail))
+    unbound = await _unbound_series(project_id, state.get("hydrology_check"))
+    if unbound:
+        # TASK-3213 AC5: a series the agent made that no inflow or rainfall feature uses is bound to nothing
+        state["unbound_series"] = unbound
+        names = ", ".join(f"'{row['name']}'" for row in unbound)
+        state["say_to_user"] = (
+            f"Time series {names} {'is' if len(unbound) == 1 else 'are'} not used by any inflow or rainfall "
+            "feature, so the model ignores it. Say which input should use it, or the model will not "
+            "carry the water you expect.")
+    return json.dumps(state, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1709,6 +1722,36 @@ async def create_time_series(
     if server_summary:
         result["series_summary"] = server_summary   # Hydrata's numbers, computed from the true timestamps
     return json.dumps(result, indent=2)
+
+
+# TASK-3213 AC5: a stage series belongs to a boundary feature, which hydrology_check does not list.
+UNBOUND_CHECKED_SERIES_TYPES = ("hyetograph", "hydrograph")
+# hydrology_check warnings after which "no feature uses this series" cannot be told from "the layer was unreadable"
+UNBOUND_UNKNOWABLE_CODES = ("LAYER_UNREADABLE", "SERIES_NOT_FOUND")
+
+
+async def _unbound_series(project_id, check) -> list:
+    """The project's rainfall and flow series (`id`, `name`, `series_type`) that no feature in `check` uses.
+
+    `check` is Hydrata's `hydrology_check` (per-feature `series`); [] when it is absent, unreadable, or its
+    warnings say a layer or series could not be read (the answer would be a guess). Best effort: a failed
+    series listing never breaks get_scenario.
+    """
+    if not isinstance(check, dict) or not isinstance(check.get("features"), list):
+        return []
+    if any(isinstance(w, dict) and w.get("error_code") in UNBOUND_UNKNOWABLE_CODES
+           for w in check.get("warnings") or []):
+        return []
+    used = {f["series"].get("id") for f in check["features"]
+            if isinstance(f, dict) and isinstance(f.get("series"), dict)}
+    try:
+        listing = json.loads(await list_time_series(project_id))
+    except Exception:  # noqa: BLE001 — a hint on top of the scenario; never fail the read for it
+        return []
+    return [{"id": row["id"], "name": row.get("name"), "series_type": row.get("series_type")}
+            for row in listing.get("series") or []
+            if isinstance(row, dict) and row.get("series_type") in UNBOUND_CHECKED_SERIES_TYPES
+            and row.get("id") not in used]
 
 
 def _clock(stamp) -> str:
