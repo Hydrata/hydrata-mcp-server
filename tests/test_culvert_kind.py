@@ -314,6 +314,26 @@ class TestCulvertKindAttach:
         assert not routes["patch"].called and not routes["upload"].called
 
     @respx.mock
+    async def test_culvert_kind_max_features_is_sent_and_the_cap_message_still_fires(self, _server):
+        """TASK-3828: the read asks for the cap + 1; a layer over the cap is refused with the 2000 message."""
+        over = _fc(*[_d10(name=f"C{i}") for i in range(_server.CULVERT_MAX_FEATURES + 1)])
+        routes = _mock_attach(over)
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        sent = routes["ows"].calls[0].request.url.params
+        assert sent["max_features"] == str(_server.CULVERT_MAX_FEATURES + 1)
+        assert f"more than {_server.CULVERT_MAX_FEATURES} culverts" in text and "nothing was attached" in text
+        assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    async def test_culvert_kind_max_features_a_truncated_flag_also_trips_the_cap_message(self, _server):
+        fc = {**_fc(_d10()), "truncated": True}
+        routes = _mock_attach(fc)
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "more than" in text and not routes["patch"].called
+
+    @respx.mock
     async def test_culvert_kind_reads_features_from_hydrata_never_gs(self, _server):
         """TASK-3797: the read is the Hydrata route; no request goes to /gs/."""
         gs = respx.get(url__startswith=f"{ORIGIN}/gs/").mock(return_value=httpx.Response(403))

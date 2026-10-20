@@ -1766,7 +1766,8 @@ CULVERT_MATERIAL_ALIASES = {
 }
 # The importer's primary-key column; never a culvert attribute.
 CULVERT_SKIPPED_ATTRIBUTES = frozenset({"fid", "ogc_fid"})
-# The most culverts one attach reads back (WFS maxFeatures is this + 1).
+# The most culverts one attach reads back. The read asks the route for this + 1 (TASK-3828), so a
+# layer over the cap is seen as over it.
 CULVERT_MAX_FEATURES = 2000
 CULVERT_UPLOAD_PATH = "/api/v2/uploads/upload/"
 
@@ -1935,7 +1936,8 @@ async def _read_culvert_features(dataset_pk) -> dict:
     has no scope there (TASK-3728), so that read was refused for every key.
     """
     try:
-        collection = await client.get(f"/datasets/{dataset_pk}/features/")
+        collection = await client.get(f"/datasets/{dataset_pk}/features/",
+                                      params={"max_features": CULVERT_MAX_FEATURES + 1})
     except HydrataAPIError as exc:
         message = str(exc)
         if re.search(r"returned (401|403|404)\b", message):
@@ -1953,7 +1955,7 @@ async def _read_culvert_features(dataset_pk) -> dict:
                         "nothing was attached")
     if not isinstance(collection, dict) or not isinstance(collection.get("features"), list):
         raise ToolError(f"the read of dataset {dataset_pk} returned no feature collection; nothing was attached")
-    if len(collection["features"]) > CULVERT_MAX_FEATURES:
+    if len(collection["features"]) > CULVERT_MAX_FEATURES or collection.get("truncated") is True:
         raise ToolError(
             f"dataset {dataset_pk} holds more than {CULVERT_MAX_FEATURES} culverts; split the file — "
             "nothing was attached"
