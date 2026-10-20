@@ -314,6 +314,29 @@ class TestCulvertKindAttach:
         assert not routes["patch"].called and not routes["upload"].called
 
     @respx.mock
+    async def test_culvert_kind_not_ready_says_retry_later_not_stop(self, _server):
+        """TASK-3830: 503 NOT_READY (datastore / table not there yet) is temporary; only a permission 404 is final."""
+        routes = _mock_attach(_fc())
+        routes["ows"].return_value = httpx.Response(
+            503, json={"error_code": "NOT_READY", "detail": "The spatial data table is missing."})
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "temporary, not a refusal" in text and "again with the same arguments" in text
+        assert "stop and hand back" not in text
+        assert "nothing was attached" in text
+        assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    async def test_culvert_kind_not_ready_is_not_confused_with_the_agent_pause(self, _server):
+        """A 503 AGENT_PAUSED is the person's kill switch: never 'retry in a minute'."""
+        routes = _mock_attach(_fc())
+        routes["ows"].return_value = httpx.Response(
+            503, json={"error_code": "AGENT_PAUSED", "detail": "Agents are paused. Do not retry."})
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "AGENT_PAUSED" in text and "again with the same arguments" not in text
+
+    @respx.mock
     async def test_culvert_kind_max_features_is_sent_and_the_cap_message_still_fires(self, _server):
         """TASK-3828: the read asks for the cap + 1; a layer over the cap is refused with the 2000 message."""
         over = _fc(*[_d10(name=f"C{i}") for i in range(_server.CULVERT_MAX_FEATURES + 1)])

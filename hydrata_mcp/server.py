@@ -1940,6 +1940,14 @@ async def _read_culvert_features(dataset_pk) -> dict:
                                       params={"max_features": CULVERT_MAX_FEATURES + 1})
     except HydrataAPIError as exc:
         message = str(exc)
+        if re.search(r"server error \(503\)", message) and "AGENT_PAUSED" not in message:
+            # TASK-3830: the route answers 503 NOT_READY while the datastore or the layer's table is not
+            # there yet (the client drops the 5xx body). Transient: the opposite of a refusal.
+            raise ToolError(
+                f"Hydrata could not read dataset {dataset_pk} back just now (503 NOT_READY: the datastore or the "
+                "layer's table is not ready). This is temporary, not a refusal: nothing was attached. Wait "
+                "about a minute, then call attach_input_layer again with the same arguments."
+            )
         if re.search(r"returned (401|403|404)\b", message):
             # A refusal is final: the key's owner cannot read this dataset. Say STOP so the
             # agent does not retry into the refusal cap.
