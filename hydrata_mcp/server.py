@@ -1722,18 +1722,19 @@ def _clock(stamp) -> str:
 def _series_sentence(result: dict, summary: dict) -> str:
     """'Hydrograph X: peak 19.7 m3/s at 02:00, volume 1.2e+05 m3, ends at 0.' from Hydrata's own summary."""
     kind = str(result.get("series_type") or "series").capitalize()
-    units = result.get("units") or ""
-    parts = [f"peak {summary.get('peak_value'):g} {units} at {_clock(summary.get('peak_at'))}".replace("  ", " ")
-             if isinstance(summary.get("peak_value"), (int, float)) else None]
+    parts = []
+    peak = summary.get("peak_value")
+    if isinstance(peak, (int, float)):
+        unit = f" {result['units']}" if result.get("units") else ""
+        parts.append(f"peak {peak:g}{unit} at {_clock(summary.get('peak_at'))}")
     total = summary.get("total")
     if isinstance(total, (int, float)):
         label = "volume" if summary.get("total_units") == "m3" else "depth"
         parts.append(f"{label} {total:.4g} {summary.get('total_units') or ''}".strip())
     trailing = summary.get("trailing_value")
     if isinstance(trailing, (int, float)):
-        held = " (held on purpose)" if result.get("hold_last_value") else ""
-        parts.append(f"ends at {trailing:g}{held}")
-    return f"{kind} {result.get('name')}: {', '.join(p for p in parts if p)}."
+        parts.append(f"ends at {trailing:g}" + (" (held on purpose)" if result.get("hold_last_value") else ""))
+    return f"{kind} {result.get('name')}: {', '.join(parts)}."
 
 
 def _first_resource_id(record) -> int | str | None:
