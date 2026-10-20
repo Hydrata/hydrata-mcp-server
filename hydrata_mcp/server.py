@@ -617,6 +617,9 @@ SCENARIO_RECORD_KEYS = (
     "inflow_anchor_mismatch",
     # TASK-3208: the inputs you wrote that the user has not reviewed yet (members only)
     "unreviewed_inputs",
+    # TASK-3213: Hydrata's per-feature hydrology check (series, summary, gross volume, structured warnings),
+    # passed through VERBATIM when the server sends it (its shape is TASK-3212's)
+    "hydrology_check",
 )
 
 
@@ -831,7 +834,10 @@ async def get_scenario(
     `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),
     `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
     `inflow_anchor_mismatch` (null unless an inflow series starts after the
-    model does, whose first value is then held backwards).
+    model does, whose first value is then held backwards), and
+    `hydrology_check` (when Hydrata sends it: for each inflow and rainfall
+    feature, the series that drives it, its peak and volume, and structured
+    warnings — repeat those numbers to the user, never your own).
 
     The `computed_status` field (there is NO `status` key on a scenario) is
     derived from the latest run and will be one of: created, building, built,
@@ -1477,6 +1483,19 @@ async def get_terrain(
 # would leave an inflow series invisible. Validated here so an unknown value
 # is refused without an upstream call.
 SERIES_TYPES = ("hyetograph", "hydrograph", "stage", "generic")
+# TASK-3213 (epic 3200 W3): the SAME units rule hydrata enforces on POST (TASK-3211,
+# hydrology.serializers_v2.UNITS_BY_SERIES_TYPE): the engine reads a rainfall series as mm/hr and a flow series
+# as m^3/s whatever the label says, so the label must agree with the type. Refused here first, before any POST.
+SERIES_UNITS = {
+    "hyetograph": ("mm/hr", "mm/h"),
+    "hydrograph": ("m3/s", "m^3/s", "cumec"),
+    "stage": ("m",),
+}
+SERIES_ENGINE_CONVENTION = {
+    "hyetograph": "the engine reads a rainfall series as mm/hr",
+    "hydrograph": "the engine reads a flow series as m^3/s",
+    "stage": "the engine reads a stage series as metres",
+}
 
 # kind → the plural V2 route (gn_anuga urls.py :141-:225). ALL SIX are handled
 # the same way — GET the list, PATCH the default row's gn_layer — because the
@@ -1594,10 +1613,21 @@ async def create_time_series(
         "(flow, read by the Hydrographs panel and inflow boundaries), stage (water "
         "level, e.g. a tide) or generic. Sent as a top-level field.",
     ] = "hyetograph",
-    units: Annotated[str, "Display label for the values, e.g. 'mm/hr', 'm^3/s', 'm' (optional)"] = "",
+    units: Annotated[
+        str,
+        "Units of the values. REQUIRED for hyetograph ('mm/hr' or 'mm/h'), hydrograph ('m3/s', 'm^3/s' "
+        "or 'cumec') and stage ('m'): the engine reads those units whatever the label says, so a "
+        "mismatch is refused before anything is sent. Free for generic.",
+    ] = "",
     source: Annotated[str, "Where the data came from, e.g. a gauge id or agency (optional)"] = "",
     location_name: Annotated[str, "Human-readable location of the gauge (optional)"] = "",
     timezone: Annotated[str, "IANA timezone of the timestamps (default 'UTC'), e.g. 'Australia/Sydney'"] = "UTC",
+    hold_last_value: Annotated[
+        bool,
+        "Set true ONLY when the last value is meant to be held after the series ends. A hydrograph or "
+        "hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end "
+        "the series with a 0 row instead, unless holding is really intended.",
+    ] = False,
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
 
@@ -1610,12 +1640,25 @@ async def create_time_series(
     REST API (GET /projects/<id>/time-series/<id>/) if you need to round-trip it.
     A rainfall polygon references its gauge by the series NAME, so create the
     gauges with the exact names the rainfall GeoJSON's features carry.
+
+    The units must match the series_type (see `units`), and a hydrograph or
+    hyetograph must END at 0 unless `hold_last_value` is true. The result
+    carries Hydrata's own `summary` of the series (peak, volume or depth,
+    first and last stamp, trailing value): repeat those numbers to the user
+    (`say_to_user` does) rather than computing your own.
     """
     if series_type not in SERIES_TYPES:
         raise ToolError(
             f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}"
         )
     row_count = _validate_row_data(data)
+    allowed = SERIES_UNITS.get(series_type)
+    if allowed and units not in allowed:
+        raise ToolError(
+            f"A {series_type} series needs units {' or '.join(allowed)}, not {units!r}: "
+            f"{SERIES_ENGINE_CONVENTION[series_type]} whatever its label says. Nothing was sent; "
+            f"call again with units={allowed[0]!r}, or the right series_type for these numbers."
+        )
     payload = {
         "name": name,
         "description": description,
@@ -1624,6 +1667,7 @@ async def create_time_series(
         "timezone": timezone,
         "series_type": series_type,
         "units": units,
+        "hold_last_value": hold_last_value,
         "data": data,
     }
     body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
@@ -1645,17 +1689,51 @@ async def create_time_series(
     }
     first = rows[0].get("timestamp") if rows and isinstance(rows[0], dict) else None
     last = rows[-1].get("timestamp") if rows and isinstance(rows[-1], dict) else None
+    server_summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
+    result["hold_last_value"] = body.get("hold_last_value", hold_last_value)
+    say = (
+        f"Time series '{result['name']}' ({result['series_type']}, {row_count} rows, "
+        f"{first} to {last}, {result['units'] or 'no units'}) is saved. Open the link to "
+        "check its shape in the Hydrology panel."
+    )
+    if server_summary:
+        say = f"{_series_sentence(result, server_summary)} {say}"
     await _hand_back(
         result, project_id,
         {"series_id": result["id"], "name": result["name"], "series_type": result["series_type"],
          "units": result["units"], "row_count": row_count, "first_timestamp": first,
          "last_timestamp": last},
-        f"Time series '{result['name']}' ({result['series_type']}, {row_count} rows, "
-        f"{first} to {last}, {result['units'] or 'no units'}) is saved. Open the link to "
-        "check its shape in the Hydrology panel.",
+        say,
         panel="hydrology",
     )
+    if server_summary:
+        result["series_summary"] = server_summary   # Hydrata's numbers, computed from the true timestamps
     return json.dumps(result, indent=2)
+
+
+def _clock(stamp) -> str:
+    """HH:MM of an ISO stamp (the server's, with an offset), else the stamp as given."""
+    try:
+        return datetime.fromisoformat(str(stamp)).strftime("%H:%M")
+    except ValueError:
+        return str(stamp)
+
+
+def _series_sentence(result: dict, summary: dict) -> str:
+    """'Hydrograph X: peak 19.7 m3/s at 02:00, volume 1.2e+05 m3, ends at 0.' from Hydrata's own summary."""
+    kind = str(result.get("series_type") or "series").capitalize()
+    units = result.get("units") or ""
+    parts = [f"peak {summary.get('peak_value'):g} {units} at {_clock(summary.get('peak_at'))}".replace("  ", " ")
+             if isinstance(summary.get("peak_value"), (int, float)) else None]
+    total = summary.get("total")
+    if isinstance(total, (int, float)):
+        label = "volume" if summary.get("total_units") == "m3" else "depth"
+        parts.append(f"{label} {total:.4g} {summary.get('total_units') or ''}".strip())
+    trailing = summary.get("trailing_value")
+    if isinstance(trailing, (int, float)):
+        held = " (held on purpose)" if result.get("hold_last_value") else ""
+        parts.append(f"ends at {trailing:g}{held}")
+    return f"{kind} {result.get('name')}: {', '.join(p for p in parts if p)}."
 
 
 def _first_resource_id(record) -> int | str | None:

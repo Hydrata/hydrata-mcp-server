@@ -918,6 +918,7 @@ class TestCreateTimeSeriesTool:
             "timezone": "Australia/Sydney",
             "series_type": "hyetograph",
             "units": "mm/hr",
+            "hold_last_value": False,
             "data": {"rowData": ROW_DATA},
         }
         assert "series_type" not in body["description"]
@@ -935,7 +936,7 @@ class TestCreateTimeSeriesTool:
         }
         # TASK-3203 adds only the hand-back keys on top of the compact record.
         assert {k: data[k] for k in compact} == compact
-        assert set(data) - set(compact) <= {"ui_url", "summary", "say_to_user", "hand_back_error"}
+        assert set(data) - set(compact) <= {"ui_url", "summary", "say_to_user", "hand_back_error", "hold_last_value"}
         assert "data" not in data
 
     @respx.mock
@@ -1045,6 +1046,93 @@ class TestCreateTimeSeriesTool:
                 **{k: v for k, v in _series_args(timezone="Mars/Olympus").items()}
             )
         assert "Mars/Olympus" in str(exc_info.value)
+
+
+SUMMARY_HYDROGRAPH = {
+    "n_rows": 4, "first_at": "2020-01-01T00:00:00+00:00", "last_at": "2020-01-01T06:00:00+00:00",
+    "duration_s": 21600.0, "peak_value": 19.7, "peak_at": "2020-01-01T02:00:00+00:00", "median_step_s": 7200.0,
+    "min_step_s": 7200.0, "max_step_s": 7200.0, "total": 120000.0, "total_units": "m3", "n_negative": 0,
+    "trailing_value": 0.0,
+}
+HYDROGRAPH_ROWS = {"rowData": [{"timestamp": f"2020-01-01T0{h}:00:00", "value": v}
+                               for h, v in ((0, 0.0), (2, 19.7), (4, 5.0), (6, 0.0))]}
+
+
+class TestCreateTimeSeriesUnitsAndSummary:
+    @pytest.mark.parametrize("series_type,units", [
+        ("hyetograph", "m3/s"), ("hydrograph", "mm/hr"), ("stage", "mm"), ("hyetograph", ""), ("hydrograph", ""),
+    ])
+    @respx.mock
+    async def test_create_time_series_units_rule_refuses_before_any_post(self, _server, series_type, units):
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(201, json={}))
+        text = _tool_error_text(await _call_as_caller(
+            _server, "create_time_series", _series_args(series_type=series_type, units=units)))
+        assert not route.called
+        assert "engine reads" in text and "Nothing was sent" in text and f"units={_server.SERIES_UNITS[series_type][0]!r}" in text
+
+    @pytest.mark.parametrize("series_type,units", [
+        ("hyetograph", "mm/h"), ("hydrograph", "m^3/s"), ("hydrograph", "cumec"), ("stage", "m"), ("generic", ""),
+        ("generic", "anything"),
+    ])
+    @respx.mock
+    async def test_create_time_series_units_rule_lets_matching_units_through(self, _server, series_type, units):
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(201, json=_series_row(77, series_type=series_type, units=units)))
+        await _call_as_caller(_server, "create_time_series", _series_args(series_type=series_type, units=units))
+        assert route.called
+
+    @respx.mock
+    async def test_create_time_series_hold_last_value_is_forwarded(self, _server):
+        route = respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(201, json=_series_row(77, hold_last_value=True)))
+        data = _tool_json(await _call_as_caller(
+            _server, "create_time_series", _series_args(hold_last_value=True)))
+        assert json.loads(route.calls[0].request.content)["hold_last_value"] is True
+        assert data["hold_last_value"] is True
+
+    @respx.mock
+    async def test_create_time_series_hold_last_value_trailing_refusal_reaches_the_agent(self, _server):
+        """The trailing-value rule lives on the server: its 400 body (error_code + hint) must be relayed."""
+        from hydrata_mcp.client import HydrataAPIError
+        respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(400, json={
+            "error_code": "TRAILING_VALUE_HELD", "hint": "End the series with a 0 row, or send hold_last_value"}))
+        with pytest.raises(HydrataAPIError, match="TRAILING_VALUE_HELD"):
+            await _server.create_time_series(**_series_args(hold_last_value=False))
+
+    @respx.mock
+    async def test_create_time_series_echoes_the_server_summary_and_says_it(self, _server):
+        respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(201, json=_series_row(
+            77, name="Creek in", series_type="hydrograph", units="m3/s", timezone="UTC",
+            summary=SUMMARY_HYDROGRAPH, data=HYDROGRAPH_ROWS)))
+        data = _tool_json(await _call_as_caller(_server, "create_time_series", _series_args(
+            name="Creek in", series_type="hydrograph", units="m3/s", timezone="UTC", data=HYDROGRAPH_ROWS)))
+        assert data["series_summary"] == SUMMARY_HYDROGRAPH
+        assert data["say_to_user"].startswith("Hydrograph Creek in: peak 19.7 m3/s at 02:00, volume 1.2e+05 m3, "
+                                              "ends at 0.")
+
+    @respx.mock
+    async def test_create_time_series_without_a_server_summary_is_unchanged(self, _server):
+        respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(201, json=_series_row(77)))
+        data = _tool_json(await _call_as_caller(_server, "create_time_series", _series_args()))
+        assert "series_summary" not in data and data["say_to_user"].startswith("Time series 'rain_gauge_200'")
+
+
+class TestGetScenarioHydrologyCheck:
+    @respx.mock
+    async def test_hydrology_check_is_passed_through_verbatim_when_the_server_sends_it(self, _server):
+        check = {"features": [{"kind": "rainfall", "feature": "Gauge 1", "summary": SUMMARY_HYDROGRAPH}],
+                 "warnings": [{"code": "PEAK_OUTSIDE_WINDOW", "message": "peak is after the model ends"}]}
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
+            200, json={"id": 7, "computed_status": "created", "hydrology_check": check}))
+        data = _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
+        assert data["hydrology_check"] == check
+
+    @respx.mock
+    async def test_hydrology_check_absent_stays_absent_not_null(self, _server):
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
+            200, json={"id": 7, "computed_status": "created"}))
+        data = _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
+        assert "hydrology_check" not in data
 
 
 class TestAttachInputLayerTool:
