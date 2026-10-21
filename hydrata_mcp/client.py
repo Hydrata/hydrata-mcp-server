@@ -76,6 +76,22 @@ def _client_error_message(exc: httpx.HTTPStatusError, method: str, path: str) ->
     return message
 
 
+def _is_agent_paused(resp: httpx.Response) -> bool:
+    """Hydrata's agent kill switch (TASK-3510): ``503 AGENT_PAUSED`` + a human message.
+
+    A deliberate refusal, not an outage: surface its body (via
+    _client_error_message) so the agent reads "do not retry, tell the person"
+    instead of "the backend may be experiencing issues".
+    """
+    if resp.status_code != 503:
+        return False
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("error_code") == "AGENT_PAUSED"
+
+
 class HydrataClient:
     """Thin async wrapper around the Hydrata /api/v2/anuga/ endpoints.
 
@@ -169,7 +185,7 @@ class HydrataClient:
             )
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            if status >= 500:
+            if status >= 500 and not _is_agent_paused(exc.response):
                 raise HydrataAPIError(
                     f"Hydrata API server error ({status}). The backend may be experiencing issues."
                 )
@@ -204,11 +220,6 @@ class HydrataClient:
         """
         resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
         return resp.json()
-
-    async def get_text_from_origin(self, path: str, params: dict | None = None) -> str:
-        """get_from_origin for a NON-JSON body (a WFS ``resultType=hits`` XML answer)."""
-        resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
-        return resp.text
 
     async def post(
         self, path: str, json: dict | None = None, raise_for_status: bool = True

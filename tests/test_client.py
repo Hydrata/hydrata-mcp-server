@@ -106,3 +106,40 @@ class TestPostErrorWrapping:
         body, status = await client.post("/runs/1/cancel/")
         assert body == {}
         assert status == 200
+
+
+class TestAgentPaused:
+    """TASK-3510 (epic 3200): Hydrata's kill switch answers 503 AGENT_PAUSED with a
+    human message. That is a deliberate refusal, not "the backend may be
+    experiencing issues": the agent must see the message (do not retry, tell the
+    person), so it is surfaced like a 4xx body."""
+
+    PAUSED = {
+        "error_code": "AGENT_PAUSED",
+        "mode": "pause_launches",
+        "detail": "Hydrata has paused run launches by agents, so nothing was started.",
+    }
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_paused_post_surfaces_the_message(self, client):
+        respx.post(f"{BASE}/scenarios/1/run/").mock(return_value=httpx.Response(503, json=self.PAUSED))
+        with pytest.raises(HydrataAPIError) as exc:
+            await client.post("/scenarios/1/run/", json={})
+        text = str(exc.value)
+        assert "AGENT_PAUSED" in text and "paused run launches" in text
+        assert "experiencing issues" not in text
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_a_paused_post_is_refused_even_when_the_tool_reads_4xx_bodies(self, client):
+        respx.post(f"{BASE}/scenarios/1/run/").mock(return_value=httpx.Response(503, json=self.PAUSED))
+        with pytest.raises(HydrataAPIError, match="AGENT_PAUSED"):
+            await client.post("/scenarios/1/run/", json={}, raise_for_status=False)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_any_other_503_is_still_the_generic_server_error(self, client):
+        respx.post(f"{BASE}/scenarios/1/run/").mock(return_value=httpx.Response(503, text="<html>bad gateway</html>"))
+        with pytest.raises(HydrataAPIError, match="server error"):
+            await client.post("/scenarios/1/run/", json={})

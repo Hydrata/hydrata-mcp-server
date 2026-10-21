@@ -14,6 +14,8 @@ def _clean_env(monkeypatch):
         "HYDRATA_UI_ORIGIN",  # TASK-3203
         "HYDRATA_MCP_PORT",
         "HYDRATA_MCP_HOST",
+        "HYDRATA_MCP_RESOURCE_URL",  # TASK-3512: the one-click connect switch must not leak in
+        "HYDRATA_MCP_DATA_ENVELOPE",  # TASK-3511: the harness's negative-control switch must not leak in
     ):
         monkeypatch.delenv(key, raising=False)
 

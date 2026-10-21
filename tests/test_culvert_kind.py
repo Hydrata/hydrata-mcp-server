@@ -17,7 +17,7 @@ import respx
 
 from tests.test_server import (
     BASE,
-    CALLER_BASIC,
+    CALLER_KEY,
     EXEC_ID,
     EXEC_STATUS_URL,
     ORIGIN,
@@ -99,12 +99,8 @@ def _mock_attach(fc, rows=None, source_alternate="geonode:towradgi_culverts"):
             return_value=httpx.Response(200, json={"id": 42, "base_map": 1525})),
     }
 
-    def ows(request):
-        if request.url.params.get("request") == "GetFeature" and \
-                request.url.params.get("outputFormat") == "application/json":
-            return httpx.Response(200, json=fc)
-        return httpx.Response(200, text='<wfs:FeatureCollection numberMatched="2"/>')
-    routes["ows"] = respx.get(url__startswith=f"{ORIGIN}/gs/ows").mock(side_effect=ows)
+    # TASK-3797: the read-back is Hydrata's own features route (an agent key has no /gs/ scope).
+    routes["ows"] = respx.get(f"{BASE}/datasets/1502/features/").mock(return_value=httpx.Response(200, json=fc))
     respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/").mock(
         return_value=httpx.Response(200, json={"datasets": []}))
     respx.get(url__startswith=f"{ORIGIN}/api/v2/maps/").mock(
@@ -181,7 +177,8 @@ class TestCulvertKindMapping:
             {"shape": "arch", "upstream_invert_m": 1, "downstream_invert_m": 1, "barrels": 30},
         ))
         first, second = report["problems"]  # one line per culvert
-        assert first == ("Culvert 'No inverts': upstream_invert_m is required; "
+        # TASK-3511: the culvert's name is the uploader's text, so it comes back as data.
+        assert first == ("Culvert <untrusted-data>'No inverts'</untrusted-data>: upstream_invert_m is required; "
                          "downstream_invert_m is required")
         assert second.startswith("Culvert #2: shape must be 'box' or 'circular'")
         assert "barrels must be a whole number from 1 to 20" in second
@@ -206,7 +203,9 @@ class TestCulvertEntranceCodes:
             _d10(name="Bad", shape="circular", width_m=None, height_m=None, diameter_m=0.9,
                  entrance_type="wingwalls_30_75")))
         (line,) = report["problems"]
-        assert "Culvert 'Bad'" in line and "entrance_type 'wingwalls_30_75' is not available for a circular concrete" in line
+        assert "Culvert <untrusted-data>'Bad'</untrusted-data>" in line
+        assert ("entrance_type <untrusted-data>'wingwalls_30_75'</untrusted-data> is not available "
+                "for a circular concrete") in line
 
     async def test_culvert_entrance_valid_combination_has_no_problem(self, _server):
         _, report = _server._map_culvert_collection(_fc(_d10(entrance_type="wingwalls_0")))
@@ -226,7 +225,7 @@ class TestCulvertKindAttach:
         assert "retry_execution_id" not in data
         assert json.loads(routes["patch"].calls[0].request.content) == {"gn_layer": 1600}
         for name in ("status", "ows", "upload", "mapped_status", "list", "patch"):
-            assert routes[name].calls[0].request.headers["authorization"] == CALLER_BASIC, name
+            assert routes[name].calls[0].request.headers["authorization"] == CALLER_KEY, name
 
     @respx.mock
     async def test_culvert_kind_reuploads_mapped_values_with_defaults_filled(self, _server):
@@ -295,12 +294,77 @@ class TestCulvertKindAttach:
     @respx.mock
     async def test_culvert_kind_unreadable_upload_attaches_nothing(self, _server):
         routes = _mock_attach(_fc())
-        routes["ows"].side_effect = None
         routes["ows"].return_value = httpx.Response(200, text="<ows:ExceptionReport/>")
         text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
             "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
         assert "nothing was attached" in text
         assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    @pytest.mark.parametrize("refusal", [401, 403, 404])
+    async def test_culvert_kind_refused_read_says_stop_never_call_again(self, _server, refusal):
+        """TASK-3797: a refusal is final; the text must not invite a retry."""
+        routes = _mock_attach(_fc())
+        routes["ows"].return_value = httpx.Response(refusal, json={"detail": "No such dataset, or you cannot view it."})
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "stop and hand back to the person" in text
+        assert "call again" not in text.lower() and "try again" not in text.lower()
+        assert "nothing was attached" in text
+        assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    async def test_culvert_kind_not_ready_says_retry_later_not_stop(self, _server):
+        """TASK-3830: 503 NOT_READY (datastore / table not there yet) is temporary; only a permission 404 is final."""
+        routes = _mock_attach(_fc())
+        routes["ows"].return_value = httpx.Response(
+            503, json={"error_code": "NOT_READY", "detail": "The spatial data table is missing."})
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "temporary, not a refusal" in text and "again with the same arguments" in text
+        assert "stop and hand back" not in text
+        assert "nothing was attached" in text
+        assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    async def test_culvert_kind_not_ready_is_not_confused_with_the_agent_pause(self, _server):
+        """A 503 AGENT_PAUSED is the person's kill switch: never 'retry in a minute'."""
+        routes = _mock_attach(_fc())
+        routes["ows"].return_value = httpx.Response(
+            503, json={"error_code": "AGENT_PAUSED", "detail": "Agents are paused. Do not retry."})
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "AGENT_PAUSED" in text and "again with the same arguments" not in text
+
+    @respx.mock
+    async def test_culvert_kind_max_features_is_sent_and_the_cap_message_still_fires(self, _server):
+        """TASK-3828: the read asks for the cap + 1; a layer over the cap is refused with the 2000 message."""
+        over = _fc(*[_d10(name=f"C{i}") for i in range(_server.CULVERT_MAX_FEATURES + 1)])
+        routes = _mock_attach(over)
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        sent = routes["ows"].calls[0].request.url.params
+        assert sent["max_features"] == str(_server.CULVERT_MAX_FEATURES + 1)
+        assert f"more than {_server.CULVERT_MAX_FEATURES} culverts" in text and "nothing was attached" in text
+        assert not routes["patch"].called and not routes["upload"].called
+
+    @respx.mock
+    async def test_culvert_kind_max_features_a_truncated_flag_also_trips_the_cap_message(self, _server):
+        fc = {**_fc(_d10()), "truncated": True}
+        routes = _mock_attach(fc)
+        text = _tool_error_text(await _call_as_caller(_server, "attach_input_layer", {
+            "project_id": 42, "kind": "culvert", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        assert "more than" in text and not routes["patch"].called
+
+    @respx.mock
+    async def test_culvert_kind_reads_features_from_hydrata_never_gs(self, _server):
+        """TASK-3797: the read is the Hydrata route; no request goes to /gs/."""
+        gs = respx.get(url__startswith=f"{ORIGIN}/gs/").mock(return_value=httpx.Response(403))
+        routes = _mock_attach(_fc(_d10()))
+        data = await _attach(_server)
+        assert data["outcome"] == "attached"
+        assert routes["ows"].call_count == 1
+        assert not gs.called
 
 
 class TestCulvertKindScenario:
