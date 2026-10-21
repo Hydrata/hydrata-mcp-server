@@ -1149,9 +1149,11 @@ async def retry_run(
     Needs a launch-level agent key (a retry rebuilds the package and can start
     AWS Batch); a read or draft key gets 403 AGENT_LEVEL_INSUFFICIENT.
 
-    Resets an errored run back to 'created' status and triggers a new
-    package build. The same run ID is reused. Only valid when
-    status is 'error'. Returns 409 for any other state.
+    Starts a fresh package build of the run's scenario as a NEW run, which
+    becomes the scenario's latest run. The errored run keeps its status and
+    error as history, and the response describes that old run; the new run's
+    ID is get_scenario's `run_id`. Only valid when status is 'error'. Returns
+    409 for any other state.
     """
     body, status_code = await client.post(f"/runs/{run_id}/retry/")
     result = json.loads(_post_result(body, status_code))
