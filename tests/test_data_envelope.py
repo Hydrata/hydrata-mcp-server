@@ -30,6 +30,7 @@ from tests.test_server import (
     CALLER_KEY,
     EXEC_ID,
     EXEC_STATUS_URL,
+    KEY_HEADERS,
     MCP_HEADERS,
     ORIGIN,
     SCENARIO_URL,
@@ -352,7 +353,7 @@ async def test_data_envelope_no_tool_returns_a_persons_text_outside_the_envelope
     respx.route().mock(return_value=httpx.Response(200, json=LADEN))
     reached = []
     async with _asgi_client(_server) as c:
-        resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+        resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = _parse(resp)["result"]["tools"]
         for i, tool in enumerate(tools, start=2):
             resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_KEY},

@@ -108,10 +108,10 @@ def _www_authenticate(error: str = "") -> bytes:
     return challenge.encode()
 
 
-class RequireAuthForToolsCall:
-    """Pure-ASGI middleware: 401 an anonymous ``tools/call``; every other method stays open.
+class RequireAuth:
+    """Pure-ASGI middleware: 401 every anonymous JSON-RPC request, before fastmcp runs.
 
-    The server holds no identity of its own. A ``tools/call`` must carry the caller's
+    The server holds no identity of its own. Every request must carry the caller's
     ``Authorization`` header — an agent key, ``Bearer hk_…`` (TASK-3508) — which
     :class:`HydrataClient` forwards verbatim to the REST API, where Django verifies
     it, so results are scoped by the real user's project permissions and the grant's
@@ -127,18 +127,23 @@ class RequireAuthForToolsCall:
     several would let ``Bearer hk_…`` + ``Basic …`` pass here and go upstream
     as Basic.
 
-    Why only ``tools/call`` (decision D2 on TASK-2467, a deliberate deviation from
-    TASK-1389's "reject anonymous tools/list"): the tool catalog is public on GitHub
-    anyway, and ``initialize`` / ``tools/list`` / ``ping`` must keep answering
-    anonymously so the MCP registry's liveness check stays true.
+    Why EVERY method, not only ``tools/call`` (TASK-3987, superseding decision D2
+    on TASK-2467): an anonymous ``initialize`` that answered 200 told claude.ai's
+    Add custom connector dialog the server was authless, so it pre-selected "No
+    sign-in" and the first connect failed. A 401 + ``WWW-Authenticate`` on the
+    first request is what an auth-required server answers (MCP authorization
+    spec; claude.com connector authentication docs). The anonymous tool catalog
+    and MCP-directory liveness probes are given up for it.
 
-    Why this shape and not the built-ins: ``fastmcp.server.auth`` is Bearer-only and
-    gates every method; Starlette's ``BaseHTTPMiddleware`` needs explicit body
-    replay. This reads the body once, decides, and replays it to the app untouched.
-    A body that is not JSON (or not a dict/list, or nested too deep to decode) is
-    passed through as-is so fastmcp emits its own ``-32700`` parse error — never
-    a 500 from here. Batches (arrays) are inspected element-wise as defence in
-    depth; the MCP SDK itself rejects them downstream.
+    Why this shape and not the built-ins: ``fastmcp.server.auth`` is Bearer-only
+    (it would refuse the ``hk_`` passthrough rules above); Starlette's
+    ``BaseHTTPMiddleware`` needs explicit body replay. This reads the body once,
+    decides, and replays it to the app untouched. A body that is not JSON (or not
+    a dict/list, or nested too deep to decode) is passed through as-is so fastmcp
+    emits its own ``-32700`` parse error — never a 500 from here. Batches (arrays)
+    are inspected element-wise as defence in depth; the MCP SDK itself rejects
+    them downstream. Only POST is gated: a GET (the SSE stream) goes to fastmcp,
+    which answers 405 in stateless mode and so serves nothing to anyone.
 
     TASK-3512 (W2e): with ``HYDRATA_MCP_RESOURCE_URL`` set, the 401 also carries
     ``resource_metadata="…"`` so an OAuth-aware client (claude.ai, ChatGPT) can
@@ -168,8 +173,6 @@ class RequireAuthForToolsCall:
                 break
         body = b"".join(chunks)
 
-        request_id = None
-        needs_auth = False
         try:
             parsed = json.loads(body)
         except (ValueError, RecursionError):
@@ -177,11 +180,12 @@ class RequireAuthForToolsCall:
             # overflows the decoder and is NOT a ValueError; it must be treated
             # like any other unparseable body, or it escapes as a 500 (W0 sweep).
             parsed = None
-        for msg in parsed if isinstance(parsed, list) else [parsed]:
-            if isinstance(msg, dict) and msg.get("method") == "tools/call":
-                needs_auth = True
-                request_id = msg.get("id")
-                break
+        messages = [m for m in (parsed if isinstance(parsed, list) else [parsed]) if isinstance(m, dict)]
+        # Any JSON-RPC message needs a caller (TASK-3987). The error echoes the id
+        # of the batch's tools/call if there is one, else the first message's.
+        needs_auth = bool(messages)
+        calls = [m for m in messages if m.get("method") == "tools/call"]
+        request_id = (calls or messages)[0].get("id") if messages else None
 
         # ASGI header names are lowercase bytes; a blank value is not a credential.
         auths = [value.decode("latin-1") for name, value in scope.get("headers", [])
@@ -197,7 +201,7 @@ class RequireAuthForToolsCall:
         elif needs_auth and (len(auths) != 1 or not (_is_agent_key(auths[0]) or _is_connect_token(auths[0]))):
             # TASK-3730: never echo the credential back — only what to send instead.
             refusal = (
-                f"Only a Hydrata agent key is accepted for tool calls: send exactly one header "
+                f"Only a Hydrata agent key is accepted: send exactly one header "
                 f"'{AGENT_KEY_HEADER}'. Sign-in with HTTP Basic or any other token is not "
                 f"accepted here. Create an agent key at {_agent_keys_url()}"
             )
@@ -246,7 +250,7 @@ class RequireAuthForToolsCall:
 # One list, baked into the one `app` below, which BOTH entry points serve: prod's
 # unit file (`uvicorn hydrata_mcp.server:app`) and the `hydrata-mcp` CLI. An
 # unguarded CLI entry would be a second, anonymous server.
-MIDDLEWARE = [Middleware(RequireAuthForToolsCall)]
+MIDDLEWARE = [Middleware(RequireAuth)]
 
 
 @asynccontextmanager

@@ -200,6 +200,19 @@ CALLER_KEY = "Bearer hk_0123456789ab_c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3J
 # foo:bar — a password caller, refused on /mcp/ tools/call since TASK-3730.
 CALLER_BASIC = "Basic Zm9vOmJhcg=="
 UPSTREAM_OK = {"count": 0, "results": []}
+# TASK-3987: every method needs a credential, so a catalog fetch (initialize,
+# tools/list) carries the key too.
+KEY_HEADERS = {**MCP_HEADERS, "Authorization": CALLER_KEY}
+INITIALIZE_PARAMS = {
+    "protocolVersion": "2025-06-18",
+    "capabilities": {},
+    "clientInfo": {"name": "test", "version": "0"},
+}
+EVERY_METHOD = [
+    pytest.param("initialize", INITIALIZE_PARAMS, id="initialize"),
+    pytest.param("tools/list", {}, id="tools-list"),
+    pytest.param("ping", {}, id="ping"),
+]
 
 
 def _rpc(method, params=None, id=1):
@@ -253,25 +266,37 @@ class TestPassthrough:
         # Short-circuited in the middleware: nothing reached the upstream API.
         assert not upstream.calls
 
-    @pytest.mark.parametrize(
-        "method,params",
-        [
-            ("tools/list", {}),
-            ("ping", {}),
-            (
-                "initialize",
-                {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0"},
-                },
-            ),
-        ],
-    )
-    async def test_anon_catalog_methods_stay_200(self, _server, method, params):
-        """Decision D2 (TASK-2467): the catalog is public; only tools/call needs a caller."""
+    @pytest.mark.parametrize("method,params", EVERY_METHOD)
+    async def test_anon_every_method_is_401_with_challenge(self, _server, method, params):
+        """TASK-3987: the server requires sign-in for EVERY method, not only tools/call.
+
+        claude.ai's Add custom connector dialog read the old 200 on an anonymous
+        initialize as an authless server and pre-selected "No sign-in". A 401 +
+        ``WWW-Authenticate`` on initialize / tools/list is what an auth-required
+        server answers (MCP authorization spec; claude.com connector auth docs).
+        Supersedes decision D2 on TASK-2467 (anonymous catalog)."""
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc(method, params))
+            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc(method, params, id=5))
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == 'Bearer realm="hydrata.com"'
+        body = resp.json()
+        assert body["id"] == 5
+        assert body["error"]["code"] == -32001
+        assert "Authorization: Bearer hk_" in body["error"]["message"]
+
+    async def test_anon_notification_is_401(self, _server):
+        """A JSON-RPC notification (no id) is refused too; the error carries id null."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=MCP_HEADERS,
+                                json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+        assert resp.status_code == 401
+        assert resp.json()["id"] is None
+
+    @pytest.mark.parametrize("method,params", EVERY_METHOD)
+    async def test_agent_key_every_method_is_200(self, _server, method, params):
+        """An hk_ agent key opens every method; initialize/tools/list need no upstream call."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc(method, params))
         assert resp.status_code == 200
         assert "error" not in _parse(resp)
 
@@ -774,7 +799,7 @@ class TestGetTerrainTool:
         """AC3: the descriptions carry the platform cap + 'the agent moves the bytes';
         no tool input is file contents (bytes/base64/path)."""
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         for name in ("create_project", "presign_terrain_upload", "finalize_terrain_upload", "get_terrain"):
             assert name in tools, name
@@ -1581,7 +1606,7 @@ class TestAttachInputLayerTool:
         tool takes file contents (create_time_series takes a small JSON `data`
         object by design — decision D7 forbids bytes, not row objects)."""
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert "create_time_series" in tools and "attach_input_layer" in tools
         attach = tools["attach_input_layer"]["description"]
@@ -2082,7 +2107,7 @@ class TestBuildScenarioTool:
         build requires), the poll key and the confirm gate are on the tools' OWN
         descriptions; get_scenario's names computed_status."""
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         build = tools["build_scenario"]["description"]
         for token in ("computed_status", "resolution", "metres", "confirm", "100,000", "MESH_TOO_LARGE"):
@@ -2936,7 +2961,7 @@ DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation"}
 class TestToolAnnotations:
     async def test_annotations_on_all_28_tools_read_hints_and_cancel_destructive(self, _server):
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert len(tools) == 28
         for name, tool in tools.items():
@@ -3119,7 +3144,7 @@ def _schema_args(schema):
 class TestStructuredContent:
     async def test_structured_content_output_schema_is_an_object_on_every_tool(self, _server):
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = _parse(resp)["result"]["tools"]
         assert len(tools) == len(_server.TOOL_ANNOTATIONS)
         for tool in tools:
@@ -3135,7 +3160,7 @@ class TestStructuredContent:
                   "count": 0, "next": None, "results": []}
         respx.route().mock(return_value=httpx.Response(200, json=record))
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
             tools = _parse(resp)["result"]["tools"]
             structured = []
             for i, tool in enumerate(tools, start=2):
@@ -3173,10 +3198,8 @@ class TestStructuredContent:
 async def _catalog(srv):
     """Every string an agent reads before calling: instructions + tool + parameter text."""
     async with _asgi_client(srv) as c:
-        init = await c.post("/", headers=MCP_HEADERS, json=_rpc("initialize", {
-            "protocolVersion": "2025-06-18", "capabilities": {},
-            "clientInfo": {"name": "test", "version": "0"}}))
-        listed = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list", id=2))
+        init = await c.post("/", headers=KEY_HEADERS, json=_rpc("initialize", INITIALIZE_PARAMS))
+        listed = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list", id=2))
     texts = [_parse(init)["result"].get("instructions") or ""]
     for tool in _parse(listed)["result"]["tools"]:
         texts.append(tool.get("description") or "")
@@ -3324,21 +3347,15 @@ class TestAgentKeys:
         _assert_agent_key_401(resp)
         assert not upstream.calls
 
-    @pytest.mark.parametrize("auth", [None, CALLER_BASIC, CALLER_OAUTH], ids=["anonymous", "basic", "oauth-bearer"])
-    @pytest.mark.parametrize("method,params", [
-        ("tools/list", {}),
-        ("ping", {}),
-        ("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                        "clientInfo": {"name": "test", "version": "0"}}),
-    ])
-    async def test_agent_key_catalog_methods_stay_open_whatever_the_header(self, _server, method, params, auth):
-        """AC4: initialize / tools/list / ping answer anonymously (D2 on TASK-2467),
-        and a non-key header does not turn them into a 401 either."""
-        headers = dict(MCP_HEADERS) if auth is None else {**MCP_HEADERS, "Authorization": auth}
+    @pytest.mark.parametrize("auth", [CALLER_BASIC, CALLER_OAUTH], ids=["basic", "oauth-bearer"])
+    @pytest.mark.parametrize("method,params", EVERY_METHOD)
+    async def test_agent_key_catalog_methods_need_a_key_too(self, _server, method, params, auth):
+        """TASK-3987 (supersedes AC4 of TASK-3730 / D2 on TASK-2467): initialize /
+        tools/list / ping refuse a non-key header like tools/call does, same 401 shape
+        (no header at all: test_anon_every_method_is_401_with_challenge)."""
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=headers, json=_rpc(method, params))
-        assert resp.status_code == 200
-        assert "error" not in _parse(resp)
+            resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": auth}, json=_rpc(method, params))
+        _assert_agent_key_401(resp)
 
     @respx.mock
     async def test_agent_key_error_result_carries_no_auth_note(self, _server):
@@ -3475,7 +3492,7 @@ class TestStartSimulationConsent:
 class TestLaunchKeyDescriptions:
     async def _tools(self, srv):
         async with _asgi_client(srv) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         return {t["name"]: t["description"] for t in _parse(resp)["result"]["tools"]}
 
     async def test_build_and_finalize_say_they_need_a_launch_key(self, _server):
