@@ -6,7 +6,6 @@ import respx
 
 from hydrata_mcp.client import HydrataAPIError, HydrataClient
 
-
 BASE = "https://hydrata.example.com/api/v2/anuga"
 
 

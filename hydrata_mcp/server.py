@@ -12,6 +12,8 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from http import HTTPStatus
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 from typing import Annotated
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -373,8 +375,15 @@ DATA_INSTRUCTIONS = (
 )
 
 
+try:
+    PACKAGE_VERSION = _dist_version("hydrata-mcp-server")
+except PackageNotFoundError:  # running from a bare source tree
+    PACKAGE_VERSION = "0+unknown"
+
+
 mcp = FastMCP(
     "Hydrata",
+    version=PACKAGE_VERSION,
     instructions=(
         "Hydrata is a geospatial hydraulic modeling platform. Use these tools to "
         "manage ANUGA flood simulation projects, scenarios, and runs. "
