@@ -607,7 +607,8 @@ def _elide_presigned(value):
 # will cost (`compute_cost_estimate`, `vcpu_hours_estimate`) — the inverse of
 # "show your work before build and spend". `inflow_anchor_mismatch` is the
 # record's only pre-build correctness warning (a timeseries inflow starting
-# after model_start has its first value ffilled backwards) and has no other
+# after model_start gets zero flow over the lead-in gap before its first
+# sample: run_anuga run_utils.py fillna(0.0), TASK-2825) and has no other
 # MCP path at all.
 SCENARIO_RECORD_KEYS = (
     "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
@@ -834,7 +835,8 @@ async def get_scenario(
     `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),
     `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
     `inflow_anchor_mismatch` (null unless an inflow series starts after the
-    model does, whose first value is then held backwards), and
+    model does: the model gets zero flow from that series over the lead-in
+    gap before its first sample), and
     `hydrology_check` (when Hydrata sends it: for each inflow and rainfall
     feature, the series that drives it, its peak and volume, and structured
     warnings — repeat those numbers to the user, never your own), and
