@@ -3046,8 +3046,8 @@ NO_COMPARISON_WORDS = (
 def _headline_sentence(headline) -> str | None:
     """TASK-3845 — the English headline from the API's numbers (the map words
     the same numbers per locale): '47 observations · 31 within ±0.30 m (66%) ·
-    bias -0.12 m · RMSE 0.35 m · 1 excluded'. A sentence (an older server) or
-    None passes through."""
+    bias -0.12 m · RMSE 0.35 m · 1 excluded', then any dry points on their own
+    part. A sentence (an older server) or None passes through."""
     if not isinstance(headline, dict):
         return headline
     n, excluded = int(headline.get("n") or 0), int(headline.get("excluded") or 0)
@@ -3066,6 +3066,14 @@ def _headline_sentence(headline) -> str | None:
     needs_date = int(headline.get("needs_date") or 0)
     if needs_date:
         parts.append(f"{needs_date} {'needs' if needs_date == 1 else 'need'} a date")
+    # TASK-3983: dry points are out of n / bias / RMSE (TASK-3981), worded as
+    # gn_anuga.calibration_stats.headline_text does
+    dry = headline.get("dry_points")
+    if isinstance(dry, dict):
+        line = f"Dry points: {int(dry.get('wet') or 0)} of {int(dry.get('n') or 0)} wet in the model"
+        if dry.get("worst_depth_m") is not None:
+            line += f" ({dry.get('worst_name') or 'deepest'} {dry['worst_depth_m']:.2f} m)"
+        parts.append(line)
     return " · ".join(parts)
 
 
