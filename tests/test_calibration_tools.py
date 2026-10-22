@@ -277,6 +277,18 @@ class TestHeadlineSentence:
              "weighted_rmse_m": None, "excluded": 3, "gauges": 0, "needs_date": 1}
         assert _server._headline_sentence(h) == "0 observations · 0 within ±0.15 m · 3 excluded · 1 needs a date"
 
+    async def test_dry_points_get_their_own_part(self, _server):
+        """TASK-3983 (epic 3927): since TASK-3981 dry points are out of n / bias / RMSE
+        and come as `dry_points`; the sentence words them as the map does."""
+        h = dict(PAYLOAD["headline"])
+        plain = _server._headline_sentence(h)
+        h["dry_points"] = {"n": 1, "wet": 1, "worst_name": "DP1", "worst_depth_m": 0.86}
+        assert _server._headline_sentence(h) == plain + " · Dry points: 1 of 1 wet in the model (DP1 0.86 m)"
+        h["dry_points"] = {"n": 2, "wet": 0, "worst_name": None, "worst_depth_m": None}
+        assert _server._headline_sentence(h) == plain + " · Dry points: 0 of 2 wet in the model"
+        h["dry_points"] = {"n": 1, "wet": 1, "worst_name": None, "worst_depth_m": 0.4}
+        assert _server._headline_sentence(h).endswith("(deepest 0.40 m)")
+
     async def test_an_older_server_sentence_passes_through(self, _server):
         assert _server._headline_sentence("2 observations · ...") == "2 observations · ..."
         assert _server._headline_sentence(None) is None
