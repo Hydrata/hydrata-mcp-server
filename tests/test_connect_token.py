@@ -13,7 +13,8 @@ import httpx
 import pytest
 import respx
 
-from tests.test_server import (BASE, CALLER_BASIC, CALLER_KEY, CALLER_OAUTH, UPSTREAM_OK, _call,
+from tests.test_server import (BASE, CALLER_BASIC, CALLER_KEY, CALLER_OAUTH, EVERY_METHOD, INITIALIZE_PARAMS,
+                               MCP_HEADERS, UPSTREAM_OK, _asgi_client, _call, _parse, _rpc,
                                _server)  # noqa: F401  (_server is the shared fixture)
 
 pytestmark = pytest.mark.asyncio
@@ -58,6 +59,41 @@ class TestConnectOn:
         resp = await _call(connect_server, auth)
         assert resp.status_code == 401
         assert not upstream.calls
+
+
+async def _rpc_as(srv, auth, method, params):
+    headers = dict(MCP_HEADERS) if auth is None else {**MCP_HEADERS, "Authorization": auth}
+    async with _asgi_client(srv) as c:
+        return await c.post("/", headers=headers, json=_rpc(method, params))
+
+
+class TestEveryMethodNeedsSignIn:
+    """TASK-3987: claude.ai's Add custom connector dialog pre-selected "No sign-in"
+    because an anonymous initialize answered 200. Every method now answers an
+    anonymous caller with 401 + the resource_metadata pointer, as the MCP
+    authorization spec expects of a server that requires auth."""
+
+    @pytest.mark.parametrize("auth", [None, " "], ids=["no-header", "blank-header"])
+    @pytest.mark.parametrize("method,params", EVERY_METHOD)
+    async def test_anonymous_is_401_naming_the_metadata(self, connect_server, method, params, auth):
+        resp = await _rpc_as(connect_server, auth, method, params)
+        assert resp.status_code == 401
+        assert resp.headers["www-authenticate"] == f'Bearer realm="hydrata.com", resource_metadata="{METADATA}"'
+        assert resp.json()["error"]["code"] == -32001
+
+    @pytest.mark.parametrize("auth", [JWT, CALLER_KEY], ids=["connect-jwt", "agent-key"])
+    @pytest.mark.parametrize("method,params", EVERY_METHOD)
+    async def test_signed_in_is_200(self, connect_server, method, params, auth):
+        resp = await _rpc_as(connect_server, auth, method, params)
+        assert resp.status_code == 200
+        assert "error" not in _parse(resp)
+
+    async def test_expired_jwt_initialize_is_401_invalid_token(self, connect_server):
+        """The client refreshes on this 401, whichever method it was sending."""
+        resp = await _rpc_as(connect_server, _jwt({"sub": "user_01", "exp": int(time.time()) - 10}),
+                             "initialize", INITIALIZE_PARAMS)
+        assert resp.status_code == 401
+        assert 'error="invalid_token"' in resp.headers["www-authenticate"]
 
 
 class TestConnectOff:

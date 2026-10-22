@@ -25,7 +25,7 @@ import respx
 from tests.test_server import (
     BASE,
     BASE_MAP,
-    MCP_HEADERS,
+    KEY_HEADERS,
     _asgi_client,
     _call_as_caller,
     _mock_project,
@@ -177,7 +177,7 @@ class TestObservationLayer:
 
     async def test_the_datum_description_names_no_national_list(self, _server):
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         described = json.dumps(tools["create_observation_layer"]["inputSchema"])
         assert "EPSG vertical CRS" in described
@@ -257,7 +257,7 @@ class TestTowradgiRoundTrip:
 
     async def test_add_and_update_descriptions_say_a_date_or_flood_name_is_needed(self, _server):
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         for name in ("add_observations", "update_observation"):
             text = json.dumps(tools[name])
@@ -410,7 +410,7 @@ class TestPhotoLinkOnly:
 class TestObservationToolSurface:
     async def test_observation_tools_are_listed_with_their_hints(self, _server):
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert OBSERVATION_TOOLS <= set(tools)
         assert tools["list_observations"]["annotations"]["readOnlyHint"] is True

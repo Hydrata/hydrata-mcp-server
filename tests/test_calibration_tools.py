@@ -33,6 +33,7 @@ from tests.test_server import (
     BASE,
     BASE_MAP,
     CALLER_KEY,
+    KEY_HEADERS,
     MCP_HEADERS,
     _asgi_client,
     _call_as_caller,
@@ -414,7 +415,7 @@ class TestSavedTolerance:
 class TestComparisonToolList:
     async def test_comparison_tools_are_listed_with_their_hints(self, _server):
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert COMPARISON_TOOLS <= set(tools)
         assert tools["get_observation_comparison"]["annotations"]["readOnlyHint"] is True
@@ -427,7 +428,7 @@ class TestComparisonToolList:
         """TASK-3844: no tool is named or described as Calibration, and the
         calibration / validation role tool is gone."""
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS, json=_rpc("tools/list"))
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert "get_calibration" not in tools and "set_observation_role" not in tools
         for name, tool in tools.items():
