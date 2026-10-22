@@ -1,0 +1,1234 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Attach a photo link to a flood observation"
+    },
+    "description": "Attach a photo to a flood observation as a reference LINK (never a file).\n\nMCP never uploads photo bytes. A local path, file:// URL or data: URI is\nrefused: to upload a photo file, open the observation in the map and use the\nphoto strip on its form (JPEG, PNG or HEIC, 25 MB, 10 per observation).\nThe link counts toward the 10.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "caption": {
+          "default": "",
+          "description": "What the photo shows (optional, up to 500 characters)",
+          "type": "string"
+        },
+        "credit": {
+          "default": "",
+          "description": "Who took it / the rights holder (optional)",
+          "type": "string"
+        },
+        "fid": {
+          "description": "The observation's fid",
+          "type": "integer"
+        },
+        "layer_id": {
+          "description": "The flood observation layer id",
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "public_consent": {
+          "default": false,
+          "description": "Show this photo to visitors of a public project (default false: members only)",
+          "type": "boolean"
+        },
+        "reference_url": {
+          "description": "An http(s) link to the photo (stored, never fetched)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "layer_id",
+        "fid",
+        "reference_url"
+      ],
+      "type": "object"
+    },
+    "name": "add_observation_photo_link",
+    "title": "Attach a photo link to a flood observation"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Add flood observations to a layer"
+    },
+    "description": "Add flood observations (Flood mark, Timed level, Gauge record, Dry point) to a layer.\n\nPOSTs each observation to /projects/<id>/flood-observations/<layer>/observations/\nin order. The API validates every field: a row it refuses (400) is listed in\n`rejected` with its `problems` and the rest still land; a refusal that is not\nabout the row (403 not an Editor, 404, 409) stops the batch and is reported in\n`stopped`, with `not_sent_count`. Stages are on the LAYER's vertical datum.\nPhotos are not part of an observation: attach a link with add_observation_photo_link.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "entry_timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "IANA zone for naive observed_start/observed_end on rows that do not carry their own entry_timezone; omit to use the project's zone (derived from where the project is, reported back as entry_timezone). Give it only when the times were read elsewhere"
+        },
+        "layer_id": {
+          "description": "The flood observation layer id (create_observation_layer / list_observations)",
+          "type": "integer"
+        },
+        "observations": {
+          "description": "Observations, each the API write body: subtype (flood_mark | timed_level | gauge_record | dry_point), name (required: a short label, e.g. the survey mark id), geometry {type: Point, coordinates: [lon, lat]} (or native x/y with srid), value_kind (stage | depth) + stage_m or depth_m, uncertainty_grade (H/M/L) or uncertainty_m, bound (exact | at_least | at_most), observed_start/observed_end (ISO 8601; naive times read in entry_timezone, by default the project's own zone), mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say which flood it is: a date window (observed_start / observed_end) or flood_name (ask the user; never guess a date); a gauge_record needs data_timeseries_id (+ gauge_zero_m). At most 200 per call",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "srid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "EPSG code for every geometry that does not carry its own `srid` (the projected CRS its eastings/northings are in, e.g. a UTM zone); omit for [lon, lat] (EPSG:4326)"
+        }
+      },
+      "required": [
+        "project_id",
+        "layer_id",
+        "observations"
+      ],
+      "type": "object"
+    },
+    "name": "add_observations",
+    "title": "Add flood observations to a layer"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Attach an uploaded layer as a project input"
+    },
+    "description": "Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building, mesh_region or culvert layer.\n\nThe agent moves the bytes: first upload the GeoJSON yourself, with the\nsame agent key, to GeoNode's upload endpoint at the site origin:\n\n    curl -sS -H 'Authorization: Bearer hk_...' -F \"base_file=@/path/rainfall.geojson\" https://<site>/api/v2/uploads/upload/\n\n→ JSON with `execution_id`. Then call this tool with it. The tool polls\nGET /api/v2/resource-service/execution-status/<execution_id> (bounded by\ntimeout_seconds; statuses ready → running → finished | failed), reads the\nnew dataset's pk, and PATCHes it onto the project's DEFAULT row of that\nkind ('Boundary 01' … 'MeshRegion 01' — the six rows the terrain import\nseeds ~30 s after get_terrain reports ready; if the list is still empty\nthe tool says so: run finalize_terrain_upload / wait for get_terrain first).\n\nkind `culvert` (Hydraulic Structures; one two-point line per culvert,\nInlet first, then Outlet): no culvert row is seeded, so the tool creates\n'Culvert 01' when the project has none and waits for its layer. It reads\nyour culverts back and maps your attribute names onto the culvert fields\n— name, shape (box|circular), width_m, height_m, diameter_m,\nupstream_invert_m, downstream_invert_m, barrels (1-20), wall_thickness_m,\nentrance_type, material (concrete|corrugated_metal), manning_n,\nblockage_pct (Reduced-area blockage, percent), length_override_m,\ndescription — accepting common alternatives (width, diameter, label,\nus_invert, ds_invert, num_barrels, manning, blockage, length, shape\n'pipe' = circular, …) and filling the defaults (barrels 1, wall 0.20 m,\nsquare_edge_headwall, concrete, manning_n from the material, blockage\n0). Other attributes are kept. If anything changed it re-uploads the\nmapped culverts and attaches THAT layer (`mapped`: renamed, filled,\nsource_dataset_pk). `culvert_problems` lists what the build will still\nrefuse (typically missing inverts) — the user fixes those in the map.\n`leftover_datasets` lists the datasets the attach left unreferenced (the\nraw upload when it was re-uploaded; the empty factory layer of a\n'Culvert 01' created here), each {dataset_pk, name, reason}, with a\n`leftover_hint`; the tool deletes nothing — the user may delete them.\nThe culvert engine conveys flow through each culvert in a run (GPU\nlanes and localhost; the multi-core CPU lanes refuse a culvert scenario).\n\n`outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk,\ndataset_alternate — the WFS typename — and every row id seen);\n`timed_out` (still importing or still creating the culvert layer: call\nagain with the same arguments, except pass `retry_execution_id` as\nexecution_id when the result carries one); `upload_failed` (the\nexecution record, incl. its log, is returned verbatim — fix the file and\nupload again); `no_default_row`; `no_dataset` (finished but no resource\nwas recorded). The PATCH is refused with a 400 if the dataset is not\nowned by you.\n\nEvery layer attached here is marked as written by your agent key and is\nUNREVIEWED until the user reviews it in their browser (the build refuses\nUNREVIEWED_INPUTS until then). INFLOWS: never invent an inflow location —\nno coordinates you made up, guessed or \"placed plausibly\". Import the\nlocation from the study's own files, or give the user the ui_url to draw\nit in the map; say in say_to_user that the inflow is unreviewed and where\nthey check or draw it.\n\nRefused, with no request made: kind `breakline` — no REST create path\nexists for it at HEAD (TASK-3040 AC6), so attaching one would only\npretend. Also refused without a request: an execution_id that is not the\nUUID the upload returned.\nOne GeoJSON per kind: all of a kind's features travel in that one file. A\nrainfall polygon names its gauge in its `data` property — create that\ngauge with create_time_series under the exact same name.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "execution_id": {
+          "description": "`execution_id` returned by your multipart POST to <origin>/api/v2/uploads/upload/",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Which input the uploaded layer is: boundary, friction, inflow, rainfall, building, mesh_region or culvert ('structure' is a deprecated alias of building). breakline is refused (see below).",
+          "type": "string"
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 240,
+          "description": "How long this call keeps polling the upload before it returns `timed_out` (default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). 0 = one status read, no waiting.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "kind",
+        "execution_id"
+      ],
+      "type": "object"
+    },
+    "name": "attach_input_layer",
+    "title": "Attach an uploaded layer as a project input"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Build a scenario's mesh and package"
+    },
+    "description": "Build a scenario's package (mesh + inputs) after showing what it will cost, and poll until built.\n\nNeeds a launch-level agent key (a build can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nOrder of operations, so the number is shown before anything is spent:\n\n1. GET the scenario detail. A record with no `boundary`/`computed_status`\n   keys is a non-member's read of a public project → refused: a build\n   needs the EDITOR role.\n2. Re-call checks on `latest_run` (a re-POST is NOT deduplicated after\n   `built`/`complete` — it would dispatch a duplicate build): no run →\n   proceed; run `created`/`building` → resume polling, no POST; run\n   `built`/`queued`/`computing`/`processing`/`complete` with\n   `latest_run_is_valid` not false → return that state, no POST unless\n   rebuild=true; run `error`/`cancelled`, or `latest_run_is_valid` false\n   (the scenario was edited since the build) → proceed.\n3. Spend gates, each a refusal with `outcome: \"refused\"` and no POST: the\n   scenario has no boundary or its boundary row has no features (the\n   server would admit the build and fail it in make_package); the\n   estimate is None (resolution is 0/unset); the estimate is above\n   100,000 triangles and confirm is not true — the refusal states the\n   number; re-call with confirm=true to proceed. An estimate of 0 over a\n   boundary WITH features is buildable and is reported, not refused.\n4. POST /projects/<id>/scenarios/<pk>/build/. Every 4xx comes back\n   verbatim as a normal result with `http_status`: 422 MESH_TOO_LARGE\n   (`error_code`, `estimate`, `ceiling`, `detail` — the server's hard\n   ceiling; coarsen `resolution` or shrink the boundary; no run was\n   created), 409 COMPUTE_TARGET_UNAVAILABLE, 400/403/404. 409\n   UNREVIEWED_INPUTS (inputs you wrote that the user has not reviewed)\n   answers `outcome` `unreviewed_inputs` with the `unreviewed_inputs` list and a\n   `ui_url` to the scenario's review screen: give the user the link, poll\n   get_scenario until its `unreviewed_inputs` is empty, then build again. A 409 WITHOUT\n   an error_code is the dedup body ({status, run_id, detail}: a build is\n   already in flight) — the tool resumes polling that run.\n5. On 202 poll the detail's `computed_status` (created → building →\n   built | error), bounded by timeout_seconds.\n\nReturns a COMPACT state, never the whole detail: `outcome` (built, error,\ncancelled, complete/queued/computing/processing for a run past the build,\ntimed_out, or refused), `computed_status`, `mesh_triangle_count_estimate`,\n`posted`, the POST's `build` body + `http_status` when one was made, and\nthe latest run's `run_id`, `run_status`, `error_message`, `user_message`,\n`mesh_triangle_count`. `timed_out` is normal (make_package re-downloads\nthe terrain from S3 every build; minutes): call again with the same\narguments — step 2 resumes polling the same run, it never POSTs twice —\nor cancel_run(run_id) if the run is stuck in `created` with no worker.\n`error` is terminal: `error_message` says why (fix the inputs, then call\nagain — an errored latest run is rebuilt).\n\nUnits: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is\na LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField\ndefault 100, not nullable; 0 makes the estimate None), and the estimate\nprices both the same way (TASK-3186). The smallest value becomes the raster\ncell size. A MeshRegion feature must carry `resolution_units = m` (features\ndrawn in the map are marked automatically); an unmarked one makes the build\nanswer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "confirm": {
+          "default": false,
+          "description": "Required (true) when the estimate is above 100,000 triangles — the tool refuses first and tells you the number. Default false.",
+          "type": "boolean"
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "rebuild": {
+          "default": false,
+          "description": "true to dispatch a NEW build of a scenario whose latest run is already built/complete and still valid (default false: the tool returns that state instead of duplicating the build).",
+          "type": "boolean"
+        },
+        "scenario_id": {
+          "description": "The scenario ID from create_scenario",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 240,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). 0 = one status read, no waiting.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "scenario_id"
+      ],
+      "type": "object"
+    },
+    "name": "build_scenario",
+    "title": "Build a scenario's mesh and package"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Cancel a run"
+    },
+    "description": "Cancel an in-flight simulation run.\n\nNeeds a launch-level agent key; a read or draft key gets 403\nAGENT_LEVEL_INSUFFICIENT.\n\nWorks on runs in built, queued, or computing status. Cleans up\ncompute resources (terminates EC2 instance, Celery task, or Batch job).\n\nReturns 409 if the run is already in a terminal state\n(complete, cancelled, or error).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "The run ID to cancel",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "cancel_run",
+    "title": "Cancel a run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create a flood observation layer"
+    },
+    "description": "Create a flood observation layer in a project and wait for its map layer.\n\nA flood observation layer holds real flood evidence (Flood marks, Timed\nlevels, Gauge records, Dry points) that every historic run is compared\nwith (Compare with observations). It is project-level: it is never a scenario input.\nPOSTs /projects/<id>/flood-observations/, then polls the layer until its\nGeoServer layer exists (`ready`), usually a few seconds; until then\nadd_observations refuses. On `timed_out`, call list_observations later.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "datum_offset_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Metres ADDED to every stage on the layer to bring it onto the terrain datum. Required for vertical_datum=local; null means 0 otherwise"
+        },
+        "poll_interval_seconds": {
+          "default": 2.0,
+          "description": "Seconds between layer polls",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 120,
+          "description": "How long to wait for the map layer (clamped to 280)",
+          "type": "integer"
+        },
+        "title": {
+          "description": "Layer title, e.g. 'August 1998 survey'",
+          "type": "string"
+        },
+        "vertical_datum": {
+          "default": "terrain",
+          "description": "The datum the layer's stages are on: terrain (default, 'Same as terrain'), local ('Local datum (constant offset)', needs datum_offset_m), or the vertical datum the levels were surveyed on: an EPSG vertical CRS (e.g. 'EPSG:5703') or the datum's own name (at most 32 characters). Ask the user; never assume one from the country",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "title"
+      ],
+      "type": "object"
+    },
+    "name": "create_observation_layer",
+    "title": "Create a flood observation layer"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create a project"
+    },
+    "description": "Create a new ANUGA project. Returns the project record including its id, base_map and ui_url.\n\nThe caller's own account becomes the owner. `projection` is the projected\nCRS every scenario in the project is meshed and run in — pick the UTM zone\ncovering the site. The project's map is created alongside it; `ui_url`\nopens it — give it to the user. A project you create is unpublished\n(`is_published: false`): only its owner and members can see it until the\nuser presses Publish in its Sharing panel in the browser — you cannot\npublish it. Next step for a new project: presign_terrain_upload.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Project name",
+          "type": "string"
+        },
+        "projection": {
+          "description": "Working CRS as an EPSG string, normally the UTM zone of the site, e.g. 'EPSG:32756' (WGS 84 / UTM 56S)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "projection"
+      ],
+      "type": "object"
+    },
+    "name": "create_project",
+    "title": "Create a project"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create a draft scenario"
+    },
+    "description": "Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.\n\nPOSTs /projects/<id>/scenarios/ with the write fields, then GETs the\nscenario detail — the create response carries NO estimate; the detail's\n`mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact\nrecord (the same fields get_scenario answers with): id, name, the FK ids\nas stored, resolution, duration, `computed_status` (`created` = no run\nyet), the estimate and its breakdown, the price (`compute_cost_estimate`\nin USD, `vcpu_hours_estimate`), `inflow_anchor_mismatch`, and\nhttp_status. Next step: build_scenario (which asks for\nconfirm=true above 100,000 triangles). Nothing is meshed or queued here.\n\nUnits: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is\na LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField\ndefault 100, not nullable; 0 makes the estimate None), and the estimate\nprices both the same way (TASK-3186). The smallest value becomes the raster\ncell size. A MeshRegion feature must carry `resolution_units = m` (features\ndrawn in the map are marked automatically); an unmarked one makes the build\nanswer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.\n\nThe server does NOT validate that the FK ids belong to `project_id` —\npass the row ids attach_input_layer / get_terrain returned for THIS\nproject. Every FK is nullable at create time, and the build fails later\non a scenario with no terrain, or with neither an inflow nor a rainfall.\nA `boundary` whose row has no features (the default 'Boundary 01' before\nattach_input_layer) is accepted here and refused by build_scenario. The\nestimate is None when resolution is 0; an estimate of 0 with a real\nboundary is a very coarse mesh, not an error.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "boundary": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Boundary row id (attach_input_layer kind=boundary → row_id)"
+        },
+        "building": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Building row id (optional)"
+        },
+        "culvert": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Culvert row id (optional; attach_input_layer kind=culvert → row_id). The build refuses a culvert missing its shape, size or invert levels."
+        },
+        "description": {
+          "default": "",
+          "description": "Free-text description (optional)",
+          "type": "string"
+        },
+        "duration": {
+          "description": "Simulation duration in seconds (e.g. 43200 = 12 h)",
+          "type": "integer"
+        },
+        "friction": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Friction row id (optional)"
+        },
+        "inflow": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Inflow row id (optional; the build needs an inflow OR a rainfall)"
+        },
+        "mesh_region": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MeshRegion row id (optional): finer meshing inside its polygons, each feature's `resolution` a LENGTH in metres (see the units note)."
+        },
+        "name": {
+          "description": "Scenario name",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "rainfall": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Rainfall row id (optional; the build needs an inflow OR a rainfall)"
+        },
+        "resolution": {
+          "description": "Mesh resolution as a LENGTH in metres (ANUGA maximum_triangle_area = resolution²/2). Coarser (larger) = fewer triangles: on a ~13 km² boundary 36-40 m gives ~16-20k triangles, 10 m ~255k, 1 m ~25M (refused by the API).",
+          "type": "number"
+        },
+        "structure": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Deprecated alias of `building` (TASK-3586); ignored when `building` is given."
+        },
+        "terrain": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Terrain id (get_terrain → terrain.id); the build fails without one"
+        }
+      },
+      "required": [
+        "project_id",
+        "name",
+        "resolution",
+        "duration"
+      ],
+      "type": "object"
+    },
+    "name": "create_scenario",
+    "title": "Create a draft scenario"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create a time series"
+    },
+    "description": "Create a time series (rain gauge, hydrograph, tide/stage) in a project.\n\nPOSTs /projects/<id>/time-series/ with `series_type` and `units` as\ntop-level fields. `series_type` is checked against the four choices and\n`data` against the {\"rowData\": [{timestamp, value}, ...]} shape before any\nrequest is made — the API answers 500 (not 400) to a malformed row.\nReturns a compact record — id, name, series_type, units, timezone,\nrow_count, http_status — not the echoed rows; fetch the full row with the\nREST API (GET /projects/<id>/time-series/<id>/) if you need to round-trip it.\nA rainfall polygon references its gauge by the series NAME, so create the\ngauges with the exact names the rainfall GeoJSON's features carry.\n\nThe units must match the series_type (see `units`), and a hydrograph or\nhyetograph must END at 0 unless `hold_last_value` is true. The result\ncarries Hydrata's own `summary` of the series (peak, volume or depth,\nfirst and last stamp, trailing value): repeat those numbers to the user\n(`say_to_user` does) rather than computing your own.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "additionalProperties": true,
+          "description": "The rows: {\"rowData\": [{\"timestamp\": \"1998-08-17T00:00:00\", \"value\": 1.5}, ...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. Validated here before anything is sent.",
+          "type": "object"
+        },
+        "description": {
+          "default": "",
+          "description": "Free-text description (optional)",
+          "type": "string"
+        },
+        "hold_last_value": {
+          "default": false,
+          "description": "Set true ONLY when the last value is meant to be held after the series ends. A hydrograph or hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end the series with a 0 row instead, unless holding is really intended.",
+          "type": "boolean"
+        },
+        "location_name": {
+          "default": "",
+          "description": "Human-readable location of the gauge (optional)",
+          "type": "string"
+        },
+        "name": {
+          "description": "Series name, kept VERBATIM — a rainfall polygon binds to its gauge by this exact name (its `data` property), so use the name the GeoJSON features carry",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "series_type": {
+          "default": "hyetograph",
+          "description": "One of hyetograph (rainfall depth/intensity — the default), hydrograph (flow, read by the Hydrographs panel and inflow boundaries), stage (water level, e.g. a tide) or generic. Sent as a top-level field.",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "description": "Where the data came from, e.g. a gauge id or agency (optional)",
+          "type": "string"
+        },
+        "timezone": {
+          "default": "UTC",
+          "description": "IANA timezone of the timestamps (default 'UTC'), e.g. 'Australia/Sydney'",
+          "type": "string"
+        },
+        "units": {
+          "default": "",
+          "description": "Units of the values. REQUIRED for hyetograph ('mm/hr' or 'mm/h'), hydrograph ('m3/s', 'm^3/s' or 'cumec') and stage ('m'): the engine reads those units whatever the label says, so a mismatch is refused before anything is sent. Free for generic.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "name",
+        "data"
+      ],
+      "type": "object"
+    },
+    "name": "create_time_series",
+    "title": "Create a time series"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete one flood observation"
+    },
+    "description": "Delete one flood observation and its photos (cannot be undone).\n\nDELETEs /projects/<id>/flood-observations/<layer>/observations/<fid>/; a\nmissing fid is an error (404), not a silent success.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "fid": {
+          "description": "The observation's fid",
+          "type": "integer"
+        },
+        "layer_id": {
+          "description": "The flood observation layer id",
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "layer_id",
+        "fid"
+      ],
+      "type": "object"
+    },
+    "name": "delete_observation",
+    "title": "Delete one flood observation"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Register an uploaded terrain"
+    },
+    "description": "Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.\n\nNeeds a launch-level agent key (the import can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nCall this only after the presigned PUT returned 200. Creates the Terrain row\n(status `creating`) and queues the import chain — reproject to UTM, publish\nthe layer + hillshade, style — which also seeds the project's six default\nboundary, friction, inflow, rainfall, building and mesh-region rows.\nReturns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND\nmeans no object is at `staging_key`: the PUT did not land (check its status\ncode and Content-Type) — do not retry finalize until it has.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "process_id": {
+          "default": "",
+          "description": "`process_id` returned by presign_terrain_upload (pass it so the upload's progress record is reused; the API tolerates its absence)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "staging_key": {
+          "description": "`staging_key` returned by presign_terrain_upload",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "description": "Terrain title (default: the filename without .tif)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "staging_key"
+      ],
+      "type": "object"
+    },
+    "name": "finalize_terrain_upload",
+    "title": "Register an uploaded terrain"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Compare a run with flood observations"
+    },
+    "description": "Compare a run with the project's flood observations: how well does it match them?\n\nReturns `headline` (the figures to tell the user, e.g. \"47 observations · 31\nwithin ±0.30 m (66%) · bias -0.12 m · RMSE 0.35 m · 1 excluded\"),\n`headline_numbers` (the same as numbers), `tolerance_m` (used) and\n`default_tolerance_m` (the project's saved one), `statistics`\n(the API's summary: n, within, within_pct, bias_m, rmse_m, weighted_rmse_m, mae_m, max_abs_m,\nexcluded, not_scored by reason, gauges), `gauges` (Gauge records: peak error,\ntiming error, NSE), `datum_checks` (warn the user only when `warning` is true:\nboth datums known and different; `not_recorded` = the terrain has no\nrecorded datum, stated in `note`, not a warning)\nand one row per observation: observed_m / modelled_m / residual_m (modelled -\nobserved, + = model high), within, scored / not_scored_reason, match\n(`outside_run_window` = not this flood), excluded + exclusion {reason, by, at}.\n`sampling` counts how the modelled values were read: `centroid` (the peak\nof the mesh triangle the observation sits in), `nearest_node_fallback` (an\nolder run without that peak: the nearest mesh node's value, tell the user)\nand `nearest_node` (just outside the mesh); each row's `sample.method` says\nwhich.\nThere is no pass or fail: report the figures. A run that is not historic has\nnone (`has_comparison` false) — do not retry it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "fid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With layer_id: the observation's fid (list_observations)"
+        },
+        "include_series": {
+          "default": false,
+          "description": "Keep each Gauge record's modelled stage series (every saved frame); default false",
+          "type": "boolean"
+        },
+        "layer_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With fid: narrow the rows to ONE flood observation and add its history"
+        },
+        "run_id": {
+          "description": "The run ID (a historic run; others are not compared with observations)",
+          "type": "integer"
+        },
+        "tolerance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Metres within which a residual counts as within (default: the project's saved tolerance, 0.3 unless an Editor changed it; presets 0.15, 0.3, 0.4; above 0 and at most 5). Not stored: it only changes this answer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_observation_comparison",
+    "title": "Compare a run with flood observations"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get a project and its map link"
+    },
+    "description": "Get one ANUGA project: id, name, projection, visibility, your role, its base map — and the link to it.\n\nReturns the project record (`id`, `name`, `projection` (EPSG code),\n`simple_view_config`, `visibility`, `owner_username`, `my_role`,\n`base_map`) plus `ui_url`: the link that opens the project's map, for the\nuser (`<site>/catalogue/#/map/<base_map>`; null while a new project's map\nis still being created). Scenarios are NOT listed here — use get_scenario\nwith a scenario id.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_project",
+    "title": "Get a project and its map link"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get a run's full record"
+    },
+    "description": "Get full details of a simulation run including timing and results.\n\nReturns the complete run record: status, progress, timing (start/end\ntimestamps, duration), compute details (backend, instance type, cost),\nmesh info, error messages, and result log. Use get_run_status for\nlightweight polling; use this for final results.\n\nThe presigned `s3_*_url` download links are ELIDED — each is a 6-hour\ncapability and no tool relays one. The results stay viewable through the\n`gn_layer_*` entries (published WMS layers on the project's map).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "The run ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_run",
+    "title": "Get a run's full record"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Poll a run's status"
+    },
+    "description": "Lightweight status check for a simulation run (fast, <50ms).\n\nUse this for polling instead of get_run. Returns only: id, status,\n`phase`, progress_pct (0-100), eta_seconds, error_message, and\ncompute_backend.\n\n`phase` is never empty: it is `status`, except `preparing_inputs` while a\n`computing` run has no progress yet (it is downloading its input package\nand building the domain — minutes on a big model; this is NOT a stall).\nPoll every 5-10 seconds. Terminal states: complete, error, cancelled.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "The run ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_run_status",
+    "title": "Poll a run's status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get a scenario's state, inputs and price"
+    },
+    "description": "Get a scenario's COMPACT state: its `computed_status`, inputs, estimate and price.\n\nReturns a compact record, never the raw ~50 KB detail: `scenario_id`,\n`computed_status`, `mesh_triangle_count_estimate` and its `_breakdown`,\n`latest_run_is_valid`, the latest run's `run_id`, `run_status`,\n`error_message`, `user_message`, `status_detail` and `mesh_triangle_count`\n— plus what the scenario IS and what it will cost: `name`, `description`,\n`project`, `resolution`, `duration`, the input row ids (`terrain`,\n`boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),\n`compute_cost_estimate` (USD), `vcpu_hours_estimate`, and\n`inflow_anchor_mismatch` (null unless an inflow series starts after the\nmodel does: the model gets zero flow from that series over the lead-in\ngap before its first sample), and\n`hydrology_check` (when Hydrata sends it: for each inflow and rainfall\nfeature, the series that drives it, its peak and volume, and structured\nwarnings — repeat those numbers to the user, never your own), and\n`unbound_series` with a `say_to_user` warning when the project holds a\nrainfall or flow series that no inflow or rainfall feature uses (the model\nignores it: tell the user and ask which input it belongs to).\n\nThe `computed_status` field (there is NO `status` key on a scenario) is\nderived from the latest run and will be one of: created, building, built,\nqueued, computing, processing, complete, error, or cancelled — `created`\nalso means no run exists yet. A scenario must be `built` before it can be\nrun. `latest_run_is_valid` is false after any edit since the last build.\n`unreviewed_inputs` lists the inputs written by an agent key that the user\nhas not reviewed at their current content (kind, layer_id, title,\nfeature_count, the grant that wrote it, `reopened` when an edit undid an\nearlier input review): while it is not empty, build and run are refused\nUNREVIEWED_INPUTS. Only the user reviews, in the browser — poll this tool\nevery 30-60 s after giving them the review link.\nA non-member reading a public project's scenario gets a reduced record:\nthe fields the server withholds (the input ids, the price,\n`inflow_anchor_mismatch`) are ABSENT here rather than reported as null —\n\"withheld\" is not \"no terrain, no cost\" — while the run-state keys,\n`computed_status` among them, read null.\n\nNo presigned S3 URL is returned by any read tool (each is a 6-hour\ncapability): results stay viewable through a run's `gn_layer_*` WMS\nentries — use get_run for the full run record.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "scenario_id": {
+          "description": "The scenario ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "scenario_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_scenario",
+    "title": "Get a scenario's state, inputs and price"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Wait for a terrain import"
+    },
+    "description": "Poll a terrain's import until it is `ready` (or `error`), bounded by timeout_seconds.\n\nReturns `outcome` — exactly one of `ready`, `error`, `timed_out`, `not_found`\n(the project has no terrain yet; an unknown terrain_id is an API 404 error\ninstead) — plus the last `status` seen (creating → styling → ready | error)\nand `phase` (that status, or `not_found`; never empty),\n`polls`, `elapsed_seconds` and the full `terrain` record (its `gn_layer` is\nthe published elevation dataset pk once ready). An import takes minutes to\ntens of minutes (the SAME 32 MB 1 m DEM measured 4.5 min once and 26 min\nonce — the worker's S3 download speed dominates), so `timed_out` is normal\nand NOT a failure: keep calling with the same arguments while `status` is\nstill `creating`/`styling`; several calls in a row is expected. `error` is\nterminal — the import failed and no default input rows were seeded; upload\na corrected GeoTIFF as a new terrain.\n\n`ready` is written by the import task; the project's default input rows\n(Boundary 01, Friction 01, Inflow 01, Rainfall 01, Building 01,\nMeshRegion 01, one GeoNode layer each) are seeded by the NEXT task in the\nchain and appear over the following ~30 s. Poll the input-layer list until\nit is non-empty before attaching your own layer to a default row.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "terrain_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The terrain ID from finalize_terrain_upload. Omit to follow the project's newest terrain."
+        },
+        "timeout_seconds": {
+          "default": 240,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). 0 = one status read, no waiting.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_terrain",
+    "title": "Wait for a terrain import"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List a project's input layers"
+    },
+    "description": "List every input layer row of a project, per kind, with whether it has features.\n\nFor each of boundary, friction, inflow, rainfall, building, mesh_region and culvert:\nthe rows (`row_id`, `title`, `gn_layer` — the dataset pk — and\n`dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.\n`has_features` is the API's own answer for every kind. It is null only when\na row's record does not carry it: treat null as unknown, not as empty. A row\nwith no `gn_layer` has no layer yet (`has_features` false). Use the row ids with\ncreate_scenario; this is the listing primitive — no need to probe files.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "list_inputs",
+    "title": "List a project's input layers"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List flood observation layers or observations"
+    },
+    "description": "List a project's flood observation layers, or one layer's observations.\n\nWithout layer_id: every layer (layer_id, title, dataset_alternate, vertical_datum,\ndatum_offset_m, has_features). With layer_id: {layer, count, results} where each\nobservation carries its `fid` (the key for update_observation / delete_observation),\nsubtype + subtype_label, stage/depth, sigma, bound, the observed window in UTC,\n`datum` status (an `unknown` datum is not scored), `photo_count` and `problems`\n(fields drawn in the map that fail validation, reported, never fixed).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "layer_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A flood observation layer id; omit to list the project's layers instead"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "list_observations",
+    "title": "List flood observation layers or observations"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List projects"
+    },
+    "description": "List ANUGA simulation projects accessible to the authenticated user.\n\nReturns a paginated list of projects with their names, projections,\nand base map references.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "page": {
+          "default": 1,
+          "description": "Page number (default 1)",
+          "type": "integer"
+        },
+        "page_size": {
+          "default": 100,
+          "description": "Results per page, max 100 (default 100)",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "list_projects",
+    "title": "List projects"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List a project's runs"
+    },
+    "description": "List all simulation runs across all scenarios in a project.\n\nReturns a paginated list of runs. Optionally filter by status\nto find active, completed, or failed runs. Each row's presigned\n`s3_*_url` download links are elided (6-hour capabilities).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "page": {
+          "default": 1,
+          "description": "Page number (default 1)",
+          "type": "integer"
+        },
+        "page_size": {
+          "default": 100,
+          "description": "Results per page, max 100 (default 100)",
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "status_filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Filter by status: created, building, built, queued, computing, processing, complete, error, cancelled. Omit for all."
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "list_runs",
+    "title": "List a project's runs"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List a project's time series"
+    },
+    "description": "List a project's time series (rain gauges, hydrographs, tides) — never their rows.\n\nEach series: `id`, `name` (a rainfall polygon binds to its gauge by this\nexact name), `series_type`, `units`, `timezone`, `row_count`,\n`first_timestamp` and `last_timestamp`. The data rows themselves are\ndropped (a project's list is megabytes); fetch one series with the REST API\n(GET /projects/<id>/time-series/<id>/) if you need its values.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "list_time_series",
+    "title": "List a project's time series"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Get a terrain upload URL"
+    },
+    "description": "Step 1 of a terrain import: get a presigned S3 PUT URL for a GeoTIFF DEM.\n\nThe import needs a launch-level agent key: a draft key can presign, but\nfinalize_terrain_upload (and the multipart fallback below) answer a read or\ndraft key 403 AGENT_LEVEL_INSUFFICIENT — check the key before moving bytes.\n\nThe agent moves the bytes itself — no tool accepts file contents. After this\ncall, PUT the file straight to `upload_url`, sending the SAME Content-Type\nyou passed here (it is part of the signature; a mismatch is a 403\nSignatureDoesNotMatch before it is anything else):\n\n    curl -sS -X PUT -H \"Content-Type: image/tiff\" --upload-file /path/dem.tif \"$UPLOAD_URL\"\n\nthen call finalize_terrain_upload with the returned staging_key and\nprocess_id. Nothing exists in Hydrata until finalize; the URL expires after\n`expires_in` seconds (3600).\n\nPlatform guidance: keep the terrain extent within 5° across and 40,000 km²\n(200 × 200 km). The API enforces that cap on its bbox-fetch path; an\nuploaded GeoTIFF is only rejected above 5 GiB, but a larger DEM will not\nmesh or run well. The GeoTIFF must carry a CRS; the import reprojects it to\nthe site's UTM zone and builds a hillshade. Fallback when a presigned PUT is\nimpossible: multipart-POST the file with the same agent key to\n/api/v2/anuga/projects/<id>/terrain/upload/ (form field `file`, optional\n`title`), which creates the terrain in one step — then get_terrain.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "content_type": {
+          "default": "image/tiff",
+          "description": "MIME type the PUT will send (default 'image/tiff'). It is SIGNED into the URL, so the PUT must send exactly this Content-Type header.",
+          "type": "string"
+        },
+        "filename": {
+          "description": "Base name of the GeoTIFF, e.g. 'dem.tif' (a name only — never contents)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "File size in bytes (`stat -c %s <file>`). The API rejects > 5 GiB up front. Omit if unknown."
+        }
+      },
+      "required": [
+        "project_id",
+        "filename"
+      ],
+      "type": "object"
+    },
+    "name": "presign_terrain_upload",
+    "title": "Get a terrain upload URL"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Retry a failed run"
+    },
+    "description": "Retry a failed simulation run.\n\nNeeds a launch-level agent key (a retry rebuilds the package and can start\nAWS Batch); a read or draft key gets 403 AGENT_LEVEL_INSUFFICIENT.\n\nStarts a fresh package build of the run's scenario as a NEW run, which\nbecomes the scenario's latest run. The errored run keeps its status and\nerror as history, and the response describes that old run; the new run's\nID is get_scenario's `run_id`. Only valid when status is 'error'. Returns\n409 for any other state.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "description": "The run ID to retry",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "retry_run",
+    "title": "Retry a failed run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Save a project's default comparison tolerance"
+    },
+    "description": "Save a project's default tolerance for comparing runs with flood observations.\n\nNeeds Editor (or above). Every later get_observation_comparison (and the map's\nCompare with observations tab) uses it unless a tolerance is passed. Only\nsave it when the user asks to change the project's default; to show the\nfigures at another tolerance, pass `tolerance` to get_observation_comparison.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "tolerance_m": {
+          "description": "The project's default tolerance in metres (above 0 and at most 5; presets 0.15, 0.3, 0.4)",
+          "type": "number"
+        }
+      },
+      "required": [
+        "project_id",
+        "tolerance_m"
+      ],
+      "type": "object"
+    },
+    "name": "set_comparison_tolerance",
+    "title": "Save a project's default comparison tolerance"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Exclude or include a flood observation in a run's comparison"
+    },
+    "description": "Exclude a flood observation from ONE run's comparison with observations, or include it again.\n\nNeeds Editor (or above) on the project. The exclusion is logged with the user\nand reason (nothing is overwritten) and keyed on (run, layer, fid), so it\nsurvives a recompute. The figures change at once: `headline_after` is the\nrun's headline with the change applied. To exclude, the user must give the\nreason: if they have not, ASK them; do not make one up.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "excluded": {
+          "default": true,
+          "description": "true to exclude (default), false to include it again",
+          "type": "boolean"
+        },
+        "fid": {
+          "description": "The observation's fid",
+          "type": "integer"
+        },
+        "layer_id": {
+          "description": "The flood observation layer id",
+          "type": "integer"
+        },
+        "reason": {
+          "default": "",
+          "description": "WHY the engineer excludes it, in their words (required to exclude; never invent one — ask the user). Optional when including it again",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The run ID (a historic run)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "layer_id",
+        "fid"
+      ],
+      "type": "object"
+    },
+    "name": "set_observation_exclusion",
+    "title": "Exclude or include a flood observation in a run's comparison"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Start a simulation run (spends compute)"
+    },
+    "description": "Start a flood simulation run for a built scenario.\n\nNeeds a launch-level agent key (a run spends compute); a read or draft key\ngets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the\nsite's Agent keys page (/agents/).\n\nThe scenario must be in 'built' status. Returns 202 with the new run.\nThe run transitions through: built → queued → computing → processing → complete.\n\nAfter starting, poll get_run_status to track progress. Returns 409\nif the scenario is not in the correct state. The returned run record has\nits presigned `s3_*_url` links elided (6-hour capabilities).\n\nINPUT REVIEW (Hydrata enforces it): while an input you wrote is not reviewed by\nthe user, the run is not started - `outcome` `unreviewed_inputs`,\n`error_code` UNREVIEWED_INPUTS, a `ui_url` to the scenario's review screen.\nA run built from inputs other than the ones reviewed now answers\n`outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with\nrebuild=true, then start it again.\n\nSPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not\nfit your agent key's monthly spend limit (default $0), or that Hydrata\ncannot price, is NOT started. The result is then a normal (non-error)\nanswer with `outcome` `consent_required`, `error_code` CONSENT_REQUIRED,\n`quoted_cost_usd` and `consent_url`: give the user the link and the price\n(`say_to_user`). Only they can approve, in their browser. Then do NOT call\nstart_simulation again for this run: poll get_run_status(run_id) — the run\nleaves `built` once they press the button. (With consent_timeout_seconds > 0\nthis call polls the run itself and answers `outcome` `consented`, with the\nrun, if they approve within that time.)",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "compute_backend": {
+          "default": "local",
+          "description": "Compute backend: 'local' (Celery), 'ec2' (dedicated instance), or 'batch' (AWS Batch spot, cheapest). Default: 'local'",
+          "type": "string"
+        },
+        "consent_timeout_seconds": {
+          "default": 0,
+          "description": "When the run needs the person's consent (CONSENT_REQUIRED), how long this call keeps polling the run for their click before it returns (ceiling 280). Default 0: return the consent link at once, so you can give it to them — they cannot press a button they have not been shown.",
+          "type": "integer"
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between consent polls (default 5)",
+          "type": "number"
+        },
+        "scenario_id": {
+          "description": "The scenario ID to run",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scenario_id"
+      ],
+      "type": "object"
+    },
+    "name": "start_simulation",
+    "title": "Start a simulation run (spends compute)"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Edit one flood observation"
+    },
+    "description": "Edit one flood observation (PATCH; only the fields given change).\n\nThe API checks the stored observation merged with `changes` and refuses\n(400, every bad field named) rather than store a half-valid one. Photos are\nnot fields: attach a link with add_observation_photo_link.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "changes": {
+          "additionalProperties": true,
+          "description": "Only the fields to change, in the add_observations write shape (e.g. {\"stage_m\": 2.5} or a new geometry); validated by the API against the stored observation (a flood_mark or dry_point must keep a date window or a flood_name)",
+          "type": "object"
+        },
+        "fid": {
+          "description": "The observation's fid (from list_observations / add_observations)",
+          "type": "integer"
+        },
+        "layer_id": {
+          "description": "The flood observation layer id",
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "layer_id",
+        "fid",
+        "changes"
+      ],
+      "type": "object"
+    },
+    "name": "update_observation",
+    "title": "Edit one flood observation"
+  }
+]

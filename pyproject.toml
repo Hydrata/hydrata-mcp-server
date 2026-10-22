@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hydrata-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "MCP server for Hydrata hydraulic modeling platform"
 requires-python = ">=3.11"
 license = "MIT"
@@ -15,7 +15,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "respx"]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "respx==0.23.1", "ruff==0.15.2"]
 
 [project.scripts]
 hydrata-mcp = "hydrata_mcp.server:main"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
