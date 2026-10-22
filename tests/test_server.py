@@ -2320,6 +2320,17 @@ class TestGetScenarioCompactState:
                          "resolution", "duration", "inflow_anchor_mismatch"):
             assert withheld not in data, withheld
 
+    async def test_get_scenario_says_the_inflow_lead_in_gap_is_zero_flow(self, _server):
+        """TASK-3978: before a later inflow series' first sample the engine applies 0
+        (run_anuga run_utils.py fillna(0.0), TASK-2825); it never holds the first
+        value backwards to the model start."""
+        import inspect
+        doc = " ".join(inspect.getdoc(_server.get_scenario).split())
+        assert "zero flow from that series over the lead-in gap" in doc
+        source = inspect.getsource(_server)
+        for stale in ("held backwards", "ffilled backwards", "repeats its first value"):
+            assert stale not in source, stale
+
     @respx.mock
     async def test_get_scenario_tolerates_a_non_dict_detail(self, _server):
         respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
