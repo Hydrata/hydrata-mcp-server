@@ -483,6 +483,59 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Fetch terrain from a Hydrata source"
+    },
+    "description": "Have Hydrata fetch a terrain from one of its own sources, then wait for the import (like get_terrain).\n\nUse a `key` from list_terrain_sources. Hydrata fetches, reprojects and publishes the\nDEM and seeds the project's default input rows; the DEM's datum is stamped by the source.\nThe result is get_terrain's envelope (`outcome` ready | error | timed_out, `terrain`,\n`polls`) plus `terrain_source`: the source's `key`, `name`, `resolution_m`, `licence`,\n`credit` and `vertical_datum`. `timed_out` is normal for a large area: keep calling\nget_terrain(project_id, terrain_id). A refusal (the box is over the source's size cap,\nthe source has no data there, an unknown source) comes back as `outcome: refused`\nwith the reason in `say_to_user` and nothing is created.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "bbox": {
+          "description": "The site as [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees",
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID (the key needs Contributor rights; a launch-level key since the import can start AWS Batch)",
+          "type": "integer"
+        },
+        "source": {
+          "description": "A source `key` from list_terrain_sources, e.g. `ga_lidar_5m` or `copernicus_glo30`",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 240,
+          "description": "How long this call keeps polling the import before it returns `timed_out` (default 240, ceiling 280). 0 = start it and return at once; then call get_terrain.",
+          "type": "integer"
+        },
+        "title": {
+          "default": "",
+          "description": "Terrain title (default: the source name and box)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "bbox",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "create_terrain_from_source",
+    "title": "Fetch terrain from a Hydrata source"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Create a time series"
     },
     "description": "Create a time series (rain gauge, hydrograph, tide/stage) in a project.\n\nPOSTs /projects/<id>/time-series/ with `series_type` and `units` as\ntop-level fields. `series_type` is checked against the four choices and\n`data` against the {\"rowData\": [{timestamp, value}, ...]} shape before any\nrequest is made — the API answers 500 (not 400) to a malformed row.\nReturns a compact record — id, name, series_type, units, timezone,\nrow_count, http_status — not the echoed rows; fetch the full row with the\nREST API (GET /projects/<id>/time-series/<id>/) if you need to round-trip it.\nA rainfall polygon references its gauge by the series NAME, so create the\ngauges with the exact names the rainfall GeoJSON's features carry.\n\nThe units must match the series_type (see `units`), and a hydrograph or\nhyetograph must END at 0 unless `hold_last_value` is true. The result\ncarries Hydrata's own `summary` of the series (peak, volume or depth,\nfirst and last stamp, trailing value): repeat those numbers to the user\n(`say_to_user` does) rather than computing your own.",
@@ -1035,6 +1088,39 @@
     },
     "name": "list_runs",
     "title": "List a project's runs"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List the terrain Hydrata can fetch for a site"
+    },
+    "description": "List the terrain Hydrata can fetch for a site, finest resolution first.\n\nAsk this BEFORE fetching or uploading your own DEM. Each source row has `key`,\n`name`, `resolution_m`, `coverage_pct` (share of your box it has data for),\n`cap` (`state` ok | too_large, the area and the maximum, and a plain `message`\nwhen too large), `vertical_datum`, `credit` and `licence`. Only sources with some\ncoverage appear: Copernicus GLO-30 (30 m, worldwide) always, and finer regional\nLiDAR such as Geoscience Australia 5 m where it has data. Pick one whose `cap.state`\nis ok and pass its `key` to create_terrain_from_source. Tell the user which source\nyou chose, its resolution, licence and datum (`say_to_user` says it for you).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "bbox": {
+          "description": "The site as [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees, e.g. [149.105, -35.285, 149.135, -35.255] for Sullivans Creek, Canberra.",
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "The project ID (the key needs Contributor rights on it)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "bbox"
+      ],
+      "type": "object"
+    },
+    "name": "list_terrain_sources",
+    "title": "List the terrain Hydrata can fetch for a site"
   },
   {
     "annotations": {
