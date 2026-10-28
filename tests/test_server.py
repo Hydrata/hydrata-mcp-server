@@ -2121,7 +2121,7 @@ class TestBuildScenarioTool:
         assert "computed_status" in get_scenario
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
-        assert len(tools) == 28  # the module docstring's count (TASK-3848 added set_comparison_tolerance)
+        assert len(tools) == 29  # the module docstring's count (TASK-4052 added write_input_layer)
 
 
 # ---------------------------------------------------------------------------
@@ -2959,11 +2959,11 @@ DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation"}
 
 
 class TestToolAnnotations:
-    async def test_annotations_on_all_28_tools_read_hints_and_cancel_destructive(self, _server):
+    async def test_annotations_on_all_29_tools_read_hints_and_cancel_destructive(self, _server):
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
-        assert len(tools) == 28
+        assert len(tools) == 29
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name

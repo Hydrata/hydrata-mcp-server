@@ -1230,5 +1230,46 @@
     },
     "name": "update_observation",
     "title": "Edit one flood observation"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Write a project input layer from GeoJSON"
+    },
+    "description": "Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.\n\nNo file, no key, no upload: the features go in `features`. Hydrata\nconverts them into the project's grid and puts them in the project's\ndefault layer of that kind, replacing what it held (the old layer is kept,\nunlinked). Unlike attach_input_layer there is nothing to poll.\n\nEvery feature must be the kind's geometry (lines for boundary, inflow and\nculvert; polygons for friction, rainfall, building and mesh_region); a\nfeature of another geometry refuses the whole write and nothing changes.\nA culvert is one two-point line per culvert, Inlet first, then Outlet; its\nattributes are the culvert fields (name, shape, width_m, ... see the\nculvert guidance), nothing is renamed for you.\n\nLimit: about 150 KB of GeoJSON (a few thousand vertices). A bigger layer\nis refused before anything is sent: ask the person to upload it in their\nbrowser with a request_input_upload link instead.\n\nThe layer is marked as written by your agent key and is UNREVIEWED until\nthe user reviews it in their browser. INFLOWS: never invent an inflow\nlocation; take it from the study's files or give the user the ui_url to\ndraw it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "features": {
+          "additionalProperties": true,
+          "description": "A GeoJSON FeatureCollection with every feature of this kind. Coordinates are read as EPSG:4326 (lon/lat) unless the collection declares a `crs` member; Hydrata converts them into the project's grid. Multi* geometries are split into single ones.",
+          "type": "object"
+        },
+        "kind": {
+          "description": "Which input this is: boundary, friction, inflow, rainfall, building, mesh_region or culvert ('structure' is a deprecated alias of building).",
+          "type": "string"
+        },
+        "method": {
+          "default": "",
+          "description": "One short phrase saying how you made these features (e.g. 'traced from the council PDF', 'digitised from the survey CSV'). Shown to the person who reviews the layer.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "kind",
+        "features"
+      ],
+      "type": "object"
+    },
+    "name": "write_input_layer",
+    "title": "Write a project input layer from GeoJSON"
   }
 ]

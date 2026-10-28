@@ -1,4 +1,4 @@
-"""Hydrata MCP Server — 28 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 29 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
 import base64
@@ -466,6 +466,8 @@ TOOL_ANNOTATIONS = {
     "create_time_series": ("Create a time series", False, False, False),
     # TASK-3641: not idempotent — a culvert attach re-uploads its mapped culverts.
     "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, False),
+    # TASK-4052: writes the layer's features straight into the project (replaces the kind's layer).
+    "write_input_layer": ("Write a project input layer from GeoJSON", False, False, False),
     "create_scenario": ("Create a draft scenario", False, False, False),
     "build_scenario": ("Build a scenario's mesh and package", False, False, False),
     # TASK-3812 (epic 3801): flood observations. delete_observation is the second
@@ -2513,6 +2515,98 @@ async def _map_carries_layer(project_id, alternate) -> bool | None:
         return any(isinstance(layer, dict) and layer.get("name") == alternate for layer in layers)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# TASK-4052 (W1.1, epic 4051) — write_input_layer: the features travel in the call.
+#
+# A claude.ai connector agent has no shell and no key, so the curl + hk_ upload
+# path attach_input_layer needs is closed to it. The model writes a tool
+# argument as output tokens (128K tokens ~ 450 KB of GeoJSON), so the practical
+# inline limit is ~150 KB; above it the person uploads in the browser instead.
+# ---------------------------------------------------------------------------
+INLINE_LAYER_MAX_BYTES = 150_000
+INLINE_LAYER_KINDS = tuple(INPUT_LAYER_ROUTES)
+INLINE_WRITE_PATH = "/projects/{project_id}/input-layers/write/"
+
+
+@_tool("write_input_layer")
+async def write_input_layer(
+    project_id: Annotated[int, "The project ID"],
+    kind: Annotated[
+        str,
+        "Which input this is: boundary, friction, inflow, rainfall, building, mesh_region or "
+        "culvert ('structure' is a deprecated alias of building).",
+    ],
+    features: Annotated[
+        dict,
+        "A GeoJSON FeatureCollection with every feature of this kind. Coordinates are read as "
+        "EPSG:4326 (lon/lat) unless the collection declares a `crs` member; Hydrata converts them "
+        "into the project's grid. Multi* geometries are split into single ones.",
+    ],
+    method: Annotated[
+        str,
+        "One short phrase saying how you made these features (e.g. 'traced from the council PDF', "
+        "'digitised from the survey CSV'). Shown to the person who reviews the layer.",
+    ] = "",
+) -> str:
+    """Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.
+
+    No file, no key, no upload: the features go in `features`. Hydrata
+    converts them into the project's grid and puts them in the project's
+    default layer of that kind, replacing what it held (the old layer is kept,
+    unlinked). Unlike attach_input_layer there is nothing to poll.
+
+    Every feature must be the kind's geometry (lines for boundary, inflow and
+    culvert; polygons for friction, rainfall, building and mesh_region); a
+    feature of another geometry refuses the whole write and nothing changes.
+    A culvert is one two-point line per culvert, Inlet first, then Outlet; its
+    attributes are the culvert fields (name, shape, width_m, ... see the
+    culvert guidance), nothing is renamed for you.
+
+    Limit: about 150 KB of GeoJSON (a few thousand vertices). A bigger layer
+    is refused before anything is sent: ask the person to upload it in their
+    browser with a request_input_upload link instead.
+
+    The layer is marked as written by your agent key and is UNREVIEWED until
+    the user reviews it in their browser. INFLOWS: never invent an inflow
+    location; take it from the study's files or give the user the ui_url to
+    draw it.
+    """
+    kind = kind.strip().lower().replace("-", "_")
+    deprecation = None
+    if kind in LEGACY_INPUT_LAYER_KINDS:
+        kind, deprecation = LEGACY_INPUT_LAYER_KINDS[kind], LEGACY_KIND_DEPRECATION
+    if kind in UNSUPPORTED_INPUT_LAYER_KINDS or kind not in INLINE_LAYER_KINDS:
+        raise ToolError(f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)} "
+                        f"(breakline is refused: {UNSUPPORTED_INPUT_LAYER_REASON})")
+    size = len(json.dumps(features, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    if size > INLINE_LAYER_MAX_BYTES:
+        raise ToolError(
+            f"these features are {size // 1000} KB, over the {INLINE_LAYER_MAX_BYTES // 1000} KB limit for "
+            "writing a layer in a tool call. Nothing was sent. Ask the person to upload the layer in their "
+            "browser: call request_input_upload for a one-time upload link and give it to them."
+        )
+    body, status_code = await client.post(
+        INLINE_WRITE_PATH.format(project_id=project_id),
+        json={"kind": kind, "features": features, "method": method}, raise_for_status=False,
+    )
+    if status_code >= 400:
+        detail = body.get("detail") if isinstance(body, dict) else None
+        raise ToolError(f"Hydrata refused the {kind} layer ({status_code}): {detail or body}")
+    result = dict(body) if isinstance(body, dict) else {"body": body}
+    result["outcome"] = "written"
+    result["http_status"] = status_code
+    if deprecation:
+        result["deprecation"] = deprecation
+    alternate = result.get("dataset_alternate")
+    label = kind.replace("_", " ")
+    summary = await _layer_summary(alternate)
+    summary.update(kind=kind, row_id=result.get("row_id"), feature_count=result.get("feature_count"))
+    say = (f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
+           f"confirm it is the right {label}, in the right place; review it there.")
+    return json.dumps(
+        await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
 
 
 # ---------------------------------------------------------------------------
