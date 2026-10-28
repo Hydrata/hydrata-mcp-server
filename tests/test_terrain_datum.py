@@ -112,3 +112,12 @@ async def test_elevation_range_is_passed_through_exactly(_server):
     data = await _get(_server, _ready(metadata={"vertical_datum_declared": "ahd"}))
     assert data["terrain"]["dem_elev_min"] == 554.94 and data["summary"]["dem_elev_min"] == 554.94
     assert "554.94 to 561.37" in data["say_to_user"]
+
+
+@respx.mock
+async def test_an_unknown_inference_is_no_inference_and_asks_the_user(_server):
+    """Hydrata's own check returns datum_guess 'unknown' when it cannot tell: that is not a guess to relay."""
+    data = await _get(_server, _ready(vertical_datum={"datum_guess": "unknown", "confidence": 0.0, "basis": None}))
+    datum = data["vertical_datum"]
+    assert datum["inferred"] is None and datum["effective"] is None
+    assert "guesses" not in data["say_to_user"] and "ask the user" in data["say_to_user"].lower()

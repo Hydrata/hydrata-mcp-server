@@ -1452,7 +1452,7 @@ def _terrain_datum(record: dict) -> dict:
     inferred = None
     if isinstance(inferred_raw, dict):
         guess = _datum_name(inferred_raw.get("datum_guess"))
-        if guess:
+        if guess and guess != "unknown":  # 'unknown' = Hydrata could not tell, not a guess
             inferred = {"datum": guess, "confidence": inferred_raw.get("confidence"),
                         "basis": inferred_raw.get("basis")}
     elif _datum_name(inferred_raw):
@@ -1467,6 +1467,8 @@ def _terrain_datum(record: dict) -> dict:
         effective, source = None, None
     return {"declared": declared, "recorded": recorded, "inferred": inferred,
             "effective": effective, "effective_source": source}
+
+
 @_tool("get_terrain")
 async def get_terrain(
     project_id: Annotated[int, "The project ID"],
