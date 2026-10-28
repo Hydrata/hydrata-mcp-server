@@ -1111,6 +1111,36 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get a browser upload link for a big input layer"
+    },
+    "description": "Get the link where the PERSON uploads a big input layer in their browser.\n\nFor a layer too big to send with write_input_layer (over about 150 KB):\nbuilding footprints, land-use friction. You cannot move file bytes, so give\nthe person `ui_url`. It opens the project's upload page for this kind; they\ndrop a GeoJSON, a zipped shapefile or a GeoPackage (up to 100 MB), Hydrata\nconverts it into the project's grid and attaches it to the kind's layer,\nreplacing what it held. Nothing is created until they drop a file.\n\nA file the person drops is their own input: it is marked 'uploaded by the\nuser' and needs no review step. Afterwards call list_inputs: the layer is\nthere with that `authored_method`. A file of the wrong kind (polygons on an\ninflow) is refused on the page with a plain message. The person needs Editor\naccess on the project.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "Which input the file is for: boundary, friction, inflow, rainfall, building, mesh_region or culvert ('structure' is a deprecated alias of building).",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "request_input_upload",
+    "title": "Get a browser upload link for a big input layer"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,

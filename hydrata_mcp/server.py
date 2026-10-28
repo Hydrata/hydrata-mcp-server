@@ -473,6 +473,7 @@ TOOL_ANNOTATIONS = {
     "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, False),
     # TASK-4052: writes the layer's features straight into the project (replaces the kind's layer).
     "write_input_layer": ("Write a project input layer from GeoJSON", False, False, False),
+    "request_input_upload": ("Get a browser upload link for a big input layer", True, False, True),
     "create_scenario": ("Create a draft scenario", False, False, False),
     "build_scenario": ("Build a scenario's mesh and package", False, False, False),
     # TASK-3812 (epic 3801): flood observations. delete_observation is the second
@@ -720,7 +721,7 @@ async def _poll_until(fetch, is_terminal, timeout_seconds, poll_interval_seconds
 # happened, so a lookup error leaves `ui_url` null and says so in
 # `hand_back_error` rather than hiding the result.
 # ---------------------------------------------------------------------------
-HAND_BACK_PARAM_ORDER = ("panel", "layer", "scenario", "run")
+HAND_BACK_PARAM_ORDER = ("panel", "layer", "scenario", "run", "kind")
 
 
 def _ui_origin() -> str:
@@ -2317,7 +2318,7 @@ async def write_input_layer(
         raise ToolError(
             f"these features are {size // 1000} KB, over the {INLINE_LAYER_MAX_BYTES // 1000} KB limit for "
             "writing a layer in a tool call. Nothing was sent. Ask the person to upload the layer in their "
-            "browser: call request_input_upload for a one-time upload link and give it to them."
+            f"browser: call request_input_upload(project_id={project_id}, kind={kind!r}) for the upload link and give it to them."
         )
     body, status_code = await client.post(
         INLINE_WRITE_PATH.format(project_id=project_id),
@@ -2339,6 +2340,61 @@ async def write_input_layer(
            f"confirm it is the right {label}, in the right place; review it there.")
     return json.dumps(
         await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
+
+
+UPLOAD_PAGE_LIMIT_MB = 100   # the importer's per-file cap (dataset_upload_size)
+
+
+@_tool("request_input_upload")
+async def request_input_upload(
+    project_id: Annotated[int, "The project ID"],
+    kind: Annotated[
+        str,
+        "Which input the file is for: boundary, friction, inflow, rainfall, building, mesh_region or "
+        "culvert ('structure' is a deprecated alias of building).",
+    ],
+) -> str:
+    """Get the link where the PERSON uploads a big input layer in their browser.
+
+    For a layer too big to send with write_input_layer (over about 150 KB):
+    building footprints, land-use friction. You cannot move file bytes, so give
+    the person `ui_url`. It opens the project's upload page for this kind; they
+    drop a GeoJSON, a zipped shapefile or a GeoPackage (up to 100 MB), Hydrata
+    converts it into the project's grid and attaches it to the kind's layer,
+    replacing what it held. Nothing is created until they drop a file.
+
+    A file the person drops is their own input: it is marked 'uploaded by the
+    user' and needs no review step. Afterwards call list_inputs: the layer is
+    there with that `authored_method`. A file of the wrong kind (polygons on an
+    inflow) is refused on the page with a plain message. The person needs Editor
+    access on the project.
+    """
+    kind = kind.strip().lower().replace("-", "_")
+    deprecation = None
+    if kind in LEGACY_INPUT_LAYER_KINDS:
+        kind, deprecation = LEGACY_INPUT_LAYER_KINDS[kind], LEGACY_KIND_DEPRECATION
+    if kind in UNSUPPORTED_INPUT_LAYER_KINDS or kind not in INLINE_LAYER_KINDS:
+        raise ToolError(f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)}")
+    base_map = await _project_base_map(project_id)
+    ui_url = _ui_url(base_map, panel="input-upload", kind=kind)
+    if ui_url is None:
+        raise ToolError(f"project {project_id} has no map yet, so it has no upload page; "
+                        "upload a terrain first (presign_terrain_upload) and ask again.")
+    label = kind.replace("_", " ")
+    result: dict = {
+        "outcome": "link", "project_id": project_id, "kind": kind, "ui_url": ui_url,
+        "limit_mb": UPLOAD_PAGE_LIMIT_MB,
+        "summary": {"kind": kind, "accepts": ["GeoJSON", "zipped shapefile", "GeoPackage"],
+                    "limit_mb": UPLOAD_PAGE_LIMIT_MB},
+        "say_to_user": (
+            f"Open the link and drop your {label} file (GeoJSON, a zipped shapefile or a GeoPackage, up to "
+            f"{UPLOAD_PAGE_LIMIT_MB} MB) on the page. Hydrata converts it into the project's grid and replaces "
+            f"the project's {label} layer; it is your own input, so there is nothing to approve. Tell me when "
+            "it is done and I will check it with list_inputs."),
+    }
+    if deprecation:
+        result["deprecation"] = deprecation
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
