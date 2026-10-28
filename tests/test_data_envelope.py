@@ -321,17 +321,6 @@ class TestComposedTextEnvelope:
         assert data["detail"].startswith(OPEN) and data["detail"].endswith(CLOSE), data["detail"]
         assert CANARY not in _bare(json.dumps(data))
 
-    async def test_data_envelope_culvert_problems_wrap_the_culvert_name_and_attribute_values(self, _server):
-        collection = {"type": "FeatureCollection", "features": [{
-            "type": "Feature", "geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]},
-            "properties": {"name": CANARY, "shape": CANARY, "us_invert": 1.0}}]}
-        _mapped, report = _server._map_culvert_collection(collection)
-        problems = " ".join(report["problems"])
-        assert CANARY in problems
-        assert CANARY not in _bare(problems), problems
-        # renamed attribute NAMES are the uploader's too: {"us_invert": "upstream_invert_m"}
-        assert report["renamed"] == {_server._data("us_invert"): "upstream_invert_m"}
-
 
 # ---------------------------------------------------------------------------
 # coverage by default: every registered tool, one canary-laden upstream
