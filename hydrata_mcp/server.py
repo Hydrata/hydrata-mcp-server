@@ -1361,6 +1361,11 @@ async def presign_terrain_upload(
 ) -> str:
     """Step 1 of a terrain import: get a presigned S3 PUT URL for a GeoTIFF DEM.
 
+    Only for a client that has a shell and an agent key AND a DEM no platform
+    source covers. A connector agent with no shell (claude.ai) uses
+    list_terrain_sources then create_terrain_from_source instead, or asks the
+    user to upload their own DEM in the map.
+
     The import needs a launch-level agent key: a draft key can presign, but
     finalize_terrain_upload (and the multipart fallback below) answer a read or
     draft key 403 AGENT_LEVEL_INSUFFICIENT — check the key before moving bytes.
@@ -2275,6 +2280,11 @@ async def attach_input_layer(
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
     """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building, mesh_region or culvert layer.
+
+    Only for a client that has a shell and an agent key. A connector agent
+    with no shell (claude.ai) writes the layer inline with write_input_layer,
+    or, for a file above the inline cap, gives the user the
+    request_input_upload link instead.
 
     The agent moves the bytes: first upload the GeoJSON yourself, with the
     same agent key, to GeoNode's upload endpoint at the site origin:

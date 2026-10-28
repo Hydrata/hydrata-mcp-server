@@ -806,6 +806,8 @@ class TestGetTerrainTool:
         presign = tools["presign_terrain_upload"]["description"]
         assert "5°" in presign and "40,000 km²" in presign
         assert "curl" in presign and "--upload-file" in presign
+        # TASK-4064: a shell-less connector agent is sent to the platform source first.
+        assert "create_terrain_from_source" in presign
         assert "moves the bytes" in presign
         for name in ("presign_terrain_upload", "finalize_terrain_upload"):
             props = tools[name]["inputSchema"]["properties"]
@@ -1614,6 +1616,8 @@ class TestAttachInputLayerTool:
         assert "conveys flow through each culvert" in attach
         assert "TASK-3040" in attach
         assert "base_file" in attach  # the curl recipe the agent runs itself
+        # TASK-4064: a shell-less connector agent is sent to the inline / link paths first.
+        assert "write_input_layer" in attach and "request_input_upload" in attach
         for name in ("create_time_series", "attach_input_layer"):
             props = tools[name]["inputSchema"]["properties"]
             for forbidden in ("file", "bytes", "base64", "content", "path", "geojson"):
