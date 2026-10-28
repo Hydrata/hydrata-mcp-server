@@ -465,6 +465,9 @@ TOOL_ANNOTATIONS = {
     "presign_terrain_upload": ("Get a terrain upload URL", False, False, False),
     "finalize_terrain_upload": ("Register an uploaded terrain", False, False, False),
     "create_time_series": ("Create a time series", False, False, False),
+    # TASK-4056: an agent corrects or removes its own series.
+    "update_time_series": ("Correct a time series", False, False, True),
+    "delete_time_series": ("Delete a time series", False, True, True),
     "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, False),
     # TASK-4052: writes the layer's features straight into the project (replaces the kind's layer).
     "write_input_layer": ("Write a project input layer from GeoJSON", False, False, False),
@@ -1747,6 +1750,113 @@ async def create_time_series(
     )
     if server_summary:
         result["series_summary"] = server_summary   # Hydrata's numbers, computed from the true timestamps
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4056 (epic 4051 W1.5) — correct or remove a time series the agent made.
+# ---------------------------------------------------------------------------
+@_tool("update_time_series")
+async def update_time_series(
+    project_id: Annotated[int, "The project ID"],
+    series_id: Annotated[int, "The time series id (from list_time_series or create_time_series)"],
+    name: Annotated[str, "New name (a rainfall polygon binds to its gauge by this exact name)"] = "",
+    data: Annotated[
+        dict | None,
+        "Replacement rows: {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", \"value\": <number>}, ...]}. "
+        "Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow "
+        "values and an all-zero rain or flow series.",
+    ] = None,
+    description: Annotated[str, "New description"] = "",
+    units: Annotated[str, "New units (must match the series_type, as in create_time_series)"] = "",
+    series_type: Annotated[str, "New series_type: hyetograph, hydrograph, stage or generic"] = "",
+    hold_last_value: Annotated[bool | None, "Set true only when the last value is meant to be held"] = None,
+    method: Annotated[
+        str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
+) -> str:
+    """Correct a time series you created (PATCH; only the fields you pass change).
+
+    Use it to fix a series instead of leaving a wrong one behind. The same
+    rules as create_time_series apply to new rows (units match the type, a
+    hydrograph or hyetograph ends at 0 unless `hold_last_value`, at least 2
+    rows, no negative rain or flow, not all zero) and Hydrata refuses with the
+    reason in plain words. A series already used by a built scenario changes the
+    scenario: it needs a rebuild and the user reviews it again. Returns a compact
+    record, not the rows.
+    """
+    changes: dict = {}
+    if name:
+        changes["name"] = name
+    if description:
+        changes["description"] = description
+    if units:
+        changes["units"] = units
+    if series_type:
+        if series_type not in SERIES_TYPES:
+            raise ToolError(f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}")
+        changes["series_type"] = series_type
+    if hold_last_value is not None:
+        changes["hold_last_value"] = hold_last_value
+    if data is not None:
+        _validate_row_data(data)
+        changes["data"] = data
+    if method.strip():
+        changes["authored_method"] = method.strip()
+    if not changes or set(changes) == {"authored_method"}:
+        raise ToolError("Nothing to change: pass at least one of name, data, description, units, series_type, "
+                        "hold_last_value.")
+    body, status_code = await client.patch(f"/projects/{project_id}/time-series/{series_id}/", json=changes)
+    if not isinstance(body, dict):
+        return _post_result(body, status_code)
+    landed = body.get("data")
+    rows = landed.get("rowData") if isinstance(landed, dict) and isinstance(landed.get("rowData"), list) else []
+    result = {
+        "id": body.get("id", series_id),
+        "name": body.get("name"),
+        "series_type": body.get("series_type"),
+        "units": body.get("units"),
+        "timezone": body.get("timezone"),
+        "row_count": len(rows),
+        "authored_method": body.get("authored_method"),
+        "http_status": status_code,
+    }
+    summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
+    await _hand_back(
+        result, project_id,
+        {"series_id": result["id"], "name": result["name"], "changed_fields": sorted(k for k in changes if k != "authored_method")},
+        f"Time series '{_data(result['name'])}' is updated ({', '.join(sorted(changes))}). Open the link to "
+        "check its shape in the Hydrology panel; scenarios that use it need a rebuild.",
+        panel="hydrology",
+    )
+    if summary:
+        result["series_summary"] = summary
+    return json.dumps(result, indent=2)
+
+
+@_tool("delete_time_series")
+async def delete_time_series(
+    project_id: Annotated[int, "The project ID"],
+    series_id: Annotated[int, "The time series id"],
+) -> str:
+    """Delete a time series (cannot be undone). Needs the Manager role on the project.
+
+    A series still used by a feature of an inflow, rainfall or boundary layer is
+    refused (409) and the refusal names the layer and the feature that use it:
+    detach it there (or point that feature at another series), then call again.
+    A series that no feature uses is deleted.
+    """
+    try:
+        status_code = await client.delete(f"/projects/{project_id}/time-series/{series_id}/")
+    except HydrataAPIError as exc:
+        if "returned 409" in str(exc):
+            raise HydrataAPIError(
+                f"{exc} Nothing was deleted. Detach the series from that feature in the map "
+                "(or point the feature at another series), then call delete_time_series again.") from exc
+        raise
+    result = {"id": series_id, "deleted": True, "http_status": status_code}
+    await _hand_back(
+        result, project_id, {"series_id": series_id, "deleted": True},
+        f"Time series {series_id} is deleted.", panel="hydrology")
     return json.dumps(result, indent=2)
 
 

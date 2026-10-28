@@ -590,6 +590,36 @@
   },
   {
     "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete a time series"
+    },
+    "description": "Delete a time series (cannot be undone). Needs the Manager role on the project.\n\nA series still used by a feature of an inflow, rainfall or boundary layer is\nrefused (409) and the refusal names the layer and the feature that use it:\ndetach it there (or point that feature at another series), then call again.\nA series that no feature uses is deleted.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "series_id": {
+          "description": "The time series id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "series_id"
+      ],
+      "type": "object"
+    },
+    "name": "delete_time_series",
+    "title": "Delete a time series"
+  },
+  {
+    "annotations": {
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
@@ -1235,6 +1265,86 @@
     },
     "name": "update_observation",
     "title": "Edit one flood observation"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Correct a time series"
+    },
+    "description": "Correct a time series you created (PATCH; only the fields you pass change).\n\nUse it to fix a series instead of leaving a wrong one behind. The same\nrules as create_time_series apply to new rows (units match the type, a\nhydrograph or hyetograph ends at 0 unless `hold_last_value`, at least 2\nrows, no negative rain or flow, not all zero) and Hydrata refuses with the\nreason in plain words. A series already used by a built scenario changes the\nscenario: it needs a rebuild and the user reviews it again. Returns a compact\nrecord, not the rows.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Replacement rows: {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", \"value\": <number>}, ...]}. Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow values and an all-zero rain or flow series."
+        },
+        "description": {
+          "default": "",
+          "description": "New description",
+          "type": "string"
+        },
+        "hold_last_value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Set true only when the last value is meant to be held"
+        },
+        "method": {
+          "default": "",
+          "description": "One short phrase saying how you got the new numbers. Replaces the earlier account.",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "description": "New name (a rainfall polygon binds to its gauge by this exact name)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "series_id": {
+          "description": "The time series id (from list_time_series or create_time_series)",
+          "type": "integer"
+        },
+        "series_type": {
+          "default": "",
+          "description": "New series_type: hyetograph, hydrograph, stage or generic",
+          "type": "string"
+        },
+        "units": {
+          "default": "",
+          "description": "New units (must match the series_type, as in create_time_series)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "series_id"
+      ],
+      "type": "object"
+    },
+    "name": "update_time_series",
+    "title": "Correct a time series"
   },
   {
     "annotations": {
