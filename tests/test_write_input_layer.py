@@ -42,7 +42,7 @@ async def test_write_input_layer_posts_the_features_once_and_forwards_the_key(_s
         _server, "write_input_layer", {"project_id": 42, "kind": "culvert", "features": FC, "method": "traced"}))
     assert route.call_count == 1
     assert route.calls[0].request.headers["authorization"] == CALLER_KEY
-    assert json.loads(route.calls[0].request.content) == {"kind": "culvert", "features": FC, "method": "traced"}
+    assert json.loads(route.calls[0].request.content) == {"kind": "culvert", "features": FC, "authored_method": "traced"}
     assert data["outcome"] == "written" and data["row_id"] == 9 and data["feature_count"] == 1
 
 

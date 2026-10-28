@@ -309,6 +309,8 @@ DATA_TEXT_KEYS = frozenset({
     "name", "title", "row_title", "description", "abstract", "location_name", "source", "units",
     # who wrote it: usernames, the agent key's name, the agent's self-declared client
     "owner_username", "created_by_username", "archived_by_username", "grant", "client",
+    # how an agent says it made an input (free text it wrote)
+    "authored_method",
     # layer names (GeoNode derives them from the uploaded file)
     "gn_layer_name", "gn_layer_hillshade_name", "dataset_alternate", "alternate", "layer",
     # run text that quotes layer content (an ANUGA error names a boundary tag)
@@ -864,7 +866,8 @@ async def get_scenario(
     run. `latest_run_is_valid` is false after any edit since the last build.
     `unreviewed_inputs` lists the inputs written by an agent key that the user
     has not reviewed at their current content (kind, layer_id, title,
-    feature_count, the grant that wrote it, `reopened` when an edit undid an
+    feature_count, the grant that wrote it, `authored_method` (the agent's own account of
+    how it made the input, when it gave one), `reopened` when an edit undid an
     earlier input review): while it is not empty, build and run are refused
     UNREVIEWED_INPUTS. Only the user reviews, in the browser — poll this tool
     every 30-60 s after giving them the review link.
@@ -1657,6 +1660,11 @@ async def create_time_series(
         "hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end "
         "the series with a 0 row instead, unless holding is really intended.",
     ] = False,
+    method: Annotated[
+        str,
+        "One short phrase saying how you got these numbers (e.g. 'read off the council hydrograph PDF', "
+        "'scaled the 1% AEP peak'). Shown to the person who reviews the inputs.",
+    ] = "",
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
 
@@ -1699,6 +1707,8 @@ async def create_time_series(
         "hold_last_value": hold_last_value,
         "data": data,
     }
+    if method.strip():
+        payload["authored_method"] = method.strip()   # TASK-4055: shown on the review screen
     body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
     if not isinstance(body, dict):
         return _post_result(body, status_code)
@@ -2199,7 +2209,7 @@ async def write_input_layer(
         )
     body, status_code = await client.post(
         INLINE_WRITE_PATH.format(project_id=project_id),
-        json={"kind": kind, "features": features, "method": method}, raise_for_status=False,
+        json={"kind": kind, "features": features, "authored_method": method}, raise_for_status=False,
     )
     if status_code >= 400:
         detail = body.get("detail") if isinstance(body, dict) else None
@@ -2235,7 +2245,9 @@ async def list_inputs(
 
     For each of boundary, friction, inflow, rainfall, building, mesh_region and culvert:
     the rows (`row_id`, `title`, `gn_layer` — the dataset pk — and
-    `dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.
+    `dataset_alternate`, the `workspace:name` WFS typename), `authored_method`
+    (the one-line account an agent gave of how it made the layer; null when
+    nobody said) and `has_features`.
     `has_features` is the API's own answer for every kind. It is null only when
     a row's record does not carry it: treat null as unknown, not as empty. A row
     with no `gn_layer` has no layer yet (`has_features` false). Use the row ids with
@@ -2256,6 +2268,8 @@ async def list_inputs(
                 "gn_layer": row.get("gn_layer"),
                 "dataset_alternate": alternate,
             }
+            if "authored_method" in row:   # TASK-4055: how an agent made it (null = nobody said)
+                entry["authored_method"] = row.get("authored_method")
             # TASK-3749: never a /gs/ WFS count (refused for every agent key since
             # TASK-3728). Every wrapper serializer carries has_features (friction
             # and building TASK-3603, inflow TASK-3487); absent = unknown.
@@ -2279,7 +2293,8 @@ async def list_time_series(
     """List a project's time series (rain gauges, hydrographs, tides) — never their rows.
 
     Each series: `id`, `name` (a rainfall polygon binds to its gauge by this
-    exact name), `series_type`, `units`, `timezone`, `row_count`,
+    exact name), `series_type`, `units`, `timezone`, `authored_method` (how an
+    agent made it; null when nobody said), `row_count`,
     `first_timestamp` and `last_timestamp`. The data rows themselves are
     dropped (a project's list is megabytes); fetch one series with the REST API
     (GET /projects/<id>/time-series/<id>/) if you need its values.
@@ -2309,6 +2324,8 @@ async def list_time_series(
                 "first_timestamp": first.get("timestamp"),
                 "last_timestamp": last.get("timestamp"),
             })
+            if "authored_method" in row:   # TASK-4055
+                series[-1]["authored_method"] = row.get("authored_method")
         if not isinstance(page, dict) or not page.get("next"):
             break
         params = dict(params, page=params["page"] + 1)
