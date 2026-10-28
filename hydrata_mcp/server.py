@@ -1368,6 +1368,13 @@ async def finalize_terrain_upload(
         "progress record is reused; the API tolerates its absence)",
     ] = "",
     title: Annotated[str, "Terrain title (default: the filename without .tif)"] = "",
+    vertical_datum_declared: Annotated[
+        str,
+        "TASK-4061: the datum the user SAYS the heights are on: `ahd` (Australian Height "
+        "Datum), `orthometric_egm2008` or `ellipsoid`. Pass it only when the user told you; "
+        "if they did not, ask them, do not guess. Stored as the terrain's declared datum, "
+        "which beats Hydrata's own inference. Omit when unknown.",
+    ] = "",
 ) -> str:
     """Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.
 
@@ -1383,9 +1390,18 @@ async def finalize_terrain_upload(
     means no object is at `staging_key`: the PUT did not land (check its status
     code and Content-Type) — do not retry finalize until it has.
     """
+    payload = {"staging_key": staging_key, "process_id": process_id, "title": title}
+    declared = (vertical_datum_declared or "").strip().lower()
+    if declared:
+        if declared not in TERRAIN_DECLARED_DATUMS:
+            raise ToolError(
+                f"vertical_datum_declared must be one of {', '.join(TERRAIN_DECLARED_DATUMS)} "
+                f"(got {vertical_datum_declared!r}). If the user has not said which datum the "
+                "heights are on, ask them and leave this out."
+            )
+        payload["vertical_datum_declared"] = declared
     body, status_code = await client.post(
-        f"/projects/{project_id}/terrain/upload/finalize/",
-        json={"staging_key": staging_key, "process_id": process_id, "title": title},
+        f"/projects/{project_id}/terrain/upload/finalize/", json=payload,
     )
     result = json.loads(_post_result(body, status_code))
     await _hand_back(
@@ -1402,6 +1418,55 @@ async def finalize_terrain_upload(
 # ---------------------------------------------------------------------------
 # Tool 13: get_terrain
 # ---------------------------------------------------------------------------
+TERRAIN_DECLARED_DATUMS = ("ahd", "orthometric_egm2008", "ellipsoid")
+
+
+def _datum_name(value) -> str | None:
+    """A datum as a short string: a plain string, a `describe()` dict, or an inference dict."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        for key in ("value", "label", "name", "datum_guess"):
+            if isinstance(value.get(key), str) and value[key].strip():
+                return value[key].strip()
+    return None
+
+
+def _terrain_datum(record: dict) -> dict:
+    """TASK-4061 (D9): `{declared, recorded, inferred, effective, effective_source}` for a terrain.
+
+    Precedence recorded > declared > inferred. `recorded` is what a person recorded on the
+    terrain (an Editor's entry); `declared` what was said at upload or by the terrain source;
+    `inferred` is Hydrata's own guess from the raster, which is NOT a fact.
+    """
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    recorded_row = record.get("recorded_vertical_datum")
+    recorded = _datum_name(metadata.get("vertical_datum_recorded")) or (
+        _datum_name(recorded_row) if isinstance(recorded_row, dict) and recorded_row.get("source") == "editor"
+        else None
+    )
+    declared = _datum_name(metadata.get("vertical_datum_declared"))
+    if declared is None and isinstance(recorded_row, dict) and recorded_row.get("source") != "editor":
+        declared = _datum_name(recorded_row)  # a source stamp or embedded tag counts as declared
+    inferred_raw = record.get("vertical_datum")
+    inferred = None
+    if isinstance(inferred_raw, dict):
+        guess = _datum_name(inferred_raw.get("datum_guess"))
+        if guess:
+            inferred = {"datum": guess, "confidence": inferred_raw.get("confidence"),
+                        "basis": inferred_raw.get("basis")}
+    elif _datum_name(inferred_raw):
+        inferred = {"datum": _datum_name(inferred_raw), "confidence": None, "basis": None}
+    if recorded:
+        effective, source = recorded, "recorded"
+    elif declared:
+        effective, source = declared, "declared"
+    elif inferred:
+        effective, source = inferred["datum"], "inferred"
+    else:
+        effective, source = None, None
+    return {"declared": declared, "recorded": recorded, "inferred": inferred,
+            "effective": effective, "effective_source": source}
 @_tool("get_terrain")
 async def get_terrain(
     project_id: Annotated[int, "The project ID"],
@@ -1485,6 +1550,9 @@ async def get_terrain(
         "id", "bbox_wgs84", "dem_elev_min", "dem_elev_max", "nodata_fraction",
         "native_crs", "native_resolution_m",
     )}
+    datum = _terrain_datum(record)
+    result["vertical_datum"] = datum
+    summary["vertical_datum"] = datum
     if outcome == "ready":
         nodata = record.get("nodata_fraction")
         nodata = f"{nodata:.1%}" if isinstance(nodata, (int, float)) else "an unknown share"
@@ -1493,6 +1561,17 @@ async def get_terrain(
             f"{record.get('dem_elev_max')} m, {nodata} of cells without data, native CRS "
             f"{record.get('native_crs')}. Open the link and check it covers the whole site."
         )
+        if datum["effective_source"] == "inferred":
+            say += (
+                f" Hydrata's own check guesses the heights are on {datum['effective']}, but that is "
+                "a guess, not a fact. Ask the user which vertical datum their levels are in "
+                "(for example AHD, EGM2008 or ellipsoidal) before you rely on it, and do not tell "
+                "them it is confirmed."
+            )
+        elif datum["effective"]:
+            say += f" Heights are on {datum['effective']} ({datum['effective_source']})."
+        else:
+            say += " No vertical datum is recorded: ask the user which datum their levels are in."
     elif outcome == "error":
         say = "The terrain import failed; the GeoTIFF needs fixing and uploading again."
     elif outcome == "not_found":

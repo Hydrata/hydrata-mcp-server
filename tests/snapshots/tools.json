@@ -723,6 +723,11 @@
           "default": "",
           "description": "Terrain title (default: the filename without .tif)",
           "type": "string"
+        },
+        "vertical_datum_declared": {
+          "default": "",
+          "description": "TASK-4061: the datum the user SAYS the heights are on: `ahd` (Australian Height Datum), `orthometric_egm2008` or `ellipsoid`. Pass it only when the user told you; if they did not, ask them, do not guess. Stored as the terrain's declared datum, which beats Hydrata's own inference. Omit when unknown.",
+          "type": "string"
         }
       },
       "required": [
