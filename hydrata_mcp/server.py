@@ -668,14 +668,14 @@ def _scenario_record(detail) -> dict:
 # Bounded polling — ONE loop for every tool that waits on the platform
 # (get_terrain, attach_input_layer, build_scenario).
 #
-# Why bounded, and why 240/280: prod's nginx proxies /mcp/ with a 300 s
+# Why bounded, and why 180/200 (TASK-4063): prod's nginx proxies /mcp/ with a 300 s
 # proxy_read_timeout (geonode-https.j2). A tool call cut by the proxy returns
 # NOTHING to the agent, so a call that stops early, reports `timed_out` with
 # the last status and lets the agent re-call is strictly better than a longer
 # one. Values above the ceiling are clamped rather than refused.
 # ---------------------------------------------------------------------------
-POLL_DEFAULT_TIMEOUT_SECONDS = 240
-POLL_MAX_TIMEOUT_SECONDS = 280
+POLL_DEFAULT_TIMEOUT_SECONDS = 180
+POLL_MAX_TIMEOUT_SECONDS = 200
 
 
 def _status_of(record) -> str | None:
@@ -918,15 +918,10 @@ async def get_scenario(
 @_tool("start_simulation")
 async def start_simulation(
     scenario_id: Annotated[int, "The scenario ID to run"],
-    compute_backend: Annotated[
-        str,
-        "Compute backend: 'local' (Celery), 'ec2' (dedicated instance), "
-        "or 'batch' (AWS Batch spot, cheapest). Default: 'local'",
-    ] = "local",
     consent_timeout_seconds: Annotated[
         int,
         "When the run needs the person's consent (CONSENT_REQUIRED), how long this "
-        "call keeps polling the run for their click before it returns (ceiling 280). "
+        "call keeps polling the run for their click before it returns (ceiling 200). "
         "Default 0: return the consent link at once, so you can give it to them — "
         "they cannot press a button they have not been shown.",
     ] = 0,
@@ -965,7 +960,7 @@ async def start_simulation(
     """
     body, status_code = await client.post(
         f"/scenarios/{scenario_id}/run/",
-        json={"compute_backend": compute_backend},
+        json={},
         raise_for_status=False,
     )
     if status_code == 409 and isinstance(body, dict) and body.get("error_code") == CONSENT_REQUIRED:
@@ -985,7 +980,7 @@ async def start_simulation(
     await _hand_back(
         result, result.get("project"),
         {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status"),
-         "compute_backend": result.get("compute_backend", compute_backend),
+         "compute_backend": result.get("compute_backend"),
          "vcpu_hours_estimate": result.get("vcpu_hours_estimate")},
         f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}). "
         "Open the link to watch it; the results appear on the map when it completes.",
@@ -1480,7 +1475,7 @@ async def get_terrain(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling before it returns `timed_out` "
-        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
@@ -1693,8 +1688,8 @@ async def create_terrain_from_source(
     title: Annotated[str, "Terrain title (default: the source name and box)"] = "",
     timeout_seconds: Annotated[
         int,
-        "How long this call keeps polling the import before it returns `timed_out` (default 240, "
-        "ceiling 280). 0 = start it and return at once; then call get_terrain.",
+        "How long this call keeps polling the import before it returns `timed_out` (default 180, "
+        "ceiling 200). 0 = start it and return at once; then call get_terrain.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
@@ -2230,7 +2225,7 @@ async def attach_input_layer(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling the upload before it returns `timed_out` "
-        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
@@ -2904,7 +2899,7 @@ async def create_observation_layer(
         "Metres ADDED to every stage on the layer to bring it onto the terrain datum. "
         "Required for vertical_datum=local; null means 0 otherwise",
     ] = None,
-    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 280)"] = 120,
+    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 200)"] = 120,
     poll_interval_seconds: Annotated[float, "Seconds between layer polls"] = 2.0,
 ) -> str:
     """Create a flood observation layer in a project and wait for its map layer.
@@ -3862,7 +3857,7 @@ async def build_scenario(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling before it returns `timed_out` "
-        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,

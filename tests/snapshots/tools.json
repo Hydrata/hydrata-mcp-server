@@ -147,8 +147,8 @@
           "type": "integer"
         },
         "timeout_seconds": {
-          "default": 240,
-          "description": "How long this call keeps polling the upload before it returns `timed_out` (default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). 0 = one status read, no waiting.",
+          "default": 180,
+          "description": "How long this call keeps polling the upload before it returns `timed_out` (default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). 0 = one status read, no waiting.",
           "type": "integer"
         }
       },
@@ -198,8 +198,8 @@
           "type": "integer"
         },
         "timeout_seconds": {
-          "default": 240,
-          "description": "How long this call keeps polling before it returns `timed_out` (default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). 0 = one status read, no waiting.",
+          "default": 180,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). 0 = one status read, no waiting.",
           "type": "integer"
         }
       },
@@ -272,7 +272,7 @@
         },
         "timeout_seconds": {
           "default": 120,
-          "description": "How long to wait for the map layer (clamped to 280)",
+          "description": "How long to wait for the map layer (clamped to 200)",
           "type": "integer"
         },
         "title": {
@@ -510,8 +510,8 @@
           "type": "string"
         },
         "timeout_seconds": {
-          "default": 240,
-          "description": "How long this call keeps polling the import before it returns `timed_out` (default 240, ceiling 280). 0 = start it and return at once; then call get_terrain.",
+          "default": 180,
+          "description": "How long this call keeps polling the import before it returns `timed_out` (default 180, ceiling 200). 0 = start it and return at once; then call get_terrain.",
           "type": "integer"
         },
         "title": {
@@ -944,8 +944,8 @@
           "description": "The terrain ID from finalize_terrain_upload. Omit to follow the project's newest terrain."
         },
         "timeout_seconds": {
-          "default": 240,
-          "description": "How long this call keeps polling before it returns `timed_out` (default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). 0 = one status read, no waiting.",
+          "default": 180,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). 0 = one status read, no waiting.",
           "type": "integer"
         }
       },
@@ -1341,14 +1341,9 @@
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
-        "compute_backend": {
-          "default": "local",
-          "description": "Compute backend: 'local' (Celery), 'ec2' (dedicated instance), or 'batch' (AWS Batch spot, cheapest). Default: 'local'",
-          "type": "string"
-        },
         "consent_timeout_seconds": {
           "default": 0,
-          "description": "When the run needs the person's consent (CONSENT_REQUIRED), how long this call keeps polling the run for their click before it returns (ceiling 280). Default 0: return the consent link at once, so you can give it to them — they cannot press a button they have not been shown.",
+          "description": "When the run needs the person's consent (CONSENT_REQUIRED), how long this call keeps polling the run for their click before it returns (ceiling 200). Default 0: return the consent link at once, so you can give it to them — they cannot press a button they have not been shown.",
           "type": "integer"
         },
         "poll_interval_seconds": {
