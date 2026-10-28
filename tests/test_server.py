@@ -3518,3 +3518,31 @@ class TestLaunchKeyDescriptions:
         tools = await self._tools(_server)
         for name in ("get_terrain", "create_scenario", "attach_input_layer", "list_inputs"):
             assert "launch-level agent key" not in tools[name], name
+
+
+class TestGetRunSwwDownload:
+    """TASK-4062 — get_run reports the time series as {state, size_bytes, ui_url}, never a link."""
+
+    @respx.mock
+    async def test_sww_download_state_size_and_ui_url_without_a_link(self, _server):
+        run = _presigned_run(67181, "complete", project=42, scenario=7)
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(return_value=httpx.Response(
+            200, json={"state": "archived", "size_bytes": 7_000_000,
+                       "url": "https://b.s3.amazonaws.com/k.sww?X-Amz-Signature=zz"}))
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
+        result = await _server.get_run(run_id=67181)
+        assert "X-Amz" not in result
+        sww = json.loads(result)["sww"]
+        assert set(sww) == {"state", "size_bytes", "ui_url"}
+        assert sww["state"] == "archived" and sww["size_bytes"] == 7_000_000
+        assert "/catalogue/#/map/1525" in sww["ui_url"] and "panel=results" in sww["ui_url"]
+
+    @respx.mock
+    async def test_sww_download_lookup_failure_does_not_fail_get_run(self, _server):
+        run = _presigned_run(67181, "complete", project=42, scenario=7)
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(return_value=httpx.Response(502, json={"detail": "x"}))
+        data = json.loads(await _server.get_run(run_id=67181))
+        assert data["id"] == 67181
+        assert data["sww"]["state"] is None and "error" in data["sww"]

@@ -1107,6 +1107,30 @@ def _run_phase(status_record: dict) -> str:
     return status
 
 
+async def _sww_summary(run_id, run) -> dict:
+    """`{state, size_bytes, ui_url}` for a run's full time series (TASK-4062).
+
+    Only those keys are copied from the API answer, so a download link could
+    never ride along. Best effort: a failed lookup gives `state: null` and a
+    short `error`, never a failed get_run.
+    """
+    summary: dict = {"state": None, "size_bytes": None, "ui_url": None}
+    try:
+        body = await client.get(f"/runs/{run_id}/sww/")
+        if isinstance(body, dict):
+            summary["state"] = body.get("state")
+            summary["size_bytes"] = body.get("size_bytes")
+    except Exception as exc:
+        summary["error"] = f"could not check the time series: {exc}"
+        return summary
+    try:
+        base_map = await _project_base_map(run.get("project"))
+        summary["ui_url"] = _ui_url(base_map, panel="results", scenario=run.get("scenario"))
+    except Exception:
+        pass
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Tool 6: get_run
 # ---------------------------------------------------------------------------
@@ -1124,9 +1148,17 @@ async def get_run(
     The presigned `s3_*_url` download links are ELIDED — each is a 6-hour
     capability and no tool relays one. The results stay viewable through the
     `gn_layer_*` entries (published WMS layers on the project's map).
+
+    `sww` reports the run's full time series (the raw ANUGA output): `state`
+    (available, not_kept, archived or restoring), `size_bytes`, and a `ui_url`
+    to the Results panel where the person downloads it (or requests a restore
+    of an archived one and is emailed when it is ready). The download link
+    itself is never returned.
     """
-    data = await client.get(f"/runs/{run_id}/")
-    return json.dumps(_elide_presigned(data), indent=2)
+    data = _elide_presigned(await client.get(f"/runs/{run_id}/"))
+    if isinstance(data, dict):
+        data["sww"] = await _sww_summary(run_id, data)
+    return json.dumps(data, indent=2)
 
 
 # ---------------------------------------------------------------------------

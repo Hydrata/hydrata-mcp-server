@@ -838,7 +838,7 @@
       "readOnlyHint": true,
       "title": "Get a run's full record"
     },
-    "description": "Get full details of a simulation run including timing and results.\n\nReturns the complete run record: status, progress, timing (start/end\ntimestamps, duration), compute details (backend, instance type, cost),\nmesh info, error messages, and result log. Use get_run_status for\nlightweight polling; use this for final results.\n\nThe presigned `s3_*_url` download links are ELIDED — each is a 6-hour\ncapability and no tool relays one. The results stay viewable through the\n`gn_layer_*` entries (published WMS layers on the project's map).",
+    "description": "Get full details of a simulation run including timing and results.\n\nReturns the complete run record: status, progress, timing (start/end\ntimestamps, duration), compute details (backend, instance type, cost),\nmesh info, error messages, and result log. Use get_run_status for\nlightweight polling; use this for final results.\n\nThe presigned `s3_*_url` download links are ELIDED — each is a 6-hour\ncapability and no tool relays one. The results stay viewable through the\n`gn_layer_*` entries (published WMS layers on the project's map).\n\n`sww` reports the run's full time series (the raw ANUGA output): `state`\n(available, not_kept, archived or restoring), `size_bytes`, and a `ui_url`\nto the Results panel where the person downloads it (or requests a restore\nof an archived one and is emailed when it is ready). The download link\nitself is never returned.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
