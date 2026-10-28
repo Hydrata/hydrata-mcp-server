@@ -1,0 +1,19 @@
+# TASK-4010 (epic 3995, D11b): public-own tier - weekly, grouped version updates for Python and Actions.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      pip-updates:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-updates:
+        patterns: ["*"]
