@@ -1,0 +1,5 @@
+# Commits that only reformatted code. Use with:
+#   git blame --ignore-revs-file .git-blame-ignore-revs <file>
+# or once per clone: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# TASK-4015: one-off `ruff format` (ruff 0.15.2)
+5f7fc8002c2ecfa1b60f376e020dad17f5efa51a
