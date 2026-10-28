@@ -13,9 +13,21 @@ import httpx
 import pytest
 import respx
 
-from tests.test_server import (BASE, CALLER_BASIC, CALLER_KEY, CALLER_OAUTH, EVERY_METHOD, INITIALIZE_PARAMS,
-                               MCP_HEADERS, UPSTREAM_OK, _asgi_client, _call, _parse, _rpc,
-                               _server)  # noqa: F401  (_server is the shared fixture)
+from tests.test_server import (
+    BASE,
+    CALLER_BASIC,
+    CALLER_KEY,
+    CALLER_OAUTH,
+    EVERY_METHOD,
+    INITIALIZE_PARAMS,
+    MCP_HEADERS,
+    UPSTREAM_OK,
+    _asgi_client,
+    _call,
+    _parse,
+    _rpc,
+    _server,  # noqa: F401  (_server is the shared fixture)
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -98,7 +110,7 @@ class TestEveryMethodNeedsSignIn:
 
 class TestConnectOff:
     @respx.mock
-    async def test_a_jwt_is_refused_exactly_as_before(self, _server):
+    async def test_a_jwt_is_refused_exactly_as_before(self, _server):  # noqa: F811
         upstream = respx.route().mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         resp = await _call(_server, JWT)
         assert resp.status_code == 401
