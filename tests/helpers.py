@@ -563,6 +563,7 @@ SERVER_MODULES = (
     "observations",
     "calibration",
     "scenarios",
+    "feedback",
     "server",
 )
 

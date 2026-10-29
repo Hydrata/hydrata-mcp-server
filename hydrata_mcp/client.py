@@ -257,6 +257,15 @@ class HydrataClient:
         resp = await self._send("POST", f"{self._base}{path}", path, raise_for_status=raise_for_status, json=json or {})
         return self._body(resp), resp.status_code
 
+    async def post_from_origin(self, path: str, json: dict | None = None) -> tuple[Any, int]:
+        """POST a path relative to the API's ORIGIN (e.g. ``/api/v2/agents/suggestions/``).
+
+        TASK-3964 — for Hydrata endpoints outside /api/v2/anuga; `path` must start with '/'.
+        Same headers and error mapping as post(): a 4xx raises HydrataAPIError, with its status.
+        """
+        resp = await self._send("POST", f"{self._origin}{path}", path, json=json or {})
+        return self._body(resp), resp.status_code
+
     async def patch(self, path: str, json: dict | None = None) -> tuple[Any, int]:
         """PATCH request (partial update). Returns (body, status_code) like post().
 

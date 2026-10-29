@@ -16,7 +16,7 @@ The server is **not yet open to external accounts**: there is no self-serve way 
 
 ## Tools
 
-Version 0.2.0 exposes twenty-eight tools: eleven that read projects, inputs and scenarios and drive a run, eight that build a model from terrain and input layers the agent has already uploaded, six that record flood observations, and three that compare a historic run with them (Compare with observations). Every tool carries MCP annotations (a `title`; `readOnlyHint` on the eleven read tools; `destructiveHint` only on `cancel_run` and `delete_observation`).
+Version 0.2.0 exposes thirty-six tools. The table below lists the original twenty-eight and `suggest_capability`; `tools/list` returns all of them. Of the original twenty-eight, eleven that read projects, inputs and scenarios and drive a run, eight that build a model from terrain and input layers the agent has already uploaded, six that record flood observations, and three that compare a historic run with them (Compare with observations). Every tool carries MCP annotations (a `title`; `readOnlyHint` on the eleven read tools; `destructiveHint` only on `cancel_run` and `delete_observation`).
 
 | Tool | Description |
 |------|-------------|
@@ -48,6 +48,7 @@ Version 0.2.0 exposes twenty-eight tools: eleven that read projects, inputs and 
 | `get_observation_comparison` | How a historic run compares with the project's flood observations: `headline` (figures at a tolerance, 0.3 m default; no pass or fail), `statistics` (n, within, bias, RMSE, weighted RMSE, MAE, max), Gauge record peak/timing/NSE, datum checks and one row per observation (residual = modelled - observed; unscored and excluded rows included). `layer_id` + `fid` narrow it to one observation with its exclusion history; Gauge records' modelled series are elided unless `include_series`. A design or unlabelled run reports `has_comparison: false`, not an error |
 | `set_observation_exclusion` | Exclude one observation from a run's comparison with the engineer's reason (required: the tool refuses a blank one and the agent must ask), or include it again; logged with user and reason; returns `headline_after` |
 | `set_comparison_tolerance` | Save the project's default comparison tolerance (metres, above 0 and at most 5; Editor+). `get_observation_comparison` uses it unless `tolerance` is passed, which saves nothing |
+| `suggest_capability` | Tell the Hydrata team about something the person asked for that no tool can do (read-only; the reply gives the words to say to the person; 20 a day per person) |
 
 ### The hand-back: the engineer signs off in the map
 
