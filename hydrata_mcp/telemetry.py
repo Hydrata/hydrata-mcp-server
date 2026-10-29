@@ -147,24 +147,24 @@ def _digest(value: str) -> str:
 
 
 def credential_identity(authorization: str | None) -> dict:
-    """``{fingerprint, credential, oauth_client_id}`` from the Authorization header, no verification.
+    """``{fingerprint, credential, agent_app}`` from the Authorization header, no verification.
 
     hk_ key: the id prefix (``hk_`` + 12 hex), never the secret part. JWT: a hash of ``sub``.
     """
     token = (authorization or "").strip().partition(" ")[2].strip()
     if not token:
-        return {"fingerprint": None, "credential": None, "oauth_client_id": None}
+        return {"fingerprint": None, "credential": None, "agent_app": None}
     if token.startswith("hk_"):
         parts = token.split("_", 2)
         fingerprint = "_".join(parts[:2]) if len(parts) == 3 else f"hk_{_digest(token)}"
-        return {"fingerprint": fingerprint, "credential": "agent_key", "oauth_client_id": None}
+        return {"fingerprint": fingerprint, "credential": "agent_key", "agent_app": None}
     claims = _jwt_claims(token)
     sub = claims.get("sub")
     client = claims.get("client_id") or claims.get("azp")
     return {
         "fingerprint": f"jwt_{_digest(str(sub))}" if sub else f"tok_{_digest(token)}",
         "credential": "workos" if claims else None,
-        "oauth_client_id": _clip(client) if isinstance(client, str) else None,
+        "agent_app": _clip(client) if isinstance(client, str) else None,
     }
 
 
@@ -319,7 +319,7 @@ def build_record(
     client_fields: dict,
 ) -> dict:
     actor = state.actor
-    cred = credential_identity(authorization)
+    caller = credential_identity(authorization)
     if actor:
         identity = {**actor, "identity_source": "django", "identity": f"user:{actor['user_id']}"}
     else:
@@ -327,10 +327,10 @@ def build_record(
             "user_id": None,
             "username": None,
             "grant": None,
-            "credential": cred["credential"],
+            "credential": caller["credential"],
             "internal": None,
-            "identity_source": "credential" if cred["fingerprint"] else "none",
-            "identity": cred["fingerprint"],
+            "identity_source": "credential" if caller["fingerprint"] else "none",
+            "identity": caller["fingerprint"],
         }
     tool_name = _clip(tool, 100)
     return {
@@ -348,7 +348,7 @@ def build_record(
         "duration_ms": duration_ms,
         "response_bytes": response_bytes,
         **client_fields,
-        "oauth_client_id": cred["oauth_client_id"],
+        "oauth_client_id": caller["agent_app"],
         "request_id": state.request_id,
         **identity,
         "project_id": _int_arg(arguments, "project_id"),

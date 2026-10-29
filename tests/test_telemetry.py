@@ -243,7 +243,7 @@ async def test_tool_call_record_credential_fingerprint_forms():
     jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEiLCJjbGllbnRfaWQiOiJjbGllbnRfQUJDIn0.sig"
     ident = telemetry.credential_identity(f"Bearer {jwt}")
     assert ident["fingerprint"].startswith("jwt_") and "user_1" not in ident["fingerprint"]
-    assert ident["credential"] == "workos" and ident["oauth_client_id"] == "client_ABC"
+    assert ident["credential"] == "workos" and ident["agent_app"] == "client_ABC"
     assert telemetry.credential_identity(None)["fingerprint"] is None
     assert telemetry.credential_identity("Bearer hk_short")["fingerprint"].startswith("hk_")
 
