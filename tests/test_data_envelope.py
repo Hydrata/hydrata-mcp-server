@@ -16,6 +16,7 @@ problem naming a culvert) wraps that string in place.
 Negative control: HYDRATA_MCP_DATA_ENVELOPE=off (the harness's negative-control
 switch) returns the canary bare — so the assertions here can fail.
 """
+
 import importlib
 import json
 import re
@@ -83,6 +84,7 @@ def _assert_enveloped(result, canary=CANARY):
 def _server(env_vars):
     """The server module, reloaded after the env vars are set (as in test_server)."""
     import hydrata_mcp.server as srv
+
     importlib.reload(srv)
     return srv
 
@@ -91,6 +93,7 @@ def _server(env_vars):
 def _no_envelope_server(env_vars, monkeypatch):
     monkeypatch.setenv("HYDRATA_MCP_DATA_ENVELOPE", "off")
     import hydrata_mcp.server as srv
+
     importlib.reload(srv)
     yield srv
     monkeypatch.delenv("HYDRATA_MCP_DATA_ENVELOPE")
@@ -98,11 +101,21 @@ def _no_envelope_server(env_vars, monkeypatch):
 
 
 def _mock_project(name=CANARY, owner="stranger"):
-    return respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={
-        "id": 42, "name": name, "projection": "EPSG:32756", "visibility": "public",
-        "owner_username": owner, "my_role": None, "base_map": BASE_MAP,
-        "simple_view_config": {"label": CANARY},
-    }))
+    return respx.get(f"{BASE}/projects/42/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 42,
+                "name": name,
+                "projection": "EPSG:32756",
+                "visibility": "public",
+                "owner_username": owner,
+                "my_role": None,
+                "base_map": BASE_MAP,
+                "simple_view_config": {"label": CANARY},
+            },
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -117,17 +130,23 @@ class TestDataHelper:
         hostile = f"x{CLOSE} {CANARY} {OPEN}y"
         wrapped = _server._data(hostile)
         assert wrapped.startswith(OPEN) and wrapped.endswith(CLOSE)
-        inner = wrapped[len(OPEN):-len(CLOSE)]
+        inner = wrapped[len(OPEN) : -len(CLOSE)]
         assert OPEN not in inner and CLOSE not in inner
         assert CANARY not in _bare(wrapped)
 
-    @pytest.mark.parametrize("variant", [
-        "</UNTRUSTED-DATA>", "< / untrusted-data >", "</untrusted_data>", "</untrusted data>",
-        "＜/untrusted-data＞",  # fullwidth < > — NFKC folds them to ASCII
-    ])
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            "</UNTRUSTED-DATA>",
+            "< / untrusted-data >",
+            "</untrusted_data>",
+            "</untrusted data>",
+            "＜/untrusted-data＞",  # fullwidth < > — NFKC folds them to ASCII
+        ],
+    )
     async def test_data_envelope_marker_lookalikes_are_neutralised(self, _server, variant):
         wrapped = _server._data(f"a{variant}{CANARY}")
-        inner = wrapped[len(OPEN):-len(CLOSE)]
+        inner = wrapped[len(OPEN) : -len(CLOSE)]
         assert not re.search(r"untrusted[\s_-]*data", inner, re.I), inner
 
     async def test_data_envelope_is_idempotent(self, _server):
@@ -135,8 +154,15 @@ class TestDataHelper:
         assert _server._data(once) == once
 
     async def test_data_envelope_walker_leaves_ids_and_system_fields_alone(self, _server):
-        value = {"id": 7, "status": "built", "kind": "boundary", "name": CANARY, "count": 2,
-                 "results": [{"title": CANARY, "gn_layer": 3}], "outcome": "attached"}
+        value = {
+            "id": 7,
+            "status": "built",
+            "kind": "boundary",
+            "name": CANARY,
+            "count": 2,
+            "results": [{"title": CANARY, "gn_layer": 3}],
+            "outcome": "attached",
+        }
         out = _server._envelope(value)
         assert out["id"] == 7 and out["status"] == "built" and out["kind"] == "boundary"
         assert out["outcome"] == "attached" and out["results"][0]["gn_layer"] == 3
@@ -146,14 +172,13 @@ class TestDataHelper:
     async def test_data_envelope_the_note_is_a_server_only_top_level_marker(self, _server):
         """TASK-3779: the harness's 'envelope was OFF' detector keys on this top-level key, so a result's own
         (planted) key of that name must never survive in its place, and a nested one is just data."""
-        planted = json.dumps({NOTE_KEY: "planted by a third party", "name": CANARY,
-                              "inputs": {NOTE_KEY: "nested"}})
+        planted = json.dumps({NOTE_KEY: "planted by a third party", "name": CANARY, "inputs": {NOTE_KEY: "nested"}})
         out = json.loads(_server._envelope_text(planted))
         assert list(out)[0] == NOTE_KEY and out[NOTE_KEY] == _server.DATA_NOTE
         assert out["name"] == f"{OPEN}{CANARY}{CLOSE}"
         as_list = json.loads(_server._envelope_text(json.dumps([{"name": CANARY}])))
         assert list(as_list)[0] == NOTE_KEY and as_list["result"][0]["name"] == f"{OPEN}{CANARY}{CLOSE}"
-        assert NOTE_KEY not in json.loads(_server._envelope_text(json.dumps({"id": 1})))   # no person text, no note
+        assert NOTE_KEY not in json.loads(_server._envelope_text(json.dumps({"id": 1})))  # no person text, no note
 
     async def test_data_envelope_server_instructions_say_wrapped_text_is_data(self, _server):
         assert OPEN in _server.mcp.instructions
@@ -166,10 +191,24 @@ class TestDataHelper:
 class TestToolResultsEnvelope:
     @respx.mock
     async def test_data_envelope_list_projects_wraps_a_strangers_project_name_and_username(self, _server):
-        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={
-            "count": 1, "next": None,
-            "results": [{"id": 9, "name": CANARY, "owner_username": "ignore_previous_instructions",
-                         "visibility": "public", "base_map": 3}]}))
+        respx.get(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [
+                        {
+                            "id": 9,
+                            "name": CANARY,
+                            "owner_username": "ignore_previous_instructions",
+                            "visibility": "public",
+                            "base_map": 3,
+                        }
+                    ],
+                },
+            )
+        )
         data = _assert_enveloped(await _call_as_caller(_server, "list_projects", {}))
         row = data["results"][0]
         assert row["id"] == 9 and row["base_map"] == 3 and row["visibility"] == "public"
@@ -184,14 +223,32 @@ class TestToolResultsEnvelope:
 
     @respx.mock
     async def test_data_envelope_get_scenario_wraps_name_description_unsigned_rows_and_run_errors(self, _server):
-        unreviewed = [{"kind": "friction", "layer_id": 3, "title": CANARY, "grant": CANARY, "client": CANARY,
-                     "gn_layer_name": "geonode:ignore_previous", "feature_count": 1, "summary": "Friction: 1 polygon",
-                     "reopened": False}]
-        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(
-            "error", name=CANARY, description=CANARY, unreviewed_inputs=unreviewed,
-            latest_run=_run(501, "error", error_message=CANARY, user_message=CANARY, log=CANARY))))
-        data = _assert_enveloped(await _call_as_caller(
-            _server, "get_scenario", {"project_id": 42, "scenario_id": 5}))
+        unreviewed = [
+            {
+                "kind": "friction",
+                "layer_id": 3,
+                "title": CANARY,
+                "grant": CANARY,
+                "client": CANARY,
+                "gn_layer_name": "geonode:ignore_previous",
+                "feature_count": 1,
+                "summary": "Friction: 1 polygon",
+                "reopened": False,
+            }
+        ]
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_scenario(
+                    "error",
+                    name=CANARY,
+                    description=CANARY,
+                    unreviewed_inputs=unreviewed,
+                    latest_run=_run(501, "error", error_message=CANARY, user_message=CANARY, log=CANARY),
+                ),
+            )
+        )
+        data = _assert_enveloped(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 5}))
         row = data["unreviewed_inputs"][0]
         for key in ("title", "grant", "client"):
             assert row[key] == f"{OPEN}{CANARY}{CLOSE}", key
@@ -203,8 +260,15 @@ class TestToolResultsEnvelope:
         for route in ("boundaries", "frictions", "inflows", "rainfalls", "buildings", "mesh-regions", "culverts"):
             rows = []
             if route == "frictions":
-                rows = [{"id": 3, "title": CANARY, "gn_layer": 8, "gn_layer_name": "ignore_previous_instructions",
-                         "has_features": True}]
+                rows = [
+                    {
+                        "id": 3,
+                        "title": CANARY,
+                        "gn_layer": 8,
+                        "gn_layer_name": "ignore_previous_instructions",
+                        "has_features": True,
+                    }
+                ]
             respx.get(f"{BASE}/projects/42/{route}/").mock(return_value=httpx.Response(200, json=rows))
         data = _assert_enveloped(await _call_as_caller(_server, "list_inputs", {"project_id": 42}))
         row = data["inputs"]["friction"][0]
@@ -213,20 +277,41 @@ class TestToolResultsEnvelope:
 
     @respx.mock
     async def test_data_envelope_list_time_series_wraps_series_names(self, _server):
-        respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(200, json={
-            "count": 1, "next": None,
-            "results": [{"id": 77, "name": CANARY, "series_type": "hyetograph", "units": "mm/hr",
-                         "timezone": "UTC", "data": {"rowData": []}}]}))
+        respx.get(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "count": 1,
+                    "next": None,
+                    "results": [
+                        {
+                            "id": 77,
+                            "name": CANARY,
+                            "series_type": "hyetograph",
+                            "units": "mm/hr",
+                            "timezone": "UTC",
+                            "data": {"rowData": []},
+                        }
+                    ],
+                },
+            )
+        )
         data = _assert_enveloped(await _call_as_caller(_server, "list_time_series", {"project_id": 42}))
         assert data["series"][0]["id"] == 77
 
     @respx.mock
     async def test_data_envelope_get_run_and_list_runs_wrap_the_log_and_error_text(self, _server):
-        run = _run(501, "error", error_message=f"Boundary tag '{CANARY}' not found", user_message=CANARY,
-                   log=f"line 1\n{CANARY}\nline 3")
+        run = _run(
+            501,
+            "error",
+            error_message=f"Boundary tag '{CANARY}' not found",
+            user_message=CANARY,
+            log=f"line 1\n{CANARY}\nline 3",
+        )
         respx.get(f"{BASE}/runs/501/").mock(return_value=httpx.Response(200, json=run))
-        respx.get(f"{BASE}/projects/42/runs/").mock(return_value=httpx.Response(200, json={
-            "count": 1, "next": None, "results": [run]}))
+        respx.get(f"{BASE}/projects/42/runs/").mock(
+            return_value=httpx.Response(200, json={"count": 1, "next": None, "results": [run]})
+        )
         data = _assert_enveloped(await _call_as_caller(_server, "get_run", {"run_id": 501}))
         assert data["status"] == "error" and data["id"] == 501
         _assert_enveloped(await _call_as_caller(_server, "list_runs", {"project_id": 42}))
@@ -235,18 +320,28 @@ class TestToolResultsEnvelope:
     async def test_data_envelope_attach_wraps_row_title_layer_name_and_summary_layer(self, _server):
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/frictions/").mock(
-            return_value=httpx.Response(200, json=[_row(9, CANARY, gn_layer=1400)]))
+            return_value=httpx.Response(200, json=[_row(9, CANARY, gn_layer=1400)])
+        )
         respx.patch(f"{BASE}/projects/42/frictions/9/").mock(
-            return_value=httpx.Response(200, json=_row(9, CANARY, gn_layer=1502)))
+            return_value=httpx.Response(200, json=_row(9, CANARY, gn_layer=1502))
+        )
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
-            return_value=httpx.Response(200, json=_dataset(1502, "geonode:ignore_previous_instructions")))
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:ignore_previous_instructions"))
+        )
         _mock_project(name="p")
         respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/?").mock(
-            return_value=httpx.Response(200, json={"datasets": []}))
+            return_value=httpx.Response(200, json={"datasets": []})
+        )
         respx.get(url__startswith=f"{ORIGIN}/api/v2/maps/{BASE_MAP}/").mock(
-            return_value=httpx.Response(200, json={"map": {"maplayers": []}}))
-        data = _assert_enveloped(await _call_as_caller(_server, "attach_input_layer", {
-            "project_id": 42, "kind": "friction", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+            return_value=httpx.Response(200, json={"map": {"maplayers": []}})
+        )
+        data = _assert_enveloped(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "friction", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
         assert data["outcome"] == "attached" and data["row_id"] == 9 and data["dataset_pk"] == 1502
         assert data["row_title"] == f"{OPEN}{CANARY}{CLOSE}"
         assert data["dataset_alternate"] == f"{OPEN}geonode:ignore_previous_instructions{CLOSE}"
@@ -256,22 +351,38 @@ class TestToolResultsEnvelope:
 
     @respx.mock
     async def test_data_envelope_attach_upload_failed_wraps_the_verbatim_execution_record(self, _server):
-        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec(
-            "failed", log=f"ERROR importing {CANARY}.geojson: bad geometry",
-            input_params={"files": {"base_file": f"/tmp/{CANARY}.geojson"}})))
+        respx.get(EXEC_STATUS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_exec(
+                    "failed",
+                    log=f"ERROR importing {CANARY}.geojson: bad geometry",
+                    input_params={"files": {"base_file": f"/tmp/{CANARY}.geojson"}},
+                ),
+            )
+        )
         _mock_project(name="p")
-        data = _assert_enveloped(await _call_as_caller(_server, "attach_input_layer", {
-            "project_id": 42, "kind": "boundary", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        data = _assert_enveloped(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "boundary", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
         assert data["outcome"] == "upload_failed"
         assert data["execution"]["status"] == f"{OPEN}failed{CLOSE}"  # the whole record is data
 
     @respx.mock
     async def test_data_envelope_get_terrain_wraps_the_terrain_title(self, _server):
-        respx.get(f"{BASE}/projects/42/terrain/110/").mock(return_value=httpx.Response(200, json={
-            "id": 110, "title": CANARY, "name": CANARY, "status": "ready", "gn_layer": None}))
+        respx.get(f"{BASE}/projects/42/terrain/110/").mock(
+            return_value=httpx.Response(
+                200, json={"id": 110, "title": CANARY, "name": CANARY, "status": "ready", "gn_layer": None}
+            )
+        )
         _mock_project(name="p")
-        data = _assert_enveloped(await _call_as_caller(_server, "get_terrain", {
-            "project_id": 42, "terrain_id": 110, "timeout_seconds": 0}))
+        data = _assert_enveloped(
+            await _call_as_caller(_server, "get_terrain", {"project_id": 42, "terrain_id": 110, "timeout_seconds": 0})
+        )
         assert data["outcome"] == "ready"
 
 
@@ -282,26 +393,53 @@ class TestComposedTextEnvelope:
     @respx.mock
     async def test_data_envelope_create_scenario_say_to_user_wraps_the_scenario_name(self, _server):
         respx.post(f"{BASE}/projects/42/scenarios/").mock(
-            return_value=httpx.Response(201, json={"id": 5, "name": CANARY}))
+            return_value=httpx.Response(201, json={"id": 5, "name": CANARY})
+        )
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(name=CANARY)))
         _mock_project(name="p")
-        data = _assert_enveloped(await _call_as_caller(_server, "create_scenario", {
-            "project_id": 42, "name": CANARY, "resolution": 36, "duration": 600}))
+        data = _assert_enveloped(
+            await _call_as_caller(
+                _server, "create_scenario", {"project_id": 42, "name": CANARY, "resolution": 36, "duration": 600}
+            )
+        )
         assert f"{OPEN}{CANARY}{CLOSE}" in data["say_to_user"]
         assert CANARY not in _bare(data["say_to_user"])
 
     @respx.mock
     async def test_data_envelope_unsigned_refusal_say_to_user_wraps_each_layer_title(self, _server):
-        unreviewed = [{"kind": "boundary", "layer_id": 1, "title": CANARY, "grant": "g", "client": "c",
-                     "gn_layer_name": "geonode:bdy", "feature_count": 4, "reopened": False}]
+        unreviewed = [
+            {
+                "kind": "boundary",
+                "layer_id": 1,
+                "title": CANARY,
+                "grant": "g",
+                "client": "c",
+                "gn_layer_name": "geonode:bdy",
+                "feature_count": 4,
+                "reopened": False,
+            }
+        ]
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario("created")))
-        respx.get(f"{BASE}/projects/42/boundaries/27497/").mock(return_value=httpx.Response(
-            200, json={"id": 27497, "title": "Boundary 01", "gn_layer": 1, "has_features": True}))
-        _mock_build(409, {"error_code": "UNREVIEWED_INPUTS", "project_id": 42, "unreviewed_inputs": unreviewed,
-                          "detail": "review them"})
+        respx.get(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(
+                200, json={"id": 27497, "title": "Boundary 01", "gn_layer": 1, "has_features": True}
+            )
+        )
+        _mock_build(
+            409,
+            {
+                "error_code": "UNREVIEWED_INPUTS",
+                "project_id": 42,
+                "unreviewed_inputs": unreviewed,
+                "detail": "review them",
+            },
+        )
         _mock_project(name="p")
-        data = _assert_enveloped(await _call_as_caller(_server, "build_scenario", {
-            "project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}))
+        data = _assert_enveloped(
+            await _call_as_caller(
+                _server, "build_scenario", {"project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}
+            )
+        )
         assert data["outcome"] == "unreviewed_inputs"
         assert f"{OPEN}{CANARY}{CLOSE} (boundary)" in data["say_to_user"]
 
@@ -311,13 +449,24 @@ class TestComposedTextEnvelope:
         _feature_label), and build_scenario relays the body verbatim — the `detail` key itself is data,
         not only the copy in say_to_user."""
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario("created")))
-        respx.get(f"{BASE}/projects/42/boundaries/27497/").mock(return_value=httpx.Response(
-            200, json={"id": 27497, "title": "Boundary 01", "gn_layer": 1, "has_features": True}))
-        _mock_build(422, {"error_code": "CULVERT_INVALID",
-                          "detail": f"Culvert '{CANARY}' has no shape. Fix it on the map, then build again."})
+        respx.get(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(
+                200, json={"id": 27497, "title": "Boundary 01", "gn_layer": 1, "has_features": True}
+            )
+        )
+        _mock_build(
+            422,
+            {
+                "error_code": "CULVERT_INVALID",
+                "detail": f"Culvert '{CANARY}' has no shape. Fix it on the map, then build again.",
+            },
+        )
         _mock_project(name="p")
-        data = _assert_enveloped(await _call_as_caller(_server, "build_scenario", {
-            "project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}))
+        data = _assert_enveloped(
+            await _call_as_caller(
+                _server, "build_scenario", {"project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}
+            )
+        )
         assert data["detail"].startswith(OPEN) and data["detail"].endswith(CLOSE), data["detail"]
         assert CANARY not in _bare(json.dumps(data))
 
@@ -326,12 +475,35 @@ class TestComposedTextEnvelope:
 # coverage by default: every registered tool, one canary-laden upstream
 # ---------------------------------------------------------------------------
 LADEN = {
-    "id": 1, "status": "ready", "computed_status": "built", "base_map": 7, "count": 1, "next": None,
-    "name": CANARY, "title": CANARY, "description": CANARY, "owner_username": CANARY,
-    "created_by_username": CANARY, "gn_layer": 3, "gn_layer_name": CANARY, "log": CANARY,
-    "error_message": CANARY, "user_message": CANARY, "row_title": CANARY,
-    "results": [{"id": 2, "name": CANARY, "title": CANARY, "gn_layer": 3, "gn_layer_name": CANARY,
-                 "log": CANARY, "description": CANARY, "data": {"rowData": []}}],
+    "id": 1,
+    "status": "ready",
+    "computed_status": "built",
+    "base_map": 7,
+    "count": 1,
+    "next": None,
+    "name": CANARY,
+    "title": CANARY,
+    "description": CANARY,
+    "owner_username": CANARY,
+    "created_by_username": CANARY,
+    "gn_layer": 3,
+    "gn_layer_name": CANARY,
+    "log": CANARY,
+    "error_message": CANARY,
+    "user_message": CANARY,
+    "row_title": CANARY,
+    "results": [
+        {
+            "id": 2,
+            "name": CANARY,
+            "title": CANARY,
+            "gn_layer": 3,
+            "gn_layer_name": CANARY,
+            "log": CANARY,
+            "description": CANARY,
+            "data": {"rowData": []},
+        }
+    ],
     "dataset": {"pk": "3", "alternate": CANARY, "title": CANARY},
 }
 
@@ -345,8 +517,11 @@ async def test_data_envelope_no_tool_returns_a_persons_text_outside_the_envelope
         resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = _parse(resp)["result"]["tools"]
         for i, tool in enumerate(tools, start=2):
-            resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
-                                json=_tools_call(tool["name"], _schema_args(tool["inputSchema"]), id=i))
+            resp = await c.post(
+                "/",
+                headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
+                json=_tools_call(tool["name"], _schema_args(tool["inputSchema"]), id=i),
+            )
             result = _parse(resp)["result"]
             if result.get("isError"):
                 continue

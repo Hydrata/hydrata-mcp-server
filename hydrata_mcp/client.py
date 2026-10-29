@@ -150,9 +150,7 @@ class HydrataClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def _send(
-        self, method: str, url: str, path: str, raise_for_status: bool = True, **kwargs
-    ) -> httpx.Response:
+    async def _send(self, method: str, url: str, path: str, raise_for_status: bool = True, **kwargs) -> httpx.Response:
         """One request with the caller's headers; every failure becomes a HydrataAPIError.
 
         `path` is only for the message (the part after the base, as the tool
@@ -176,19 +174,13 @@ class HydrataClient:
             if raise_for_status or resp.is_server_error:
                 resp.raise_for_status()
         except httpx.ConnectError:
-            raise HydrataAPIError(
-                f"Hydrata API is unreachable at {self._base}. The backend may be restarting."
-            )
+            raise HydrataAPIError(f"Hydrata API is unreachable at {self._base}. The backend may be restarting.")
         except httpx.TimeoutException:
-            raise HydrataAPIError(
-                "Hydrata API request timed out after 30s. Try again shortly."
-            )
+            raise HydrataAPIError("Hydrata API request timed out after 30s. Try again shortly.")
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status >= 500 and not _is_agent_paused(exc.response):
-                raise HydrataAPIError(
-                    f"Hydrata API server error ({status}). The backend may be experiencing issues."
-                )
+                raise HydrataAPIError(f"Hydrata API server error ({status}). The backend may be experiencing issues.")
             raise HydrataAPIError(_client_error_message(exc, method, path))
         return resp
 
@@ -221,18 +213,14 @@ class HydrataClient:
         resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
         return resp.json()
 
-    async def post(
-        self, path: str, json: dict | None = None, raise_for_status: bool = True
-    ) -> tuple[Any, int]:
+    async def post(self, path: str, json: dict | None = None, raise_for_status: bool = True) -> tuple[Any, int]:
         """POST request. Returns (body, status_code) since some endpoints return 202.
 
         With ``raise_for_status=False`` a 4xx is returned as ``(body, status)``
         too (TASK-3172: build_scenario surfaces 422/409 bodies verbatim);
         the default keeps every other tool's raise-on-4xx behaviour.
         """
-        resp = await self._send(
-            "POST", f"{self._base}{path}", path, raise_for_status=raise_for_status, json=json or {}
-        )
+        resp = await self._send("POST", f"{self._base}{path}", path, raise_for_status=raise_for_status, json=json or {})
         return self._body(resp), resp.status_code
 
     async def patch(self, path: str, json: dict | None = None) -> tuple[Any, int]:

@@ -24,6 +24,7 @@ def _server(env_vars):
     """Import server module after env vars are set (Config.from_env runs at import)."""
     # Reload to pick up test env vars
     import hydrata_mcp.server as srv
+
     importlib.reload(srv)
     return srv
 
@@ -31,9 +32,7 @@ def _server(env_vars):
 class TestListProjects:
     @respx.mock
     async def test_returns_json(self, _server):
-        respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json={"count": 0, "results": []})
-        )
+        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={"count": 0, "results": []}))
         result = await _server.list_projects()
         data = json.loads(result)
         assert data["count"] == 0
@@ -41,9 +40,7 @@ class TestListProjects:
 
     @respx.mock
     async def test_pagination_params(self, _server):
-        route = respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json={"count": 0, "results": []})
-        )
+        route = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={"count": 0, "results": []}))
         await _server.list_projects(page=2, page_size=10)
         assert route.calls[0].request.url.params["page"] == "2"
         assert route.calls[0].request.url.params["page_size"] == "10"
@@ -53,15 +50,14 @@ class TestGetProject:
     @respx.mock
     async def test_returns_project(self, _server):
         project = {"id": 1, "name": "Test Project", "projection": "EPSG:28356"}
-        respx.get(f"{BASE}/projects/1/").mock(
-            return_value=httpx.Response(200, json=project)
-        )
+        respx.get(f"{BASE}/projects/1/").mock(return_value=httpx.Response(200, json=project))
         result = await _server.get_project(project_id=1)
         assert json.loads(result)["name"] == "Test Project"
 
     @respx.mock
     async def test_not_found(self, _server):
         from hydrata_mcp.client import HydrataAPIError
+
         respx.get(f"{BASE}/projects/999/").mock(return_value=httpx.Response(404))
         with pytest.raises(HydrataAPIError, match="404"):
             await _server.get_project(project_id=999)
@@ -71,9 +67,7 @@ class TestGetScenario:
     @respx.mock
     async def test_returns_scenario(self, _server):
         scenario = {"id": 5, "computed_status": "built"}
-        respx.get(f"{BASE}/projects/1/scenarios/5/").mock(
-            return_value=httpx.Response(200, json=scenario)
-        )
+        respx.get(f"{BASE}/projects/1/scenarios/5/").mock(return_value=httpx.Response(200, json=scenario))
         result = await _server.get_scenario(project_id=1, scenario_id=5)
         assert json.loads(result)["computed_status"] == "built"
 
@@ -92,9 +86,7 @@ class TestStartSimulation:
     @respx.mock
     async def test_non_dict_body(self, _server):
         """Non-dict body is wrapped safely."""
-        respx.post(f"{BASE}/scenarios/5/run/").mock(
-            return_value=httpx.Response(200, json="accepted")
-        )
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(200, json="accepted"))
         result = await _server.start_simulation(scenario_id=5)
         data = json.loads(result)
         assert data["response"] == "accepted"
@@ -133,9 +125,7 @@ class TestCancelRun:
 
     @respx.mock
     async def test_non_dict_body(self, _server):
-        respx.post(f"{BASE}/runs/10/cancel/").mock(
-            return_value=httpx.Response(200, json="ok")
-        )
+        respx.post(f"{BASE}/runs/10/cancel/").mock(return_value=httpx.Response(200, json="ok"))
         result = await _server.cancel_run(run_id=10)
         data = json.loads(result)
         assert data["response"] == "ok"
@@ -154,9 +144,7 @@ class TestRetryRun:
 
     @respx.mock
     async def test_non_dict_body(self, _server):
-        respx.post(f"{BASE}/runs/10/retry/").mock(
-            return_value=httpx.Response(200, json="retrying")
-        )
+        respx.post(f"{BASE}/runs/10/retry/").mock(return_value=httpx.Response(200, json="retrying"))
         result = await _server.retry_run(run_id=10)
         data = json.loads(result)
         assert data["response"] == "retrying"
@@ -228,7 +216,7 @@ def _parse(resp):
     if resp.headers.get("content-type", "").startswith("text/event-stream"):
         for line in resp.text.splitlines():
             if line.startswith("data:"):
-                return json.loads(line[len("data:"):])
+                return json.loads(line[len("data:") :])
         raise AssertionError(f"no data: line in SSE body: {resp.text!r}")
     return resp.json()
 
@@ -237,9 +225,7 @@ def _parse(resp):
 async def _asgi_client(srv):
     """Run the app's lifespan (else every request 500s) and yield a client bound to it."""
     async with srv.app.router.lifespan_context(srv.app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=srv.app), base_url="http://testserver"
-        ) as c:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=srv.app), base_url="http://testserver") as c:
             yield c
 
 
@@ -248,9 +234,7 @@ class TestPassthrough:
 
     @respx.mock
     async def test_anon_tools_call_401_with_agent_key_challenge(self, _server):
-        upstream = respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json=UPSTREAM_OK)
-        )
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=MCP_HEADERS, json=_tools_call(id=7))
         assert resp.status_code == 401
@@ -287,8 +271,9 @@ class TestPassthrough:
     async def test_anon_notification_is_401(self, _server):
         """A JSON-RPC notification (no id) is refused too; the error carries id null."""
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers=MCP_HEADERS,
-                                json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+            resp = await c.post(
+                "/", headers=MCP_HEADERS, json={"jsonrpc": "2.0", "method": "notifications/initialized"}
+            )
         assert resp.status_code == 401
         assert resp.json()["id"] is None
 
@@ -357,9 +342,7 @@ class TestPassthrough:
     @respx.mock
     async def test_direct_tool_call_sends_no_server_held_credential(self, _server):
         """Outside an HTTP request there is no caller — and no server credential either."""
-        upstream = respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json=UPSTREAM_OK)
-        )
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         await _server.list_projects()
         assert upstream.calls[0].request.headers.get("authorization") is None
 
@@ -369,9 +352,7 @@ class TestPassthrough:
         so the internal 127.0.0.1:8081 nginx block matches the right server_name."""
         monkeypatch.setenv("HYDRATA_API_HOST", "hydrata.com")
         importlib.reload(_server)  # Config.from_env() runs at import
-        upstream = respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json=UPSTREAM_OK)
-        )
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         async with _asgi_client(_server) as c:
             resp = await c.post(
                 "/",
@@ -384,9 +365,7 @@ class TestPassthrough:
     @respx.mock
     async def test_upstream_host_is_url_host_when_unset(self, _server):
         """HYDRATA_API_HOST unset (localhost): httpx derives Host from the URL."""
-        upstream = respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json=UPSTREAM_OK)
-        )
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         async with _asgi_client(_server) as c:
             resp = await c.post(
                 "/",
@@ -439,14 +418,10 @@ class TestCliEntry:
         # fastmcp's own runner never calls uvicorn.run (it builds uvicorn.Server
         # itself) — left live it would BIND a port and hang the suite. Stub it so
         # a regression to `mcp.run(...)` fails as an assertion, not a hang.
-        monkeypatch.setattr(
-            _server.mcp, "run", lambda *a, **kw: recorded.__setitem__("mcp_run_called", True)
-        )
+        monkeypatch.setattr(_server.mcp, "run", lambda *a, **kw: recorded.__setitem__("mcp_run_called", True))
         # Non-default host/port so the forwarding assertions are not tautological
         # (Config's defaults coincide with uvicorn's own).
-        monkeypatch.setattr(
-            _server, "config", _server.Config(api_url=BASE, host="0.0.0.0", port=18765)
-        )
+        monkeypatch.setattr(_server, "config", _server.Config(api_url=BASE, host="0.0.0.0", port=18765))
 
         _server.main()
 
@@ -527,18 +502,12 @@ class TestCreateProjectTool:
     @respx.mock
     async def test_create_project_posts_name_projection_and_forwards_the_key(self, _server):
         route = respx.post(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(
-                201, json={"id": 42, "name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
-            )
+            return_value=httpx.Response(201, json={"id": 42, "name": "mcp-w1-2469-t", "projection": "EPSG:32756"})
         )
         # TASK-3203 — the create body's base_map is null (the map is made async):
         # the tool re-reads the detail once.
-        respx.get(f"{BASE}/projects/42/").mock(
-            return_value=httpx.Response(200, json={"id": 42, "base_map": 1525})
-        )
-        result = await _call_as_caller(
-            _server, "create_project", {"name": "mcp-w1-2469-t", "projection": "EPSG:32756"}
-        )
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
+        result = await _call_as_caller(_server, "create_project", {"name": "mcp-w1-2469-t", "projection": "EPSG:32756"})
         assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         # Exactly the two writable fields of ProjectCreateSerializerV2.
         assert json.loads(route.calls[0].request.content) == {
@@ -553,9 +522,7 @@ class TestCreateProjectTool:
 
 class TestPresignTerrainUploadTool:
     @respx.mock
-    async def test_presign_terrain_upload_posts_filename_type_size_and_forwards_the_key(
-        self, _server
-    ):
+    async def test_presign_terrain_upload_posts_filename_type_size_and_forwards_the_key(self, _server):
         presigned = {
             "process_id": PROCESS_ID,
             "staging_key": STAGING_KEY,
@@ -586,17 +553,13 @@ class TestPresignTerrainUploadTool:
         assert data["http_status"] == 201
 
     @respx.mock
-    async def test_presign_terrain_upload_defaults_image_tiff_and_omits_unknown_size(
-        self, _server
-    ):
+    async def test_presign_terrain_upload_defaults_image_tiff_and_omits_unknown_size(self, _server):
         """content_type defaults to image/tiff (the signed header the PUT must repeat);
         an unknown size is left OUT of the body — the API treats absent as unchecked."""
         route = respx.post(f"{BASE}/projects/42/terrain/upload/presign/").mock(
             return_value=httpx.Response(201, json={"upload_url": "u", "staging_key": STAGING_KEY})
         )
-        await _call_as_caller(
-            _server, "presign_terrain_upload", {"project_id": 42, "filename": DEM_NAME}
-        )
+        await _call_as_caller(_server, "presign_terrain_upload", {"project_id": 42, "filename": DEM_NAME})
         assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert json.loads(route.calls[0].request.content) == {
             "filename": DEM_NAME,
@@ -606,9 +569,7 @@ class TestPresignTerrainUploadTool:
 
 class TestFinalizeTerrainUploadTool:
     @respx.mock
-    async def test_finalize_terrain_upload_posts_key_process_title_and_forwards_the_key(
-        self, _server
-    ):
+    async def test_finalize_terrain_upload_posts_key_process_title_and_forwards_the_key(self, _server):
         route = respx.post(f"{BASE}/projects/42/terrain/upload/finalize/").mock(
             return_value=httpx.Response(202, json=_terrain(7, "creating"))
         )
@@ -651,9 +612,7 @@ class TestFinalizeTerrainUploadTool:
             )
         )
         with pytest.raises(HydrataAPIError, match="400.*UPLOAD_NOT_FOUND") as exc_info:
-            await _server.finalize_terrain_upload(
-                project_id=42, staging_key=STAGING_KEY, process_id=PROCESS_ID
-            )
+            await _server.finalize_terrain_upload(project_id=42, staging_key=STAGING_KEY, process_id=PROCESS_ID)
         assert "No uploaded file found" in str(exc_info.value)
 
 
@@ -771,13 +730,9 @@ class TestGetTerrainTool:
         """GET /projects/<id>/terrain/ is a BARE JSON array (no count/results);
         with no terrain_id the tool follows the newest (highest id) row."""
         route = respx.get(f"{BASE}/projects/42/terrain/").mock(
-            return_value=httpx.Response(
-                200, json=[_terrain(3, "ready"), _terrain(9, "ready"), _terrain(5, "error")]
-            )
+            return_value=httpx.Response(200, json=[_terrain(3, "ready"), _terrain(9, "ready"), _terrain(5, "error")])
         )
-        data = _tool_json(
-            await _call_as_caller(_server, "get_terrain", {"project_id": 42, "poll_interval_seconds": 0})
-        )
+        data = _tool_json(await _call_as_caller(_server, "get_terrain", {"project_id": 42, "poll_interval_seconds": 0}))
         assert route.calls[0].request.headers["authorization"] == CALLER_KEY
         assert data["terrain"]["id"] == 9
         assert data["outcome"] == "ready"
@@ -785,12 +740,8 @@ class TestGetTerrainTool:
 
     @respx.mock
     async def test_get_terrain_empty_list_is_not_found_not_a_loop(self, _server):
-        route = respx.get(f"{BASE}/projects/42/terrain/").mock(
-            return_value=httpx.Response(200, json=[])
-        )
-        data = _tool_json(
-            await _call_as_caller(_server, "get_terrain", {"project_id": 42, "poll_interval_seconds": 0})
-        )
+        route = respx.get(f"{BASE}/projects/42/terrain/").mock(return_value=httpx.Response(200, json=[]))
+        data = _tool_json(await _call_as_caller(_server, "get_terrain", {"project_id": 42, "poll_interval_seconds": 0}))
         assert route.call_count == 1
         assert data["outcome"] == "not_found"
         assert data["terrain"] is None
@@ -926,9 +877,7 @@ def _tool_error_text(result):
 
 class TestCreateTimeSeriesTool:
     @respx.mock
-    async def test_create_time_series_posts_series_type_and_units_top_level_and_forwards_the_key(
-        self, _server
-    ):
+    async def test_create_time_series_posts_series_type_and_units_top_level_and_forwards_the_key(self, _server):
         route = respx.post(f"{BASE}/projects/42/time-series/").mock(
             return_value=httpx.Response(201, json=_series_row(77))
         )
@@ -974,9 +923,7 @@ class TestCreateTimeSeriesTool:
             return_value=httpx.Response(201, json=_series_row(78, series_type="stage", units="m"))
         )
         data = _tool_json(
-            await _call_as_caller(
-                _server, "create_time_series", _series_args(series_type="stage", units="m")
-            )
+            await _call_as_caller(_server, "create_time_series", _series_args(series_type="stage", units="m"))
         )
         body = json.loads(route.calls[0].request.content)
         assert body["series_type"] == "stage"
@@ -984,9 +931,7 @@ class TestCreateTimeSeriesTool:
         assert data["series_type"] == "stage"
 
     @respx.mock
-    async def test_create_time_series_rejects_unknown_series_type_without_upstream_call(
-        self, _server
-    ):
+    async def test_create_time_series_rejects_unknown_series_type_without_upstream_call(self, _server):
         route = respx.post(f"{BASE}/projects/42/time-series/").mock(
             return_value=httpx.Response(201, json=_series_row(77))
         )
@@ -1008,17 +953,13 @@ class TestCreateTimeSeriesTool:
         ids=["list", "no-rowData", "rowData-not-list", "string"],
     )
     @respx.mock
-    async def test_create_time_series_rejects_non_rowdata_shape_without_upstream_call(
-        self, _server, bad_data
-    ):
+    async def test_create_time_series_rejects_non_rowdata_shape_without_upstream_call(self, _server, bad_data):
         """A non-{rowData: [...]} `data` is an UNHANDLED 500 on the API (clean()
         does data.get('rowData') without a guard) whose body the client masks."""
         route = respx.post(f"{BASE}/projects/42/time-series/").mock(
             return_value=httpx.Response(201, json=_series_row(77))
         )
-        text = _tool_error_text(
-            await _call_as_caller(_server, "create_time_series", _series_args(data=bad_data))
-        )
+        text = _tool_error_text(await _call_as_caller(_server, "create_time_series", _series_args(data=bad_data)))
         assert not route.called
         # A non-object is refused one layer earlier, by the tool's own input
         # schema (`data: dict` → pydantic "Input should be a valid dictionary");
@@ -1038,9 +979,7 @@ class TestCreateTimeSeriesTool:
         ids=["bad-iso", "non-numeric", "no-value", "no-timestamp", "int-timestamp", "row-list"],
     )
     @respx.mock
-    async def test_create_time_series_rejects_bad_row_without_upstream_call(
-        self, _server, bad_row
-    ):
+    async def test_create_time_series_rejects_bad_row_without_upstream_call(self, _server, bad_row):
         """Mirrors TimeSeries.clean() (hydrology/models.py:126-151): its
         ValidationError is raised from full_clean() inside save(), which DRF
         does NOT map to a 400 — the API answers 500 and the client hides the
@@ -1064,56 +1003,84 @@ class TestCreateTimeSeriesTool:
         from hydrata_mcp.client import HydrataAPIError
 
         respx.post(f"{BASE}/projects/42/time-series/").mock(
-            return_value=httpx.Response(
-                400, json={"timezone": ['"Mars/Olympus" is not a valid choice.']}
-            )
+            return_value=httpx.Response(400, json={"timezone": ['"Mars/Olympus" is not a valid choice.']})
         )
         with pytest.raises(HydrataAPIError, match="400") as exc_info:
-            await _server.create_time_series(
-                **{k: v for k, v in _series_args(timezone="Mars/Olympus").items()}
-            )
+            await _server.create_time_series(**{k: v for k, v in _series_args(timezone="Mars/Olympus").items()})
         assert "Mars/Olympus" in str(exc_info.value)
 
 
 SUMMARY_HYDROGRAPH = {
-    "n_rows": 4, "first_at": "2020-01-01T00:00:00+00:00", "last_at": "2020-01-01T06:00:00+00:00",
-    "duration_s": 21600.0, "peak_value": 19.7, "peak_at": "2020-01-01T02:00:00+00:00", "median_step_s": 7200.0,
-    "min_step_s": 7200.0, "max_step_s": 7200.0, "total": 120000.0, "total_units": "m3", "n_negative": 0,
+    "n_rows": 4,
+    "first_at": "2020-01-01T00:00:00+00:00",
+    "last_at": "2020-01-01T06:00:00+00:00",
+    "duration_s": 21600.0,
+    "peak_value": 19.7,
+    "peak_at": "2020-01-01T02:00:00+00:00",
+    "median_step_s": 7200.0,
+    "min_step_s": 7200.0,
+    "max_step_s": 7200.0,
+    "total": 120000.0,
+    "total_units": "m3",
+    "n_negative": 0,
     "trailing_value": 0.0,
 }
-HYDROGRAPH_ROWS = {"rowData": [{"timestamp": f"2020-01-01T0{h}:00:00", "value": v}
-                               for h, v in ((0, 0.0), (2, 19.7), (4, 5.0), (6, 0.0))]}
+HYDROGRAPH_ROWS = {
+    "rowData": [
+        {"timestamp": f"2020-01-01T0{h}:00:00", "value": v} for h, v in ((0, 0.0), (2, 19.7), (4, 5.0), (6, 0.0))
+    ]
+}
 
 
 class TestCreateTimeSeriesUnitsAndSummary:
-    @pytest.mark.parametrize("series_type,units", [
-        ("hyetograph", "m3/s"), ("hydrograph", "mm/hr"), ("stage", "mm"), ("hyetograph", ""), ("hydrograph", ""),
-    ])
+    @pytest.mark.parametrize(
+        "series_type,units",
+        [
+            ("hyetograph", "m3/s"),
+            ("hydrograph", "mm/hr"),
+            ("stage", "mm"),
+            ("hyetograph", ""),
+            ("hydrograph", ""),
+        ],
+    )
     @respx.mock
     async def test_create_time_series_units_rule_refuses_before_any_post(self, _server, series_type, units):
         route = respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(201, json={}))
-        text = _tool_error_text(await _call_as_caller(
-            _server, "create_time_series", _series_args(series_type=series_type, units=units)))
+        text = _tool_error_text(
+            await _call_as_caller(_server, "create_time_series", _series_args(series_type=series_type, units=units))
+        )
         assert not route.called
-        assert "engine reads" in text and "Nothing was sent" in text and f"units={_server.SERIES_UNITS[series_type][0]!r}" in text
+        assert (
+            "engine reads" in text
+            and "Nothing was sent" in text
+            and f"units={_server.SERIES_UNITS[series_type][0]!r}" in text
+        )
 
-    @pytest.mark.parametrize("series_type,units", [
-        ("hyetograph", "mm/h"), ("hydrograph", "m^3/s"), ("hydrograph", "cumec"), ("stage", "m"), ("generic", ""),
-        ("generic", "anything"),
-    ])
+    @pytest.mark.parametrize(
+        "series_type,units",
+        [
+            ("hyetograph", "mm/h"),
+            ("hydrograph", "m^3/s"),
+            ("hydrograph", "cumec"),
+            ("stage", "m"),
+            ("generic", ""),
+            ("generic", "anything"),
+        ],
+    )
     @respx.mock
     async def test_create_time_series_units_rule_lets_matching_units_through(self, _server, series_type, units):
         route = respx.post(f"{BASE}/projects/42/time-series/").mock(
-            return_value=httpx.Response(201, json=_series_row(77, series_type=series_type, units=units)))
+            return_value=httpx.Response(201, json=_series_row(77, series_type=series_type, units=units))
+        )
         await _call_as_caller(_server, "create_time_series", _series_args(series_type=series_type, units=units))
         assert route.called
 
     @respx.mock
     async def test_create_time_series_hold_last_value_is_forwarded(self, _server):
         route = respx.post(f"{BASE}/projects/42/time-series/").mock(
-            return_value=httpx.Response(201, json=_series_row(77, hold_last_value=True)))
-        data = _tool_json(await _call_as_caller(
-            _server, "create_time_series", _series_args(hold_last_value=True)))
+            return_value=httpx.Response(201, json=_series_row(77, hold_last_value=True))
+        )
+        data = _tool_json(await _call_as_caller(_server, "create_time_series", _series_args(hold_last_value=True)))
         assert json.loads(route.calls[0].request.content)["hold_last_value"] is True
         assert data["hold_last_value"] is True
 
@@ -1121,21 +1088,48 @@ class TestCreateTimeSeriesUnitsAndSummary:
     async def test_create_time_series_hold_last_value_trailing_refusal_reaches_the_agent(self, _server):
         """The trailing-value rule lives on the server: its 400 body (error_code + hint) must be relayed."""
         from hydrata_mcp.client import HydrataAPIError
-        respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(400, json={
-            "error_code": "TRAILING_VALUE_HELD", "hint": "End the series with a 0 row, or send hold_last_value"}))
+
+        respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(
+                400,
+                json={
+                    "error_code": "TRAILING_VALUE_HELD",
+                    "hint": "End the series with a 0 row, or send hold_last_value",
+                },
+            )
+        )
         with pytest.raises(HydrataAPIError, match="TRAILING_VALUE_HELD"):
             await _server.create_time_series(**_series_args(hold_last_value=False))
 
     @respx.mock
     async def test_create_time_series_echoes_the_server_summary_and_says_it(self, _server):
-        respx.post(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(201, json=_series_row(
-            77, name="Creek in", series_type="hydrograph", units="m3/s", timezone="UTC",
-            summary=SUMMARY_HYDROGRAPH, data=HYDROGRAPH_ROWS)))
-        data = _tool_json(await _call_as_caller(_server, "create_time_series", _series_args(
-            name="Creek in", series_type="hydrograph", units="m3/s", timezone="UTC", data=HYDROGRAPH_ROWS)))
+        respx.post(f"{BASE}/projects/42/time-series/").mock(
+            return_value=httpx.Response(
+                201,
+                json=_series_row(
+                    77,
+                    name="Creek in",
+                    series_type="hydrograph",
+                    units="m3/s",
+                    timezone="UTC",
+                    summary=SUMMARY_HYDROGRAPH,
+                    data=HYDROGRAPH_ROWS,
+                ),
+            )
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "create_time_series",
+                _series_args(
+                    name="Creek in", series_type="hydrograph", units="m3/s", timezone="UTC", data=HYDROGRAPH_ROWS
+                ),
+            )
+        )
         assert data["series_summary"] == SUMMARY_HYDROGRAPH
-        assert data["say_to_user"].startswith("Hydrograph Creek in: peak 19.7 m3/s at 02:00, volume 1.2e+05 m3, "
-                                              "ends at 0.")
+        assert data["say_to_user"].startswith(
+            "Hydrograph Creek in: peak 19.7 m3/s at 02:00, volume 1.2e+05 m3, ends at 0."
+        )
 
     @respx.mock
     async def test_create_time_series_without_a_server_summary_is_unchanged(self, _server):
@@ -1147,17 +1141,21 @@ class TestCreateTimeSeriesUnitsAndSummary:
 class TestGetScenarioHydrologyCheck:
     @respx.mock
     async def test_hydrology_check_is_passed_through_verbatim_when_the_server_sends_it(self, _server):
-        check = {"features": [{"kind": "rainfall", "feature": "Gauge 1", "summary": SUMMARY_HYDROGRAPH}],
-                 "warnings": [{"code": "PEAK_OUTSIDE_WINDOW", "message": "peak is after the model ends"}]}
-        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
-            200, json={"id": 7, "computed_status": "created", "hydrology_check": check}))
+        check = {
+            "features": [{"kind": "rainfall", "feature": "Gauge 1", "summary": SUMMARY_HYDROGRAPH}],
+            "warnings": [{"code": "PEAK_OUTSIDE_WINDOW", "message": "peak is after the model ends"}],
+        }
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(
+            return_value=httpx.Response(200, json={"id": 7, "computed_status": "created", "hydrology_check": check})
+        )
         data = _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
         assert data["hydrology_check"] == check
 
     @respx.mock
     async def test_hydrology_check_absent_stays_absent_not_null(self, _server):
-        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
-            200, json={"id": 7, "computed_status": "created"}))
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(
+            return_value=httpx.Response(200, json={"id": 7, "computed_status": "created"})
+        )
         data = _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
         assert "hydrology_check" not in data
 
@@ -1165,45 +1163,63 @@ class TestGetScenarioHydrologyCheck:
 class TestGetScenarioUnboundSeries:
     """TASK-3213 AC5: get_scenario warns, naming each project series no inflow or rainfall feature uses."""
 
-    CHECK = {"features": [
-        {"layer_kind": "inflow", "feature_id": "inf.1", "series": {"id": 7, "name": "Creek hydrograph"}},
-        {"layer_kind": "rainfall", "feature_id": "rai.1", "series": {"id": 6, "name": "Design storm"}}],
-        "warnings": []}
+    CHECK = {
+        "features": [
+            {"layer_kind": "inflow", "feature_id": "inf.1", "series": {"id": 7, "name": "Creek hydrograph"}},
+            {"layer_kind": "rainfall", "feature_id": "rai.1", "series": {"id": 6, "name": "Design storm"}},
+        ],
+        "warnings": [],
+    }
 
     @staticmethod
     def _listing(*rows):
-        return {"count": len(rows), "results": [
-            {"id": i, "name": n, "series_type": t, "units": "", "timezone": "UTC", "data": {"rowData": []}}
-            for i, n, t in rows]}
+        return {
+            "count": len(rows),
+            "results": [
+                {"id": i, "name": n, "series_type": t, "units": "", "timezone": "UTC", "data": {"rowData": []}}
+                for i, n, t in rows
+            ],
+        }
 
     async def _scenario(self, _server, check, listing):
-        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
-            200, json={"id": 7, "computed_status": "created", "hydrology_check": check}))
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(
+            return_value=httpx.Response(200, json={"id": 7, "computed_status": "created", "hydrology_check": check})
+        )
         respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(200, json=listing))
         return _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
 
     @respx.mock
     async def test_unbound_series_names_each_series_no_feature_uses(self, _server):
-        data = await self._scenario(_server, self.CHECK, self._listing(
-            (7, "Creek hydrograph", "hydrograph"), (6, "Design storm", "hyetograph"),
-            (9, "Orphan gauge", "hyetograph"), (10, "Old flow", "hydrograph")))
+        data = await self._scenario(
+            _server,
+            self.CHECK,
+            self._listing(
+                (7, "Creek hydrograph", "hydrograph"),
+                (6, "Design storm", "hyetograph"),
+                (9, "Orphan gauge", "hyetograph"),
+                (10, "Old flow", "hydrograph"),
+            ),
+        )
         assert data["unbound_series"] == [
             {"id": 9, "name": "Orphan gauge", "series_type": "hyetograph"},
-            {"id": 10, "name": "Old flow", "series_type": "hydrograph"}]
+            {"id": 10, "name": "Old flow", "series_type": "hydrograph"},
+        ]
         assert "'Orphan gauge'" in data["say_to_user"] and "'Old flow'" in data["say_to_user"]
         assert "'Creek hydrograph'" not in data["say_to_user"]
 
     @respx.mock
     async def test_unbound_series_every_series_used_adds_nothing(self, _server):
         """NEGATIVE CONTROL: no warning, no key, no say_to_user."""
-        data = await self._scenario(_server, self.CHECK, self._listing(
-            (7, "Creek hydrograph", "hydrograph"), (6, "Design storm", "hyetograph")))
+        data = await self._scenario(
+            _server, self.CHECK, self._listing((7, "Creek hydrograph", "hydrograph"), (6, "Design storm", "hyetograph"))
+        )
         assert "unbound_series" not in data and "say_to_user" not in data
 
     @respx.mock
     async def test_unbound_series_a_stage_series_is_a_boundary_input_and_not_checked(self, _server):
-        data = await self._scenario(_server, self.CHECK, self._listing(
-            (7, "Creek hydrograph", "hydrograph"), (8, "Tide", "stage")))
+        data = await self._scenario(
+            _server, self.CHECK, self._listing((7, "Creek hydrograph", "hydrograph"), (8, "Tide", "stage"))
+        )
         assert "unbound_series" not in data
 
     @respx.mock
@@ -1214,16 +1230,20 @@ class TestGetScenarioUnboundSeries:
 
     @respx.mock
     async def test_unbound_series_a_failed_series_listing_never_breaks_get_scenario(self, _server):
-        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
-            200, json={"id": 7, "computed_status": "created", "hydrology_check": self.CHECK}))
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(
+            return_value=httpx.Response(
+                200, json={"id": 7, "computed_status": "created", "hydrology_check": self.CHECK}
+            )
+        )
         respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(500, json={"detail": "x"}))
         data = _tool_json(await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7}))
         assert data["scenario_id"] == 7 and "unbound_series" not in data
 
     @respx.mock
     async def test_unbound_series_without_a_hydrology_check_makes_no_listing_call(self, _server):
-        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(return_value=httpx.Response(
-            200, json={"id": 7, "computed_status": "created"}))
+        respx.get(f"{BASE}/projects/42/scenarios/7/").mock(
+            return_value=httpx.Response(200, json={"id": 7, "computed_status": "created"})
+        )
         listing = respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(200, json={}))
         await _call_as_caller(_server, "get_scenario", {"project_id": 42, "scenario_id": 7})
         assert not listing.called
@@ -1231,15 +1251,11 @@ class TestGetScenarioUnboundSeries:
 
 class TestAttachInputLayerTool:
     @respx.mock
-    async def test_attach_input_layer_legacy_structure_kind_patches_buildings_with_a_deprecation_note(
-        self, _server
-    ):
+    async def test_attach_input_layer_legacy_structure_kind_patches_buildings_with_a_deprecation_note(self, _server):
         """TASK-3586: kind 'structure' (the pre-rename name) still attaches — to the
         BUILDINGS route — and the result carries a deprecation note; kind
         'building' is the same call without the note."""
-        respx.get(EXEC_STATUS_URL).mock(
-            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
-        )
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         list_route = respx.get(f"{BASE}/projects/42/buildings/").mock(
             return_value=httpx.Response(200, json=[_row(7, "Building 01", gn_layer=1400)])
         )
@@ -1249,9 +1265,7 @@ class TestAttachInputLayerTool:
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
             return_value=httpx.Response(200, json=_dataset(1502, "geonode:str_42_building_01"))
         )
-        legacy_route = respx.get(f"{BASE}/projects/42/structures/").mock(
-            return_value=httpx.Response(200, json=[])
-        )
+        legacy_route = respx.get(f"{BASE}/projects/42/structures/").mock(return_value=httpx.Response(200, json=[]))
         args = {"project_id": 42, "execution_id": EXEC_ID, "poll_interval_seconds": 0}
 
         legacy = _tool_json(await _call_as_caller(_server, "attach_input_layer", {**args, "kind": "structure"}))
@@ -1268,9 +1282,7 @@ class TestAttachInputLayerTool:
 
     @pytest.mark.parametrize("kind", list(INPUT_LAYER_ROUTES))
     @respx.mock
-    async def test_attach_input_layer_patches_the_default_row_and_forwards_the_key(
-        self, _server, kind
-    ):
+    async def test_attach_input_layer_patches_the_default_row_and_forwards_the_key(self, _server, kind):
         route_name = INPUT_LAYER_ROUTES[kind]
         pk = 124_556
         # The execution-status route is GeoNode's, at the ORIGIN — not under /api/v2/anuga.
@@ -1320,9 +1332,7 @@ class TestAttachInputLayerTool:
 
     @pytest.mark.parametrize("kind", ["breakline", "culvert"])
     @respx.mock
-    async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_write(
-        self, _server, kind
-    ):
+    async def test_attach_input_layer_refuses_breakline_and_culvert_without_any_write(self, _server, kind):
         """Breakline is still refused before any request. TASK-3641 (epic 3585)
         INVERTED the culvert case: kind=culvert is no longer refused — it reaches
         the upload poll (a failed import here, so it still writes nothing). The
@@ -1336,8 +1346,7 @@ class TestAttachInputLayerTool:
             respx.get(f"{BASE}/projects/42/{r}/").mock(return_value=httpx.Response(200, json=[]))
             for r in (*INPUT_LAYER_ROUTES.values(), "culverts")
         ]
-        culverts_post = respx.post(f"{BASE}/projects/42/culverts/").mock(
-            return_value=httpx.Response(201, json={}))
+        culverts_post = respx.post(f"{BASE}/projects/42/culverts/").mock(return_value=httpx.Response(201, json={}))
         buildings_post, mesh_regions_post = _mock_no_wrapper_posts()
         result = await _call_as_caller(
             _server, "attach_input_layer", {"project_id": 42, "kind": kind, "execution_id": EXEC_ID}
@@ -1366,9 +1375,7 @@ class TestAttachInputLayerTool:
         ids=["traversal", "short", "query", "empty"],
     )
     @respx.mock
-    async def test_attach_input_layer_refuses_a_non_uuid_execution_id_without_any_http(
-        self, _server, bad_id
-    ):
+    async def test_attach_input_layer_refuses_a_non_uuid_execution_id_without_any_http(self, _server, bad_id):
         """W1a sweep (epic 2467): execution_id is the ONE free-form path segment a
         tool interpolates into a URL, and on prod that URL is the unthrottled
         loopback door to Django (geonode-https.j2 :8081). GeoNode's exec_id is a
@@ -1410,9 +1417,7 @@ class TestAttachInputLayerTool:
         list_route = respx.get(f"{BASE}/projects/42/rainfalls/").mock(
             return_value=httpx.Response(200, json=[_row(1, "Rainfall 01")])
         )
-        patch_route = respx.patch(f"{BASE}/projects/42/rainfalls/1/").mock(
-            return_value=httpx.Response(200, json={})
-        )
+        patch_route = respx.patch(f"{BASE}/projects/42/rainfalls/1/").mock(return_value=httpx.Response(200, json={}))
         data = _tool_json(
             await _call_as_caller(
                 _server,
@@ -1429,16 +1434,12 @@ class TestAttachInputLayerTool:
         assert "not a valid GeoJSON" in data["execution"]["log"]
 
     @respx.mock
-    async def test_attach_input_layer_falls_back_to_executionrequest_for_the_dataset_pk(
-        self, _server
-    ):
+    async def test_attach_input_layer_falls_back_to_executionrequest_for_the_dataset_pk(self, _server):
         """finished but output_params.resources empty → GET /api/v2/executionrequest/<id>/
         → request.output_params.resources[0].id (the e2e recipe's fallback)."""
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [])))
         fallback = respx.get(EXEC_REQUEST_URL).mock(
-            return_value=httpx.Response(
-                200, json={"request": {"output_params": {"resources": [{"id": "1502"}]}}}
-            )
+            return_value=httpx.Response(200, json={"request": {"output_params": {"resources": [{"id": "1502"}]}}})
         )
         respx.get(f"{BASE}/projects/42/boundaries/").mock(
             return_value=httpx.Response(200, json=[_row(27497, "Boundary 01")])
@@ -1494,9 +1495,7 @@ class TestAttachInputLayerTool:
     @respx.mock
     async def test_attach_input_layer_timeout_is_bounded_and_patches_nothing(self, _server):
         """timeout_seconds=0 → ONE status read, then `timed_out`; the agent re-calls."""
-        status_route = respx.get(EXEC_STATUS_URL).mock(
-            return_value=httpx.Response(200, json=_exec("running"))
-        )
+        status_route = respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("running")))
         list_route = respx.get(f"{BASE}/projects/42/rainfalls/").mock(
             return_value=httpx.Response(200, json=[_row(1, "Rainfall 01")])
         )
@@ -1521,9 +1520,7 @@ class TestAttachInputLayerTool:
 
     @respx.mock
     async def test_attach_input_layer_with_no_default_row_says_run_finalize_first(self, _server):
-        respx.get(EXEC_STATUS_URL).mock(
-            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
-        )
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/inflows/").mock(return_value=httpx.Response(200, json=[]))
         patch_route = respx.patch(url__regex=rf"{BASE}/projects/42/inflows/\d+/").mock(
             return_value=httpx.Response(200, json={})
@@ -1541,14 +1538,10 @@ class TestAttachInputLayerTool:
         assert data["dataset_pk"] == 1502  # the upload DID land; only the row is missing
 
     @respx.mock
-    async def test_attach_input_layer_with_several_rows_patches_the_01_row_and_reports_ids(
-        self, _server
-    ):
+    async def test_attach_input_layer_with_several_rows_patches_the_01_row_and_reports_ids(self, _server):
         """'First' is deterministic: the '<Kind> 01' row if present, else the lowest id
         (the list has no declared ordering). Every id is reported."""
-        respx.get(EXEC_STATUS_URL).mock(
-            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
-        )
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/mesh-regions/").mock(
             return_value=httpx.Response(
                 200,
@@ -1578,9 +1571,7 @@ class TestAttachInputLayerTool:
         """TASK-3586: an existing project's default building row is titled
         'Structure 01'. It is the default row even when a user-added building
         has a lower id."""
-        respx.get(EXEC_STATUS_URL).mock(
-            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
-        )
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/buildings/").mock(
             return_value=httpx.Response(200, json=[_row(9, "Structure 01"), _row(3, "Garage")])
         )
@@ -1601,9 +1592,7 @@ class TestAttachInputLayerTool:
         assert patch_route.called
         assert data["row_id"] == 9
 
-    async def test_attach_input_layer_and_time_series_listed_culvert_conveyed_no_file_inputs(
-        self, _server
-    ):
+    async def test_attach_input_layer_and_time_series_listed_culvert_conveyed_no_file_inputs(self, _server):
         """AC3: the culvert engine conveys flow (TASK-3661: no 'not conveyed' caveat) in attach_input_layer's description; neither
         tool takes file contents (create_time_series takes a small JSON `data`
         object by design — decision D7 forbids bytes, not row objects)."""
@@ -1747,26 +1736,38 @@ async def _build(srv, **overrides):
 
 class TestCreateScenarioTool:
     @respx.mock
-    async def test_create_scenario_posts_the_write_fields_and_reports_the_estimate_from_the_detail_get(
-        self, _server
-    ):
+    async def test_create_scenario_posts_the_write_fields_and_reports_the_estimate_from_the_detail_get(self, _server):
         created = {
-            "id": 5, "name": "mcp-w1-3172-t", "description": "", "terrain": 110533,
-            "boundary": 27497, "friction": 124557, "inflow": 124555, "rainfall": 124556,
-            "building": 124558, "mesh_region": None, "network": None,
-            "resolution": 36.0, "duration": 43200,
+            "id": 5,
+            "name": "mcp-w1-3172-t",
+            "description": "",
+            "terrain": 110533,
+            "boundary": 27497,
+            "friction": 124557,
+            "inflow": 124555,
+            "rainfall": 124556,
+            "building": 124558,
+            "mesh_region": None,
+            "network": None,
+            "resolution": 36.0,
+            "duration": 43200,
         }
-        post_route = respx.post(f"{BASE}/projects/42/scenarios/").mock(
-            return_value=httpx.Response(201, json=created)
-        )
+        post_route = respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json=created))
         detail_route = respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
         result = await _call_as_caller(
             _server,
             "create_scenario",
             {
-                "project_id": 42, "name": "mcp-w1-3172-t", "resolution": 36, "duration": 43200,
-                "terrain": 110533, "boundary": 27497, "friction": 124557, "inflow": 124555,
-                "rainfall": 124556, "building": 124558,
+                "project_id": 42,
+                "name": "mcp-w1-3172-t",
+                "resolution": 36,
+                "duration": 43200,
+                "terrain": 110533,
+                "boundary": 27497,
+                "friction": 124557,
+                "inflow": 124555,
+                "rainfall": 124556,
+                "building": 124558,
             },
         )
         assert post_route.calls[0].request.headers["authorization"] == CALLER_KEY
@@ -1774,9 +1775,17 @@ class TestCreateScenarioTool:
         # Exactly ScenarioCreateSerializerV2's writable fields the tool exposes
         # (network is not offered); an unset FK travels as null.
         assert json.loads(post_route.calls[0].request.content) == {
-            "name": "mcp-w1-3172-t", "description": "", "resolution": 36, "duration": 43200,
-            "terrain": 110533, "boundary": 27497, "friction": 124557, "inflow": 124555,
-            "rainfall": 124556, "building": 124558, "mesh_region": None,
+            "name": "mcp-w1-3172-t",
+            "description": "",
+            "resolution": 36,
+            "duration": 43200,
+            "terrain": 110533,
+            "boundary": 27497,
+            "friction": 124557,
+            "inflow": 124555,
+            "rainfall": 124556,
+            "building": 124558,
+            "mesh_region": None,
         }
         data = _tool_json(result)
         assert data["id"] == 5
@@ -1839,9 +1848,7 @@ class TestBuildScenarioTool:
 
     @respx.mock
     async def test_build_scenario_refuses_a_null_boundary_without_posting(self, _server):
-        respx.get(SCENARIO_URL).mock(
-            return_value=httpx.Response(200, json=_scenario(boundary=None, estimate=0))
-        )
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(boundary=None, estimate=0)))
         boundary_route = _mock_boundary(True)
         build_route = _mock_build()
         data = _tool_json(await _build(_server))
@@ -1876,9 +1883,7 @@ class TestBuildScenarioTool:
     @respx.mock
     async def test_build_scenario_refuses_when_the_estimate_is_none_without_posting(self, _server):
         """resolution 0 (FloatField default 100, not nullable) → estimate None."""
-        respx.get(SCENARIO_URL).mock(
-            return_value=httpx.Response(200, json=_scenario(estimate=None, resolution=0.0))
-        )
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(estimate=None, resolution=0.0)))
         _mock_boundary(True)
         build_route = _mock_build()
         data = _tool_json(await _build(_server))
@@ -1887,9 +1892,7 @@ class TestBuildScenarioTool:
         assert "resolution is 0/unset" in data["reason"]
 
     @respx.mock
-    async def test_build_scenario_returns_the_422_mesh_too_large_body_verbatim_as_a_non_error(
-        self, _server
-    ):
+    async def test_build_scenario_returns_the_422_mesh_too_large_body_verbatim_as_a_non_error(self, _server):
         detail_route = respx.get(SCENARIO_URL).mock(
             return_value=httpx.Response(200, json=_scenario(estimate=25_568_180, resolution=1.0))
         )
@@ -1943,9 +1946,7 @@ class TestBuildScenarioTool:
             side_effect=[
                 httpx.Response(200, json=_scenario(in_flight, latest_run=_run(501, in_flight))),
                 httpx.Response(200, json=_scenario("building", latest_run=_run(501, "building"))),
-                httpx.Response(
-                    200, json=_scenario("built", latest_run=_run(501, "built"), latest_run_is_valid=True)
-                ),
+                httpx.Response(200, json=_scenario("built", latest_run=_run(501, "built"), latest_run_is_valid=True)),
             ]
         )
         boundary_route = _mock_boundary(True)
@@ -1959,18 +1960,14 @@ class TestBuildScenarioTool:
         assert data["run_id"] == 501
 
     @respx.mock
-    async def test_build_scenario_resumes_polling_on_the_409_dedup_body_without_a_second_post(
-        self, _server
-    ):
+    async def test_build_scenario_resumes_polling_on_the_409_dedup_body_without_a_second_post(self, _server):
         """The pre-check saw no run but a build was dispatched before the POST landed:
         the dedup body has NO error_code — poll THAT run, never POST again."""
         detail_route = respx.get(SCENARIO_URL).mock(
             side_effect=[
                 httpx.Response(200, json=_scenario()),
                 httpx.Response(200, json=_scenario("building", latest_run=_run(501, "building"))),
-                httpx.Response(
-                    200, json=_scenario("built", latest_run=_run(501, "built"), latest_run_is_valid=True)
-                ),
+                httpx.Response(200, json=_scenario("built", latest_run=_run(501, "built"), latest_run_is_valid=True)),
             ]
         )
         _mock_boundary(True)
@@ -1993,9 +1990,7 @@ class TestBuildScenarioTool:
         detail_route = respx.get(SCENARIO_URL).mock(
             return_value=httpx.Response(
                 200,
-                json=_scenario(
-                    done, latest_run=_run(501, done, mesh_triangle_count=19_812), latest_run_is_valid=True
-                ),
+                json=_scenario(done, latest_run=_run(501, done, mesh_triangle_count=19_812), latest_run_is_valid=True),
             )
         )
         boundary_route = _mock_boundary(True)
@@ -2049,9 +2044,15 @@ class TestBuildScenarioTool:
         STRANGER_SCENARIO_FIELDS (serializers_v2.py:395-405): no boundary, no
         computed_status. The build needs EDITOR — say so instead of guessing."""
         stranger = {
-            "id": 5, "name": "mcp-w1-3172-t", "description": "", "resolution": 36.0, "duration": 43200,
-            "mesh_triangle_count_estimate": 19_729, "mesh_triangle_count_estimate_breakdown": ESTIMATE_BREAKDOWN,
-            "latest_run": None, "latest_complete_run": None,
+            "id": 5,
+            "name": "mcp-w1-3172-t",
+            "description": "",
+            "resolution": 36.0,
+            "duration": 43200,
+            "mesh_triangle_count_estimate": 19_729,
+            "mesh_triangle_count_estimate_breakdown": ESTIMATE_BREAKDOWN,
+            "latest_run": None,
+            "latest_complete_run": None,
         }
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=stranger))
         boundary_route = _mock_boundary(True)
@@ -2103,9 +2104,7 @@ class TestBuildScenarioTool:
         assert data["run_id"] == 501
         assert data["error_message"] == "Could not find Boundary data"
 
-    async def test_build_scenario_and_create_scenario_listed_with_computed_status_metres_and_confirm(
-        self, _server
-    ):
+    async def test_build_scenario_and_create_scenario_listed_with_computed_status_metres_and_confirm(self, _server):
         """The docstring ACs, made provable: the units rule (a LENGTH in metres on the
         scenario AND on a MeshRegion feature since TASK-3186, with the marker the
         build requires), the poll key and the confirm gate are on the tools' OWN
@@ -2117,15 +2116,24 @@ class TestBuildScenarioTool:
         for token in ("computed_status", "resolution", "metres", "confirm", "100,000", "MESH_TOO_LARGE"):
             assert token in build, token
         create = tools["create_scenario"]["description"]
-        for token in ("resolution", "metres", "resolution²/2", "computed_status", "MeshRegion",
-                      "resolution_units = m", "MESH_REGION_UNITS_UNMARKED"):
+        for token in (
+            "resolution",
+            "metres",
+            "resolution²/2",
+            "computed_status",
+            "MeshRegion",
+            "resolution_units = m",
+            "MESH_REGION_UNITS_UNMARKED",
+        ):
             assert token in create, token
         assert "AREA" not in create and "AREA" not in build  # the pre-3186 split is gone
         get_scenario = tools["get_scenario"]["description"]
         assert "computed_status" in get_scenario
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
-        assert len(tools) == 35  # +TASK-4059 list_terrain_sources + create_terrain_from_source; +TASK-4058 request_input_upload; the module docstring's count (+ TASK-4052 write_input_layer, TASK-4056 update/delete_time_series, TASK-4057 describe_input_kinds)
+        assert (
+            len(tools) == 35
+        )  # +TASK-4059 list_terrain_sources + create_terrain_from_source; +TASK-4058 request_input_upload; the module docstring's count (+ TASK-4052 write_input_layer, TASK-4056 update/delete_time_series, TASK-4057 describe_input_kinds)
 
 
 # ---------------------------------------------------------------------------
@@ -2267,9 +2275,7 @@ class TestGetScenarioCompactState:
 
     @respx.mock
     async def test_get_scenario_elides_the_ten_presigned_urls_of_both_run_blocks(self, _server):
-        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
-            return_value=httpx.Response(200, json=self._detail())
-        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(return_value=httpx.Response(200, json=self._detail()))
         result = await _server.get_scenario(project_id=42, scenario_id=5)
         assert "X-Amz" not in result
         for key in RUN_S3_URL_KEYS:
@@ -2281,9 +2287,7 @@ class TestGetScenarioCompactState:
 
     @respx.mock
     async def test_get_scenario_carries_the_state_the_inputs_and_the_price(self, _server):
-        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
-            return_value=httpx.Response(200, json=self._detail())
-        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(return_value=httpx.Response(200, json=self._detail()))
         data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
         # _build_state's ten flat keys (UNFORKED).
         assert data["scenario_id"] == 5
@@ -2326,9 +2330,7 @@ class TestGetScenarioCompactState:
             "built",
             description="rebuilt from " + _signed_url("runs/67179/package.zip") + " on 2026-09-21",
         )
-        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
-            return_value=httpx.Response(200, json=detail)
-        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(return_value=httpx.Response(200, json=detail))
         result = await _server.get_scenario(project_id=42, scenario_id=5)
         assert "X-Amz" not in result
         assert json.loads(result)["description"] == f"rebuilt from {ELIDED} on 2026-09-21"
@@ -2340,13 +2342,18 @@ class TestGetScenarioCompactState:
         would turn "withheld" into "terrain: null, compute_cost_estimate: null" —
         i.e. "no terrain, no cost". Absent stays absent."""
         stranger = {"id": 5, "name": "mcp-w1-3172-t", "project": 42, "description": ""}
-        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
-            return_value=httpx.Response(200, json=stranger)
-        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(return_value=httpx.Response(200, json=stranger))
         data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
         assert data["scenario_id"] == 5 and data["name"] == "mcp-w1-3172-t"
-        for withheld in ("terrain", "boundary", "compute_cost_estimate", "vcpu_hours_estimate",
-                         "resolution", "duration", "inflow_anchor_mismatch"):
+        for withheld in (
+            "terrain",
+            "boundary",
+            "compute_cost_estimate",
+            "vcpu_hours_estimate",
+            "resolution",
+            "duration",
+            "inflow_anchor_mismatch",
+        ):
             assert withheld not in data, withheld
 
     async def test_get_scenario_says_the_inflow_lead_in_gap_is_zero_flow(self, _server):
@@ -2354,6 +2361,7 @@ class TestGetScenarioCompactState:
         (run_anuga run_utils.py fillna(0.0), TASK-2825); it never holds the first
         value backwards to the model start."""
         import inspect
+
         doc = " ".join(inspect.getdoc(_server.get_scenario).split())
         assert "zero flow from that series over the lead-in gap" in doc
         source = inspect.getsource(_server)
@@ -2362,9 +2370,7 @@ class TestGetScenarioCompactState:
 
     @respx.mock
     async def test_get_scenario_tolerates_a_non_dict_detail(self, _server):
-        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
-            return_value=httpx.Response(200, json="gone")
-        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(return_value=httpx.Response(200, json="gone"))
         data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
         assert data["scenario_id"] is None and data["computed_status"] is None
 
@@ -2397,9 +2403,7 @@ class TestElidePresignedPerTool:
         """AC3 (over-elision guard): the nested `url`/`catalogURL` of a WMS dict
         are how results stay VIEWABLE after this card — assert by VALUE, because
         a "key is present" assertion on a dict cannot fail."""
-        respx.get(f"{BASE}/runs/67181/").mock(
-            return_value=httpx.Response(200, json=_presigned_run())
-        )
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=_presigned_run()))
         data = json.loads(await _server.get_run(run_id=67181))
         assert data["gn_layer_depth_max"] == GN_LAYER_DEPTH_MAX
 
@@ -2482,8 +2486,7 @@ class TestElidePresignedPerTool:
                 200,
                 json={
                     "count": 1,
-                    "results": [{"id": 42, "name": "Towradgi",
-                                 "handoff": _signed_url("exports/42.zip")}],
+                    "results": [{"id": 42, "name": "Towradgi", "handoff": _signed_url("exports/42.zip")}],
                 },
             )
         )
@@ -2505,12 +2508,8 @@ class TestElidePresignedPerTool:
             bbox_stats_url=BBOX_STATS_URL,
             download_handoff=_signed_url("terrain/110535.tif"),
         )
-        respx.get(f"{BASE}/projects/42/terrain/110535/").mock(
-            return_value=httpx.Response(200, json=terrain)
-        )
-        result = await _server.get_terrain(
-            project_id=42, terrain_id=110535, timeout_seconds=0, poll_interval_seconds=0
-        )
+        respx.get(f"{BASE}/projects/42/terrain/110535/").mock(return_value=httpx.Response(200, json=terrain))
+        result = await _server.get_terrain(project_id=42, terrain_id=110535, timeout_seconds=0, poll_interval_seconds=0)
         assert "X-Amz" not in result
         data = json.loads(result)
         assert data["outcome"] == "ready" and data["status"] == "ready"
@@ -2551,9 +2550,7 @@ class TestElidePresignedPerTool:
 # ---------------------------------------------------------------------------
 class TestBuildScenarioElidesPresignedUrls:
     @respx.mock
-    async def test_build_scenario_elides_a_presigned_url_quoted_in_the_run_error_message(
-        self, _server
-    ):
+    async def test_build_scenario_elides_a_presigned_url_quoted_in_the_run_error_message(self, _server):
         """`_build_state` copies the run's `error_message` / `user_message` /
         `status_detail` verbatim. They are server-composed free text, so a
         future line quoting a signed URL would reach the transcript through
@@ -2564,9 +2561,7 @@ class TestBuildScenarioElidesPresignedUrls:
                 200,
                 json=_scenario(
                     "built",
-                    latest_run=_run(
-                        501, "built", error_message=f"package upload failed for {signed}"
-                    ),
+                    latest_run=_run(501, "built", error_message=f"package upload failed for {signed}"),
                     latest_run_is_valid=True,
                 ),
             )
@@ -2640,6 +2635,7 @@ def _mock_project(base_map=BASE_MAP):
 
 def _assert_hand_back(data, **params):
     import re as _re
+
     assert _re.match(UI_URL_RE, data["ui_url"] or ""), data.get("ui_url")
     assert f"/catalogue/#/map/{BASE_MAP}" in data["ui_url"]
     for key, value in params.items():
@@ -2650,15 +2646,40 @@ def _assert_hand_back(data, **params):
 
 def _mock_layer_summary(alternate, on_map=True):
     respx.get(url__startswith=f"{ORIGIN}/api/v2/datasets/?").mock(
-        return_value=httpx.Response(200, json={"datasets": [{"alternate": alternate, "ll_bbox_polygon": {
-            "type": "Polygon",
-            "coordinates": [[[150.89, -34.38], [150.89, -34.37], [150.91, -34.37], [150.91, -34.38], [150.89, -34.38]]],
-        }}]})
+        return_value=httpx.Response(
+            200,
+            json={
+                "datasets": [
+                    {
+                        "alternate": alternate,
+                        "ll_bbox_polygon": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [150.89, -34.38],
+                                    [150.89, -34.37],
+                                    [150.91, -34.37],
+                                    [150.91, -34.38],
+                                    [150.89, -34.38],
+                                ]
+                            ],
+                        },
+                    }
+                ]
+            },
+        )
     )
     respx.get(url__startswith=f"{ORIGIN}/api/v2/maps/{BASE_MAP}/").mock(
-        return_value=httpx.Response(200, json={"map": {"maplayers": [
-            {"name": alternate if on_map else "geonode:bdy_42_boundary_old"},
-        ]}})
+        return_value=httpx.Response(
+            200,
+            json={
+                "map": {
+                    "maplayers": [
+                        {"name": alternate if on_map else "geonode:bdy_42_boundary_old"},
+                    ]
+                }
+            },
+        )
     )
 
 
@@ -2672,8 +2693,9 @@ class TestHandBackUiUrl:
 
     @respx.mock
     async def test_ui_url_create_project_rereads_a_null_base_map(self, _server):
-        respx.post(f"{BASE}/projects/").mock(return_value=httpx.Response(
-            201, json={"id": 42, "name": "n", "projection": "EPSG:32756", "base_map": None}))
+        respx.post(f"{BASE}/projects/").mock(
+            return_value=httpx.Response(201, json={"id": 42, "name": "n", "projection": "EPSG:32756", "base_map": None})
+        )
         detail = _mock_project()
         data = json.loads(await _server.create_project(name="n", projection="EPSG:32756"))
         assert detail.call_count >= 1
@@ -2685,7 +2707,8 @@ class TestHandBackUiUrl:
     async def test_ui_url_finalize_terrain_upload(self, _server):
         _mock_project()
         respx.post(f"{BASE}/projects/42/terrain/upload/finalize/").mock(
-            return_value=httpx.Response(202, json=_terrain(110540, "creating")))
+            return_value=httpx.Response(202, json=_terrain(110540, "creating"))
+        )
         data = json.loads(await _server.finalize_terrain_upload(project_id=42, staging_key=STAGING_KEY))
         _assert_hand_back(data, panel="inputs")
         assert data["summary"]["terrain_id"] == 110540
@@ -2693,9 +2716,17 @@ class TestHandBackUiUrl:
     @respx.mock
     async def test_ui_url_get_terrain_ready_frames_the_dem_with_its_numbers(self, _server):
         _mock_project()
-        ready = _terrain(110540, "ready", gn_layer=1530, gn_layer_name="ele_42_utm_dem",
-                         bbox_wgs84=[150.85, -34.42, 150.92, -34.36], dem_elev_min=-1.2,
-                         dem_elev_max=310.5, nodata_fraction=0.0, native_crs="EPSG:28356")
+        ready = _terrain(
+            110540,
+            "ready",
+            gn_layer=1530,
+            gn_layer_name="ele_42_utm_dem",
+            bbox_wgs84=[150.85, -34.42, 150.92, -34.36],
+            dem_elev_min=-1.2,
+            dem_elev_max=310.5,
+            nodata_fraction=0.0,
+            native_crs="EPSG:28356",
+        )
         respx.get(f"{BASE}/projects/42/terrain/110540/").mock(return_value=httpx.Response(200, json=ready))
         data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110540, timeout_seconds=0))
         _assert_hand_back(data, panel="inputs", layer="geonode:ele_42_utm_dem")
@@ -2719,11 +2750,13 @@ class TestHandBackUiUrl:
         _mock_project()
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/boundaries/").mock(
-            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)])
+        )
         patched = dict(_row(27497, "Boundary 01", gn_layer=1502), has_features=has_features)
         respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(return_value=httpx.Response(200, json=patched))
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
-            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE))
+        )
         _mock_layer_summary(BOUNDARY_ALTERNATE)
 
     @respx.mock
@@ -2731,8 +2764,11 @@ class TestHandBackUiUrl:
         """TASK-3749: no /gs/ feature count (always refused under a key); has_features is the API's."""
         gs = _gs_tripwire(_server, monkeypatch)
         self._mock_attach(has_features=True)
-        data = json.loads(await _server.attach_input_layer(
-            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        data = json.loads(
+            await _server.attach_input_layer(
+                project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0
+            )
+        )
         assert gs == []
         _assert_hand_back(data, panel="inputs", layer=BOUNDARY_ALTERNATE)
         assert data["summary"]["has_features"] is True
@@ -2748,8 +2784,11 @@ class TestHandBackUiUrl:
         """TASK-3749: the API says the attached layer is empty, so the user hears it plainly."""
         gs = _gs_tripwire(_server, monkeypatch)
         self._mock_attach(has_features=False)
-        data = json.loads(await _server.attach_input_layer(
-            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        data = json.loads(
+            await _server.attach_input_layer(
+                project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0
+            )
+        )
         assert gs == []
         assert data["outcome"] == "attached"
         assert data["summary"]["has_features"] is False
@@ -2761,14 +2800,20 @@ class TestHandBackUiUrl:
         _mock_project()
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/boundaries/").mock(
-            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)])
+        )
         respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
-            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502))
+        )
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
-            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE))
+        )
         _mock_layer_summary(BOUNDARY_ALTERNATE, on_map=False)
-        data = json.loads(await _server.attach_input_layer(
-            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        data = json.loads(
+            await _server.attach_input_layer(
+                project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0
+            )
+        )
         assert data["outcome"] == "attached"
         assert data["summary"]["map_updated"] is False
         assert "WARNING" in data["say_to_user"]
@@ -2782,17 +2827,24 @@ class TestHandBackUiUrl:
         _mock_project()
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/boundaries/").mock(
-            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)])
+        )
         patch_route = respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
-            return_value=httpx.Response(200, json=dict(_row(27497, "Boundary 01", gn_layer=1600), has_features=True)))
+            return_value=httpx.Response(200, json=dict(_row(27497, "Boundary 01", gn_layer=1600), has_features=True))
+        )
         raw_route = respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
-            return_value=httpx.Response(200, json=_dataset(1502, "geonode:sullivans_boundary")))
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:sullivans_boundary"))
+        )
         converted_alternate = "geonode:bdy_42_boundary_01_dfec"
         respx.get(f"{ORIGIN}/api/v2/datasets/1600/").mock(
-            return_value=httpx.Response(200, json=_dataset(1600, converted_alternate)))
+            return_value=httpx.Response(200, json=_dataset(1600, converted_alternate))
+        )
         _mock_layer_summary(converted_alternate)
-        data = json.loads(await _server.attach_input_layer(
-            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        data = json.loads(
+            await _server.attach_input_layer(
+                project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0
+            )
+        )
         assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
         assert data["outcome"] == "attached"
         assert data["dataset_pk"] == 1600 and data["gn_layer"] == 1600
@@ -2807,8 +2859,9 @@ class TestHandBackUiUrl:
     async def test_ui_url_create_scenario_opens_the_scenario_with_estimate_and_price(self, _server):
         _mock_project()
         respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 5}))
-        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(
-            200, json=_scenario(compute_cost_estimate=1.23, vcpu_hours_estimate=0.4)))
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(200, json=_scenario(compute_cost_estimate=1.23, vcpu_hours_estimate=0.4))
+        )
         data = json.loads(await _server.create_scenario(project_id=42, name="s", resolution=36.0, duration=3600))
         _assert_hand_back(data, panel="scenarios", scenario=5)
         assert data["summary"]["mesh_triangle_count_estimate"] == 19_729
@@ -2821,8 +2874,11 @@ class TestHandBackUiUrl:
         _detail_to_built(_scenario())
         _mock_boundary(True)
         _mock_build()
-        respx.get(f"{BASE}/runs/501/").mock(return_value=httpx.Response(
-            200, json=_run(501, "built", mesh_triangle_count=20_480, mesh_actual_cost_estimate=2.5)))
+        respx.get(f"{BASE}/runs/501/").mock(
+            return_value=httpx.Response(
+                200, json=_run(501, "built", mesh_triangle_count=20_480, mesh_actual_cost_estimate=2.5)
+            )
+        )
         data = _tool_json(await _build(_server))
         assert data["outcome"] == "built"
         _assert_hand_back(data, panel="scenarios", scenario=5)
@@ -2840,7 +2896,9 @@ class TestHandBackUiUrl:
     @respx.mock
     async def test_ui_url_cancel_run_reads_the_run_for_its_project(self, _server):
         _mock_project()
-        respx.post(f"{BASE}/runs/502/cancel/").mock(return_value=httpx.Response(200, json={"id": 502, "status": "cancelled"}))
+        respx.post(f"{BASE}/runs/502/cancel/").mock(
+            return_value=httpx.Response(200, json={"id": 502, "status": "cancelled"})
+        )
         respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "cancelled")))
         data = json.loads(await _server.cancel_run(run_id=502))
         _assert_hand_back(data, panel="scenarios", scenario=5)
@@ -2849,7 +2907,8 @@ class TestHandBackUiUrl:
     async def test_ui_url_retry_run_opens_the_rebuilding_scenario(self, _server):
         _mock_project()
         respx.post(f"{BASE}/runs/502/retry/").mock(
-            return_value=httpx.Response(202, json={"id": 502, "status": "created", "rebuilding": True}))
+            return_value=httpx.Response(202, json={"id": 502, "status": "created", "rebuilding": True})
+        )
         respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "created")))
         data = json.loads(await _server.retry_run(run_id=502))
         _assert_hand_back(data, panel="scenarios", scenario=5)
@@ -2866,12 +2925,17 @@ class TestHandBackUiUrl:
 
     async def test_ui_url_origin_is_the_public_host_not_the_loopback_api(self, _server, monkeypatch):
         """Prod's API URL is the loopback 127.0.0.1:8081 listener; the human needs https://<host>."""
-        monkeypatch.setattr(_server, "config", _server.Config(
-            api_url="http://127.0.0.1:8081/api/v2/anuga", api_host="hydrata.com"))
+        monkeypatch.setattr(
+            _server, "config", _server.Config(api_url="http://127.0.0.1:8081/api/v2/anuga", api_host="hydrata.com")
+        )
         assert _server._ui_url(7, panel="inputs", layer="geonode:a_b") == (
-            "https://hydrata.com/catalogue/#/map/7?panel=inputs&layer=geonode:a_b")
-        monkeypatch.setattr(_server, "config", _server.Config(
-            api_url="http://localhost/api/v2/anuga", ui_origin="http://localhost:8081"))
+            "https://hydrata.com/catalogue/#/map/7?panel=inputs&layer=geonode:a_b"
+        )
+        monkeypatch.setattr(
+            _server,
+            "config",
+            _server.Config(api_url="http://localhost/api/v2/anuga", ui_origin="http://localhost:8081"),
+        )
         assert _server._ui_url(7, run=9) == "http://localhost:8081/catalogue/#/map/7?run=9"
         assert _server._ui_url(None, panel="inputs") is None
 
@@ -2891,8 +2955,11 @@ class TestHandBackRefusals:
     async def test_say_to_user_boundary_without_features_frames_that_boundary(self, _server):
         _mock_project()
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
-        respx.get(BOUNDARY_URL).mock(return_value=httpx.Response(200, json={
-            "id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": False}))
+        respx.get(BOUNDARY_URL).mock(
+            return_value=httpx.Response(
+                200, json={"id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": False}
+            )
+        )
         build = _mock_build()
         data = _tool_json(await _build(_server))
         assert data["outcome"] == "refused" and not build.called
@@ -2903,10 +2970,15 @@ class TestHandBackRefusals:
     async def test_say_to_user_relayed_422_boundary_no_external_says_fix_it_in_the_map(self, _server):
         _mock_project()
         respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario()))
-        respx.get(BOUNDARY_URL).mock(return_value=httpx.Response(200, json={
-            "id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": True}))
-        refusal = {"error_code": "BOUNDARY_NO_EXTERNAL",
-                   "detail": "Every boundary line is Location=Internal: features 1 (…), 2 (…)."}
+        respx.get(BOUNDARY_URL).mock(
+            return_value=httpx.Response(
+                200, json={"id": 27497, "gn_layer": 1524, "gn_layer_name": "bdy_42_boundary_01", "has_features": True}
+            )
+        )
+        refusal = {
+            "error_code": "BOUNDARY_NO_EXTERNAL",
+            "detail": "Every boundary line is Location=Internal: features 1 (…), 2 (…).",
+        }
         _mock_build(422, refusal)
         data = _tool_json(await _build(_server))
         assert data["error_code"] == "BOUNDARY_NO_EXTERNAL" and data["http_status"] == 422
@@ -2921,8 +2993,10 @@ class TestHandBackRefusals:
         refused with the 'not supported' hand-back; a culvert attach goes ahead
         (a failed import here) and never says 'not supported'. Name kept (ratchet)."""
         project = _mock_project()
-        writes = [respx.post(url__startswith=BASE).mock(return_value=httpx.Response(201, json={})),
-                  respx.patch(url__startswith=BASE).mock(return_value=httpx.Response(200, json={}))]
+        writes = [
+            respx.post(url__startswith=BASE).mock(return_value=httpx.Response(201, json={})),
+            respx.patch(url__startswith=BASE).mock(return_value=httpx.Response(200, json={})),
+        ]
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("failed", log="bad")))
         if kind == "breakline":
             with pytest.raises(_server.ToolError) as exc_info:
@@ -2933,8 +3007,11 @@ class TestHandBackRefusals:
             assert "not supported" in text
             assert "draw it in the map" not in text
         else:
-            data = json.loads(await _server.attach_input_layer(
-                project_id=42, kind=kind, execution_id=EXEC_ID, poll_interval_seconds=0))
+            data = json.loads(
+                await _server.attach_input_layer(
+                    project_id=42, kind=kind, execution_id=EXEC_ID, poll_interval_seconds=0
+                )
+            )
             assert data["outcome"] == "upload_failed" and not any(w.called for w in writes)
             assert "not supported" not in data["say_to_user"]
             assert f"https://hydrata.example.com/catalogue/#/map/{BASE_MAP}?panel=inputs" == data["ui_url"]
@@ -2946,13 +3023,16 @@ class TestClientHeaders:
         """Two tool calls carrying one client Mcp-Session-Id: every upstream request
         carries X-Hydrata-Client mcp/<version> and the SAME UUID X-Hydrata-Session."""
         import uuid as _uuid
+
         route = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         session = "6f1c2b9e-3d4a-4b5c-8d6e-7f8091a2b3c4"
         async with _asgi_client(_server) as c:
             for call_id in (1, 2):
-                resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": CALLER_KEY,
-                                                  "mcp-session-id": session},
-                                    json=_tools_call("list_projects", {}, id=call_id))
+                resp = await c.post(
+                    "/",
+                    headers={**MCP_HEADERS, "Authorization": CALLER_KEY, "mcp-session-id": session},
+                    json=_tools_call("list_projects", {}, id=call_id),
+                )
                 assert resp.status_code == 200, resp.text
         assert route.call_count == 2
         sessions = set()
@@ -2965,17 +3045,26 @@ class TestClientHeaders:
     async def test_client_header_session_is_a_uuid_without_an_inbound_session(self, _server):
         """stateless_http: no server-issued session; one tool call's requests still share one UUID."""
         import uuid as _uuid
+
         respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
         respx.get(f"{BASE}/projects/42/boundaries/").mock(
-            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)])
+        )
         respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
-            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502)))
+            return_value=httpx.Response(200, json=_row(27497, "Boundary 01", gn_layer=1502))
+        )
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
-            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE)))
+            return_value=httpx.Response(200, json=_dataset(1502, BOUNDARY_ALTERNATE))
+        )
         _mock_layer_summary(BOUNDARY_ALTERNATE)
         _mock_project()
-        _tool_json(await _call_as_caller(_server, "attach_input_layer", {
-            "project_id": 42, "kind": "boundary", "execution_id": EXEC_ID, "poll_interval_seconds": 0}))
+        _tool_json(
+            await _call_as_caller(
+                _server,
+                "attach_input_layer",
+                {"project_id": 42, "kind": "boundary", "execution_id": EXEC_ID, "poll_interval_seconds": 0},
+            )
+        )
         values = {r.request.headers.get("x-hydrata-session") for r in respx.calls}
         assert len(values) == 1, values
         _uuid.UUID(values.pop())
@@ -2985,9 +3074,22 @@ class TestClientHeaders:
 # TASK-3204 (W1, epic 3200) — annotations, never-null phase, the list tools.
 # Stored proof: -k "annotations or list_inputs or list_time_series or phase".
 # ---------------------------------------------------------------------------
-READ_TOOLS = {"list_projects", "get_project", "get_scenario", "get_run_status", "get_run",
-              "list_runs", "get_terrain", "list_inputs", "list_time_series", "list_observations",
-              "get_observation_comparison", "describe_input_kinds", "request_input_upload", "list_terrain_sources"}
+READ_TOOLS = {
+    "list_projects",
+    "get_project",
+    "get_scenario",
+    "get_run_status",
+    "get_run",
+    "list_runs",
+    "get_terrain",
+    "list_inputs",
+    "list_time_series",
+    "list_observations",
+    "get_observation_comparison",
+    "describe_input_kinds",
+    "request_input_upload",
+    "list_terrain_sources",
+}
 # TASK-3812: a deleted observation (and its photos) cannot be brought back.
 DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation", "delete_time_series"}
 
@@ -3010,18 +3112,31 @@ class TestToolAnnotations:
 
 
 class TestPhase:
-    @pytest.mark.parametrize("status,progress,phase", [
-        ("computing", None, "preparing_inputs"),
-        ("computing", 12, "computing"),
-        ("queued", None, "queued"),
-        ("complete", 100, "complete"),
-        (None, None, "unknown"),
-    ])
+    @pytest.mark.parametrize(
+        "status,progress,phase",
+        [
+            ("computing", None, "preparing_inputs"),
+            ("computing", 12, "computing"),
+            ("queued", None, "queued"),
+            ("complete", 100, "complete"),
+            (None, None, "unknown"),
+        ],
+    )
     @respx.mock
     async def test_phase_get_run_status_is_never_empty(self, _server, status, progress, phase):
-        respx.get(f"{BASE}/runs/9/status/").mock(return_value=httpx.Response(200, json={
-            "id": 9, "status": status, "progress_pct": progress, "eta_seconds": None,
-            "error_message": None, "compute_backend": "batch"}))
+        respx.get(f"{BASE}/runs/9/status/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 9,
+                    "status": status,
+                    "progress_pct": progress,
+                    "eta_seconds": None,
+                    "error_message": None,
+                    "compute_backend": "batch",
+                },
+            )
+        )
         data = json.loads(await _server.get_run_status(run_id=9))
         assert data["phase"] == phase
         assert data["progress_pct"] == progress  # upstream fields untouched
@@ -3030,7 +3145,8 @@ class TestPhase:
     @respx.mock
     async def test_phase_get_terrain_is_the_import_stage(self, _server, status):
         respx.get(f"{BASE}/projects/42/terrain/110540/").mock(
-            return_value=httpx.Response(200, json=_terrain(110540, status)))
+            return_value=httpx.Response(200, json=_terrain(110540, status))
+        )
         data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110540, timeout_seconds=0))
         assert data["phase"] == status
 
@@ -3040,30 +3156,67 @@ class TestPhase:
         data = json.loads(await _server.get_terrain(project_id=42, timeout_seconds=0))
         assert data["phase"] == "not_found"
         respx.get(f"{BASE}/projects/42/terrain/110541/").mock(
-            return_value=httpx.Response(200, json=_terrain(110541, None)))
+            return_value=httpx.Response(200, json=_terrain(110541, None))
+        )
         data = json.loads(await _server.get_terrain(project_id=42, terrain_id=110541, timeout_seconds=0))
         assert data["phase"] == "unknown"
 
 
 def _wrapper_rows(route):
     rows = {
-        "boundaries": [{"id": 1, "title": "Boundary 01", "gn_layer": 11, "gn_layer_name": "bdy_42_boundary_01",
-                        "has_features": True, "has_external_feature": True}],
+        "boundaries": [
+            {
+                "id": 1,
+                "title": "Boundary 01",
+                "gn_layer": 11,
+                "gn_layer_name": "bdy_42_boundary_01",
+                "has_features": True,
+                "has_external_feature": True,
+            }
+        ],
         # TASK-3603 (friction, building) + TASK-3487 (inflow): every wrapper
         # serializer now carries has_features, so list_inputs never asks /gs/.
-        "frictions": [{"id": 2, "title": "Friction 01", "gn_layer": 12, "gn_layer_name": "fri_42_friction_01",
-                       "has_features": True}],
-        "inflows": [{"id": 3, "title": "Inflow 01", "gn_layer": None, "gn_layer_name": None,
-                     "has_features": False}],
-        "rainfalls": [{"id": 4, "title": "Rainfall 01", "gn_layer": 14, "gn_layer_name": "rai_42_rainfall_01",
-                       "has_features": False}],
-        "buildings": [{"id": 5, "title": "Building 01", "gn_layer": 15, "gn_layer_name": "str_42_building_01",
-                       "has_features": False}],
-        "mesh-regions": [{"id": 6, "title": "MeshRegion 01", "gn_layer": 16, "gn_layer_name": "mes_42_meshregion_01",
-                          "has_features": True}],
+        "frictions": [
+            {
+                "id": 2,
+                "title": "Friction 01",
+                "gn_layer": 12,
+                "gn_layer_name": "fri_42_friction_01",
+                "has_features": True,
+            }
+        ],
+        "inflows": [{"id": 3, "title": "Inflow 01", "gn_layer": None, "gn_layer_name": None, "has_features": False}],
+        "rainfalls": [
+            {
+                "id": 4,
+                "title": "Rainfall 01",
+                "gn_layer": 14,
+                "gn_layer_name": "rai_42_rainfall_01",
+                "has_features": False,
+            }
+        ],
+        "buildings": [
+            {
+                "id": 5,
+                "title": "Building 01",
+                "gn_layer": 15,
+                "gn_layer_name": "str_42_building_01",
+                "has_features": False,
+            }
+        ],
+        "mesh-regions": [
+            {
+                "id": 6,
+                "title": "MeshRegion 01",
+                "gn_layer": 16,
+                "gn_layer_name": "mes_42_meshregion_01",
+                "has_features": True,
+            }
+        ],
         # TASK-3641: CulvertSerializerV2 carries has_features (no WFS lookup).
-        "culverts": [{"id": 7, "title": "Culvert 01", "gn_layer": 17, "gn_layer_name": "cul_42_culvert_01",
-                      "has_features": True}],
+        "culverts": [
+            {"id": 7, "title": "Culvert 01", "gn_layer": 17, "gn_layer_name": "cul_42_culvert_01", "has_features": True}
+        ],
     }
     return rows[route]
 
@@ -3074,22 +3227,41 @@ class TestListInputs:
         """TASK-3749: every kind's has_features is the API's; no /gs/ request at all."""
         gs = _gs_tripwire(_server, monkeypatch)
         for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
-            respx.get(f"{BASE}/projects/42/{route}/").mock(
-                return_value=httpx.Response(200, json=_wrapper_rows(route)))
+            respx.get(f"{BASE}/projects/42/{route}/").mock(return_value=httpx.Response(200, json=_wrapper_rows(route)))
         data = json.loads(await _server.list_inputs(project_id=42))
         inputs = data["inputs"]
         assert gs == []
         assert set(inputs) == {*INPUT_LAYER_ROUTES, "culvert"}  # TASK-3641
-        assert inputs["culvert"][0] == {"row_id": 7, "title": "Culvert 01", "gn_layer": 17,
-                                        "dataset_alternate": "geonode:cul_42_culvert_01", "has_features": True}
-        assert inputs["boundary"][0] == {"row_id": 1, "title": "Boundary 01", "gn_layer": 11,
-                                         "dataset_alternate": "geonode:bdy_42_boundary_01",
-                                         "has_features": True, "has_external_feature": True}
-        assert inputs["friction"][0] == {"row_id": 2, "title": "Friction 01", "gn_layer": 12,
-                                         "dataset_alternate": "geonode:fri_42_friction_01", "has_features": True}
+        assert inputs["culvert"][0] == {
+            "row_id": 7,
+            "title": "Culvert 01",
+            "gn_layer": 17,
+            "dataset_alternate": "geonode:cul_42_culvert_01",
+            "has_features": True,
+        }
+        assert inputs["boundary"][0] == {
+            "row_id": 1,
+            "title": "Boundary 01",
+            "gn_layer": 11,
+            "dataset_alternate": "geonode:bdy_42_boundary_01",
+            "has_features": True,
+            "has_external_feature": True,
+        }
+        assert inputs["friction"][0] == {
+            "row_id": 2,
+            "title": "Friction 01",
+            "gn_layer": 12,
+            "dataset_alternate": "geonode:fri_42_friction_01",
+            "has_features": True,
+        }
         assert inputs["building"][0]["has_features"] is False
-        assert inputs["inflow"][0] == {"row_id": 3, "title": "Inflow 01", "gn_layer": None,
-                                       "dataset_alternate": None, "has_features": False}
+        assert inputs["inflow"][0] == {
+            "row_id": 3,
+            "title": "Inflow 01",
+            "gn_layer": None,
+            "dataset_alternate": None,
+            "has_features": False,
+        }
         assert inputs["rainfall"][0]["has_features"] is False
         assert all("feature_count" not in row for rows in inputs.values() for row in rows)
 
@@ -3104,6 +3276,7 @@ class TestListInputs:
             if route in ("frictions", "buildings"):
                 rows = [{k: v for k, v in row.items() if k != "has_features"} for row in rows]
             return rows
+
         for route in (*INPUT_LAYER_ROUTES.values(), "culverts"):
             respx.get(f"{BASE}/projects/42/{route}/").mock(return_value=httpx.Response(200, json=stale(route)))
         data = json.loads(await _server.list_inputs(project_id=42))
@@ -3113,7 +3286,7 @@ class TestListInputs:
             assert inputs[kind][0]["has_features"] is None  # unknown, not false and not an error
             assert "feature_count" not in inputs[kind][0]
         assert inputs["boundary"][0]["has_features"] is True  # API-carried kinds are unaffected
-        assert inputs["inflow"][0]["has_features"] is False   # no layer: still false
+        assert inputs["inflow"][0]["has_features"] is False  # no layer: still false
         assert "error" not in data
 
     @respx.mock
@@ -3130,18 +3303,30 @@ class TestListTimeSeries:
     @respx.mock
     async def test_list_time_series_follows_pages_and_drops_the_rows(self, _server):
         page1 = {"count": 2, "next": "…?page=2", "previous": None, "results": [_series_row(77)]}
-        page2 = {"count": 2, "next": None, "previous": "…", "results": [
-            _series_row(78, name="tide", series_type="stage", units="m", data={"rowData": []})]}
+        page2 = {
+            "count": 2,
+            "next": None,
+            "previous": "…",
+            "results": [_series_row(78, name="tide", series_type="stage", units="m", data={"rowData": []})],
+        }
         route = respx.get(f"{BASE}/projects/42/time-series/").mock(
-            side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)])
+            side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)]
+        )
         data = json.loads(await _server.list_time_series(project_id=42))
         assert route.call_count == 2
         assert route.calls[1].request.url.params["page"] == "2"
         assert data["count"] == 2 and "truncated" not in data
         first, tide = data["series"]
-        assert first == {"id": 77, "name": "rain_gauge_200", "series_type": "hyetograph", "units": "mm/hr",
-                         "timezone": "Australia/Sydney", "row_count": 3,
-                         "first_timestamp": ROW_DATA[0]["timestamp"], "last_timestamp": ROW_DATA[-1]["timestamp"]}
+        assert first == {
+            "id": 77,
+            "name": "rain_gauge_200",
+            "series_type": "hyetograph",
+            "units": "mm/hr",
+            "timezone": "Australia/Sydney",
+            "row_count": 3,
+            "first_timestamp": ROW_DATA[0]["timestamp"],
+            "last_timestamp": ROW_DATA[-1]["timestamp"],
+        }
         assert tide["row_count"] == 0 and tide["first_timestamp"] is None
         assert "rowData" not in json.dumps(data)
 
@@ -3154,6 +3339,7 @@ class TestListTimeSeries:
 # ---------------------------------------------------------------------------
 def _schema_args(schema):
     """Minimal valid arguments for a tool's inputSchema (required params only)."""
+
     def value(prop):
         types = [prop.get("type")] + [p.get("type") for p in prop.get("anyOf", [])]
         if "integer" in types:
@@ -3167,6 +3353,7 @@ def _schema_args(schema):
         if "array" in types:
             return []
         return "x"
+
     props = schema.get("properties", {})
     args = {name: value(props[name]) for name in schema.get("required", [])}
     for poll_knob, knob in (("timeout_seconds", 0), ("poll_interval_seconds", 0.01)):
@@ -3190,8 +3377,15 @@ class TestStructuredContent:
     async def test_structured_content_equals_the_parsed_text_for_every_tool(self, _server):
         # Any upstream call answers with one plausible record; every tool must still
         # come back with structuredContent == json.loads(text) (or a ToolError).
-        record = {"id": 1, "status": "ready", "computed_status": "built", "base_map": 7,
-                  "count": 0, "next": None, "results": []}
+        record = {
+            "id": 1,
+            "status": "ready",
+            "computed_status": "built",
+            "base_map": 7,
+            "count": 0,
+            "next": None,
+            "results": [],
+        }
         respx.route().mock(return_value=httpx.Response(200, json=record))
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
@@ -3215,8 +3409,7 @@ class TestStructuredContent:
 
     @respx.mock
     async def test_structured_content_leaves_the_module_functions_returning_text(self, _server):
-        respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json={"count": 0, "results": []}))
+        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={"count": 0, "results": []}))
         assert isinstance(await _server.list_projects(), str)
 
 
@@ -3244,8 +3437,7 @@ async def _catalog(srv):
 
 async def _call(srv, auth, name="list_projects", arguments=None):
     async with _asgi_client(srv) as c:
-        return await c.post("/", headers={**MCP_HEADERS, "Authorization": auth},
-                            json=_tools_call(name, arguments))
+        return await c.post("/", headers={**MCP_HEADERS, "Authorization": auth}, json=_tools_call(name, arguments))
 
 
 def _assert_agent_key_401(resp, request_id=1):
@@ -3295,6 +3487,7 @@ class TestAgentKeys:
 
     async def test_agent_key_module_source_has_no_password_curl(self, _server):
         import inspect
+
         source = inspect.getsource(_server)
         assert "<password>" not in source
         assert "<user>:" not in source
@@ -3309,11 +3502,14 @@ class TestAgentKeys:
         assert "auth_deprecation" not in result["structuredContent"]
         assert "auth_deprecation" not in json.loads(result["content"][0]["text"])
 
-    @pytest.mark.parametrize("auth", [
-        pytest.param(CALLER_KEY, id="canonical"),
-        pytest.param("bearer  " + CALLER_KEY.split(" ", 1)[1], id="lowercase-double-space"),
-        pytest.param("BEARER " + CALLER_KEY.split(" ", 1)[1], id="uppercase-scheme"),
-    ])
+    @pytest.mark.parametrize(
+        "auth",
+        [
+            pytest.param(CALLER_KEY, id="canonical"),
+            pytest.param("bearer  " + CALLER_KEY.split(" ", 1)[1], id="lowercase-double-space"),
+            pytest.param("BEARER " + CALLER_KEY.split(" ", 1)[1], id="uppercase-scheme"),
+        ],
+    )
     @respx.mock
     async def test_agent_key_scheme_case_and_spacing_forwarded_unchanged(self, _server, auth):
         """AC3: the scheme matches case-insensitively with extra spaces, like Django's
@@ -3362,13 +3558,15 @@ class TestAgentKeys:
     async def test_agent_key_batch_with_a_non_key_tools_call_is_401(self, _server, auth):
         upstream = respx.route().mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         async with _asgi_client(_server) as c:
-            resp = await c.post("/", headers={**MCP_HEADERS, "Authorization": auth},
-                                json=[_rpc("tools/list", id=1), _tools_call(id=2)])
+            resp = await c.post(
+                "/", headers={**MCP_HEADERS, "Authorization": auth}, json=[_rpc("tools/list", id=1), _tools_call(id=2)]
+            )
         _assert_agent_key_401(resp, request_id=2)
         assert not upstream.calls
 
-    @pytest.mark.parametrize("second", [CALLER_BASIC, CALLER_OAUTH, CALLER_KEY],
-                             ids=["then-basic", "then-oauth-bearer", "then-the-same-key"])
+    @pytest.mark.parametrize(
+        "second", [CALLER_BASIC, CALLER_OAUTH, CALLER_KEY], ids=["then-basic", "then-oauth-bearer", "then-the-same-key"]
+    )
     @respx.mock
     async def test_agent_key_two_authorization_headers_are_401(self, _server, second):
         """The forwarded header is the LAST Authorization (fastmcp's get_http_headers
@@ -3401,11 +3599,16 @@ class TestAgentKeys:
     async def test_agent_key_no_basic_grace_period_remains(self, _server):
         """AC5: the sunset setting is gone from the code, tests and docs of this repo."""
         import pathlib
+
         root = pathlib.Path(_server.__file__).resolve().parent.parent
-        needles = ("BASIC" + "_SUNSET", "basic_auth" + "_sunset", "_basic" + "_expired",
-                   "_basic" + "_deprecation_note")
-        files = [*root.glob("hydrata_mcp/*.py"), *root.glob("tests/*.py"),
-                 root / "README.md", root / "server.json", root / "pyproject.toml"]
+        needles = ("BASIC" + "_SUNSET", "basic_auth" + "_sunset", "_basic" + "_expired", "_basic" + "_deprecation_note")
+        files = [
+            *root.glob("hydrata_mcp/*.py"),
+            *root.glob("tests/*.py"),
+            root / "README.md",
+            root / "server.json",
+            root / "pyproject.toml",
+        ]
         hits = [(f.name, n) for f in files for n in needles if n in f.read_text()]
         assert not hits
 
@@ -3439,7 +3642,8 @@ class TestStartSimulationConsent:
     async def test_consent_required_is_relayed_with_the_link_on_the_ui_origin_not_an_error(self, _server):
         respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=CONSENT_409))
         status = respx.get(f"{BASE}/runs/502/status/").mock(
-            return_value=httpx.Response(200, json={"id": 502, "status": "built"}))
+            return_value=httpx.Response(200, json={"id": 502, "status": "built"})
+        )
         data = _tool_json(await _call_as_caller(_server, "start_simulation", {"scenario_id": 5}))
         assert data["outcome"] == "consent_required"
         assert data["error_code"] == "CONSENT_REQUIRED" and data["http_status"] == 409
@@ -3448,20 +3652,27 @@ class TestStartSimulationConsent:
         assert data["quoted_cost_usd"] == "10.00" and data["run_id"] == 502
         assert data["consent_url"] in data["say_to_user"] and "$10.00" in data["say_to_user"]
         assert "start_simulation" in data["next_step"] and "get_run_status" in data["next_step"]
-        assert status.call_count == 1           # default: one read, the link comes back at once
+        assert status.call_count == 1  # default: one read, the link comes back at once
 
     @respx.mock
     async def test_consent_polls_until_the_person_presses_the_button(self, _server):
         _mock_project()
         respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=CONSENT_409))
-        respx.get(f"{BASE}/runs/502/status/").mock(side_effect=[
-            httpx.Response(200, json={"id": 502, "status": "built"}),
-            httpx.Response(200, json={"id": 502, "status": "built"}),
-            httpx.Response(200, json={"id": 502, "status": "queued"}),
-        ])
+        respx.get(f"{BASE}/runs/502/status/").mock(
+            side_effect=[
+                httpx.Response(200, json={"id": 502, "status": "built"}),
+                httpx.Response(200, json={"id": 502, "status": "built"}),
+                httpx.Response(200, json={"id": 502, "status": "queued"}),
+            ]
+        )
         respx.get(f"{BASE}/runs/502/").mock(return_value=httpx.Response(200, json=_run(502, "queued")))
-        data = _tool_json(await _call_as_caller(_server, "start_simulation", {
-            "scenario_id": 5, "consent_timeout_seconds": 30, "poll_interval_seconds": 0}))
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "start_simulation",
+                {"scenario_id": 5, "consent_timeout_seconds": 30, "poll_interval_seconds": 0},
+            )
+        )
         assert data["outcome"] == "consented"
         assert data["status"] == "queued" and data["run_id"] == 502 and data["polls"] == 3
         _assert_hand_back(data, run=502)
@@ -3470,9 +3681,16 @@ class TestStartSimulationConsent:
     @respx.mock
     async def test_consent_timeout_returns_the_link_and_does_not_redispatch(self, _server):
         dispatch = respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=CONSENT_409))
-        respx.get(f"{BASE}/runs/502/status/").mock(return_value=httpx.Response(200, json={"id": 502, "status": "built"}))
-        data = _tool_json(await _call_as_caller(_server, "start_simulation", {
-            "scenario_id": 5, "consent_timeout_seconds": 1, "poll_interval_seconds": 0.2}))
+        respx.get(f"{BASE}/runs/502/status/").mock(
+            return_value=httpx.Response(200, json={"id": 502, "status": "built"})
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "start_simulation",
+                {"scenario_id": 5, "consent_timeout_seconds": 1, "poll_interval_seconds": 0.2},
+            )
+        )
         assert data["outcome"] == "consent_required" and data["timed_out"] is True
         assert dispatch.call_count == 1
 
@@ -3480,17 +3698,24 @@ class TestStartSimulationConsent:
     async def test_consent_for_an_unpriceable_run_says_so(self, _server):
         body = dict(CONSENT_409, state="pending_human_consent", quoted_cost_usd=None)
         respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=body))
-        respx.get(f"{BASE}/runs/502/status/").mock(return_value=httpx.Response(200, json={"id": 502, "status": "built"}))
-        data = _tool_json(await _call_as_caller(
-            _server, "start_simulation", {"scenario_id": 5, "consent_timeout_seconds": 0}))
+        respx.get(f"{BASE}/runs/502/status/").mock(
+            return_value=httpx.Response(200, json={"id": 502, "status": "built"})
+        )
+        data = _tool_json(
+            await _call_as_caller(_server, "start_simulation", {"scenario_id": 5, "consent_timeout_seconds": 0})
+        )
         assert data["state"] == "pending_human_consent"
         assert "could not price" in data["say_to_user"]
 
     @respx.mock
     async def test_consent_other_4xx_still_raise_with_the_api_body(self, _server):
         from hydrata_mcp.client import HydrataAPIError
-        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(
-            409, json={"error_code": "INVALID_TRANSITION", "detail": "Cannot transition from queued"}))
+
+        respx.post(f"{BASE}/scenarios/5/run/").mock(
+            return_value=httpx.Response(
+                409, json={"error_code": "INVALID_TRANSITION", "detail": "Cannot transition from queued"}
+            )
+        )
         with pytest.raises(HydrataAPIError, match="409.*INVALID_TRANSITION"):
             await _server.start_simulation(scenario_id=5)
 
@@ -3507,6 +3732,7 @@ class TestStartSimulationConsent:
     async def test_consent_no_in_chat_consent_path_exists(self, _server):
         """D27 replaces in-chat (MRTR) consent: no tool takes a confirm/consent flag for a RUN."""
         import inspect
+
         params = inspect.signature(_server.start_simulation).parameters
         assert not {"confirm", "consent", "unattended"} & set(params)
         source = inspect.getsource(_server)
@@ -3561,9 +3787,16 @@ class TestGetRunSwwDownload:
     async def test_sww_download_state_size_and_ui_url_without_a_link(self, _server):
         run = _presigned_run(67181, "complete", project=42, scenario=7)
         respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
-        respx.get(f"{BASE}/runs/67181/sww/").mock(return_value=httpx.Response(
-            200, json={"state": "archived", "size_bytes": 7_000_000,
-                       "url": "https://b.s3.amazonaws.com/k.sww?X-Amz-Signature=zz"}))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "state": "archived",
+                    "size_bytes": 7_000_000,
+                    "url": "https://b.s3.amazonaws.com/k.sww?X-Amz-Signature=zz",
+                },
+            )
+        )
         respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
         result = await _server.get_run(run_id=67181)
         assert "X-Amz" not in result

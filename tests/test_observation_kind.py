@@ -43,8 +43,12 @@ LAYER = f"{LAYERS}239/"
 OBSERVATIONS = f"{LAYER}observations/"
 ALTERNATE = "geonode:obs_42_survey_1998"
 OBSERVATION_TOOLS = {
-    "create_observation_layer", "list_observations", "add_observations",
-    "update_observation", "delete_observation", "add_observation_photo_link",
+    "create_observation_layer",
+    "list_observations",
+    "add_observations",
+    "update_observation",
+    "delete_observation",
+    "add_observation_photo_link",
 }
 
 
@@ -52,15 +56,23 @@ OBSERVATION_TOOLS = {
 def _server(env_vars):
     """The server module, reloaded after the env vars are set (as in test_server)."""
     import hydrata_mcp.server as srv
+
     importlib.reload(srv)
     return srv
 
 
 def _layer(gn_layer=9876, **overrides):
-    body = {"id": 239, "title": "Survey 1998", "project": 42, "gn_layer": gn_layer,
-            "gn_layer_name": "obs_42_survey_1998" if gn_layer else None,
-            "perms": ["view_resourcebase"], "vertical_datum": "AHD", "datum_offset_m": None,
-            "has_features": False}
+    body = {
+        "id": 239,
+        "title": "Survey 1998",
+        "project": 42,
+        "gn_layer": gn_layer,
+        "gn_layer_name": "obs_42_survey_1998" if gn_layer else None,
+        "perms": ["view_resourcebase"],
+        "vertical_datum": "AHD",
+        "datum_offset_m": None,
+        "has_features": False,
+    }
     body.update(overrides)
     return body
 
@@ -68,12 +80,18 @@ def _layer(gn_layer=9876, **overrides):
 def _towradgi_marks():
     with FIXTURE.open() as handle:
         rows = list(csv.DictReader(handle))
-    return [{
-        "subtype": "flood_mark", "name": row["name"], "value_kind": "stage",
-        "stage_m": float(row["elevation"]), "flood_name": "August 1998",
-        "source": "Towradgi Creek 1998 flood levels (ANUGA validation)",
-        "geometry": {"type": "Point", "coordinates": [float(row["easting"]), float(row["northing"])]},
-    } for row in rows]
+    return [
+        {
+            "subtype": "flood_mark",
+            "name": row["name"],
+            "value_kind": "stage",
+            "stage_m": float(row["elevation"]),
+            "flood_name": "August 1998",
+            "source": "Towradgi Creek 1998 flood levels (ANUGA validation)",
+            "geometry": {"type": "Point", "coordinates": [float(row["easting"]), float(row["northing"])]},
+        }
+        for row in rows
+    ]
 
 
 class FakeLayerTable:
@@ -110,15 +128,24 @@ class TestObservationLayer:
     async def test_create_observation_layer_waits_for_its_geoserver_layer(self, _server):
         _mock_project()
         post = respx.post(LAYERS).mock(return_value=httpx.Response(201, json=_layer(gn_layer=None)))
-        detail = respx.get(LAYER).mock(side_effect=[
-            httpx.Response(200, json=_layer(gn_layer=None)),
-            httpx.Response(200, json=_layer()),
-        ])
-        data = _tool_json(await _call_as_caller(_server, "create_observation_layer", {
-            "project_id": 42, "title": "Survey 1998", "vertical_datum": "AHD",
-            "poll_interval_seconds": 0}))
+        detail = respx.get(LAYER).mock(
+            side_effect=[
+                httpx.Response(200, json=_layer(gn_layer=None)),
+                httpx.Response(200, json=_layer()),
+            ]
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "create_observation_layer",
+                {"project_id": 42, "title": "Survey 1998", "vertical_datum": "AHD", "poll_interval_seconds": 0},
+            )
+        )
         assert json.loads(post.calls[0].request.content) == {
-            "title": "Survey 1998", "vertical_datum": "AHD", "datum_offset_m": None}
+            "title": "Survey 1998",
+            "vertical_datum": "AHD",
+            "datum_offset_m": None,
+        }
         assert detail.call_count == 2
         assert data["layer_id"] == 239 and data["ready"] is True and data["timed_out"] is False
         assert data["dataset_alternate"] == ALTERNATE and data["vertical_datum"] == "AHD"
@@ -131,8 +158,11 @@ class TestObservationLayer:
         _mock_project()
         respx.post(LAYERS).mock(return_value=httpx.Response(201, json=_layer(gn_layer=None)))
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer(gn_layer=None)))
-        data = _tool_json(await _call_as_caller(_server, "create_observation_layer", {
-            "project_id": 42, "title": "Survey 1998", "timeout_seconds": 0}))
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "create_observation_layer", {"project_id": 42, "title": "Survey 1998", "timeout_seconds": 0}
+            )
+        )
         assert data["ready"] is False and data["timed_out"] is True
         assert "list_observations" in data["say_to_user"]
 
@@ -141,16 +171,26 @@ class TestObservationLayer:
         _mock_project()
         respx.post(LAYERS).mock(return_value=httpx.Response(201, json=_layer(gn_layer=None)))
         respx.get(LAYER).mock(return_value=httpx.Response(503))
-        data = _tool_json(await _call_as_caller(_server, "create_observation_layer", {
-            "project_id": 42, "title": "Survey 1998", "poll_interval_seconds": 0}))
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "create_observation_layer",
+                {"project_id": 42, "title": "Survey 1998", "poll_interval_seconds": 0},
+            )
+        )
         assert data["layer_id"] == 239 and data["ready"] is False
         assert "server error" in data["poll_error"]
 
     @respx.mock
     async def test_create_observation_layer_refuses_a_local_datum_without_offset(self, _server):
         post = respx.post(LAYERS).mock(return_value=httpx.Response(201, json=_layer()))
-        text = _tool_error_text(await _call_as_caller(_server, "create_observation_layer", {
-            "project_id": 42, "title": "Gauge board", "vertical_datum": "local"}))
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server,
+                "create_observation_layer",
+                {"project_id": 42, "title": "Gauge board", "vertical_datum": "local"},
+            )
+        )
         assert "datum_offset_m" in text and not post.called
 
     @respx.mock
@@ -160,19 +200,28 @@ class TestObservationLayer:
         _mock_project()
         post = respx.post(LAYERS).mock(return_value=httpx.Response(201, json=_layer(vertical_datum="NAVD88")))
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer(vertical_datum="NAVD88")))
-        data = _tool_json(await _call_as_caller(_server, "create_observation_layer", {
-            "project_id": 42, "title": "Survey 2011", "vertical_datum": "NAVD88", "poll_interval_seconds": 0}))
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "create_observation_layer",
+                {"project_id": 42, "title": "Survey 2011", "vertical_datum": "NAVD88", "poll_interval_seconds": 0},
+            )
+        )
         assert json.loads(post.calls[0].request.content)["vertical_datum"] == "NAVD88"
         assert data["vertical_datum"] == "NAVD88"
         assert "NAVD88" in data["say_to_user"]
 
     @respx.mock
     async def test_negative_control_the_api_refusal_of_a_non_vertical_code_is_relayed(self, _server):
-        refusal = {"code": "invalid", "errors": ["vertical_datum: EPSG:4326 is not a vertical CRS; ..."],
-                   "success": False}
+        refusal = {
+            "code": "invalid",
+            "errors": ["vertical_datum: EPSG:4326 is not a vertical CRS; ..."],
+            "success": False,
+        }
         respx.post(LAYERS).mock(return_value=httpx.Response(400, json=refusal))
-        text = await _call_as_caller(_server, "create_observation_layer", {
-            "project_id": 42, "title": "x", "vertical_datum": "EPSG:4326"})
+        text = await _call_as_caller(
+            _server, "create_observation_layer", {"project_id": 42, "title": "x", "vertical_datum": "EPSG:4326"}
+        )
         assert "is not a vertical CRS" in json.dumps(text)
 
     async def test_the_datum_description_names_no_national_list(self, _server):
@@ -191,8 +240,11 @@ class TestTowradgiRoundTrip:
         assert len(marks) == 48
         table = FakeLayerTable()
         _mock_table(table)
-        added = _tool_json(await _call_as_caller(_server, "add_observations", {
-            "project_id": 42, "layer_id": 239, "observations": marks, "srid": 28356}))
+        added = _tool_json(
+            await _call_as_caller(
+                _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": marks, "srid": 28356}
+            )
+        )
         assert added["created_count"] == 48 and added["rejected_count"] == 0
         assert [row["fid"] for row in added["created"]] == list(range(1, 49))
         assert added["created"][0]["name"] == "PioneerRd"
@@ -201,8 +253,7 @@ class TestTowradgiRoundTrip:
         assert f"layer={ALTERNATE}" in added["ui_url"]
         assert "48" in added["say_to_user"]
 
-        listed = _tool_json(await _call_as_caller(_server, "list_observations", {
-            "project_id": 42, "layer_id": 239}))
+        listed = _tool_json(await _call_as_caller(_server, "list_observations", {"project_id": 42, "layer_id": 239}))
         assert listed["count"] == 48
         by_name = {row["name"]: row for row in listed["results"]}
         for mark in marks:
@@ -220,14 +271,25 @@ class TestTowradgiRoundTrip:
             if json.loads(request.content).get("name") == "bad":
                 return httpx.Response(400, json=problems)
             return table.create(request)
+
         respx.post(OBSERVATIONS).mock(side_effect=create)
-        marks = _towradgi_marks()[:2] + [{"subtype": "flood_mark", "name": "bad", "value_kind": "stage",
-                                          "geometry": {"type": "Point", "coordinates": [150.9, -34.4]}}]
-        data = _tool_json(await _call_as_caller(_server, "add_observations", {
-            "project_id": 42, "layer_id": 239, "observations": marks}))
+        marks = _towradgi_marks()[:2] + [
+            {
+                "subtype": "flood_mark",
+                "name": "bad",
+                "value_kind": "stage",
+                "geometry": {"type": "Point", "coordinates": [150.9, -34.4]},
+            }
+        ]
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": marks}
+            )
+        )
         assert data["created_count"] == 2 and data["rejected_count"] == 1
-        assert data["rejected"] == [{"index": 2, "name": "bad", "http_status": 400,
-                                     "problems": {"stage_m": "required for a Flood mark"}}]
+        assert data["rejected"] == [
+            {"index": 2, "name": "bad", "http_status": 400, "problems": {"stage_m": "required for a Flood mark"}}
+        ]
         assert "srid" not in table.bodies[0]["geometry"]  # no srid given: the API's EPSG:4326 default
 
     @respx.mock
@@ -237,20 +299,27 @@ class TestTowradgiRoundTrip:
         user which flood (never guess a date)."""
         table = FakeLayerTable()
         _mock_table(table)
-        message = ("Say which flood this is: give the date window (observed_start / observed_end) "
-                   "or the flood name (flood_name).")
-        problems = {"error_code": "VALIDATION_ERROR",
-                    "problems": {"observed_start": message, "flood_name": message}}
+        message = (
+            "Say which flood this is: give the date window (observed_start / observed_end) "
+            "or the flood name (flood_name)."
+        )
+        problems = {"error_code": "VALIDATION_ERROR", "problems": {"observed_start": message, "flood_name": message}}
 
         def create(request):
             body = json.loads(request.content)
             if not (body.get("flood_name") or body.get("observed_start") or body.get("observed_end")):
                 return httpx.Response(400, json=problems)
             return table.create(request)
+
         respx.post(OBSERVATIONS).mock(side_effect=create)
         undated = {k: v for k, v in _towradgi_marks()[0].items() if k != "flood_name"}
-        data = _tool_json(await _call_as_caller(_server, "add_observations", {
-            "project_id": 42, "layer_id": 239, "observations": [_towradgi_marks()[1], undated]}))
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "add_observations",
+                {"project_id": 42, "layer_id": 239, "observations": [_towradgi_marks()[1], undated]},
+            )
+        )
         assert data["created_count"] == 1 and data["rejected_count"] == 1
         assert set(data["rejected"][0]["problems"]) == {"observed_start", "flood_name"}
         assert "which flood" in data["say_to_user"] and "ask the user" in data["say_to_user"]
@@ -267,8 +336,11 @@ class TestTowradgiRoundTrip:
     async def test_observation_add_refuses_a_layer_still_being_created(self, _server):
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer(gn_layer=None)))
         post = respx.post(OBSERVATIONS).mock(return_value=httpx.Response(201, json={}))
-        text = _tool_error_text(await _call_as_caller(_server, "add_observations", {
-            "project_id": 42, "layer_id": 239, "observations": _towradgi_marks()[:1]}))
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": _towradgi_marks()[:1]}
+            )
+        )
         assert "still being created" in text and not post.called
 
     @respx.mock
@@ -282,9 +354,13 @@ class TestTowradgiRoundTrip:
             if len(calls) == 2:
                 return httpx.Response(403, json={"detail": "You do not have permission"})
             return table.create(request)
+
         respx.post(OBSERVATIONS).mock(side_effect=create)
-        data = _tool_json(await _call_as_caller(_server, "add_observations", {
-            "project_id": 42, "layer_id": 239, "observations": _towradgi_marks()[:5]}))
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": _towradgi_marks()[:5]}
+            )
+        )
         assert len(calls) == 2  # stopped: the other 3 would only fail the same way
         assert data["created_count"] == 1 and data["stopped"]["http_status"] == 403
         assert data["not_sent_count"] == 3
@@ -301,9 +377,13 @@ class TestTowradgiRoundTrip:
             if len(calls) == 3:
                 return httpx.Response(502, text="<html>Bad Gateway</html>")
             return table.create(request)
+
         respx.post(OBSERVATIONS).mock(side_effect=create)
-        data = _tool_json(await _call_as_caller(_server, "add_observations", {
-            "project_id": 42, "layer_id": 239, "observations": _towradgi_marks()[:4]}))
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": _towradgi_marks()[:4]}
+            )
+        )
         assert [row["fid"] for row in data["created"]] == [1, 2]
         assert data["stopped"]["index"] == 2 and "server error" in data["stopped"]["error"]
         assert data["not_sent_count"] == 1 and "were not added" in data["say_to_user"]
@@ -322,10 +402,18 @@ class TestEditDelete:
     async def test_update_observation_patches_only_the_changes(self, _server):
         _mock_project()
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer()))
-        patch = respx.patch(f"{OBSERVATIONS}17/").mock(return_value=httpx.Response(200, json={
-            "fid": 17, "layer": 239, "name": "1232", "stage_m": 2.5, "problems": {}}))
-        data = _tool_json(await _call_as_caller(_server, "update_observation", {
-            "project_id": 42, "layer_id": 239, "fid": 17, "changes": {"stage_m": 2.5}}))
+        patch = respx.patch(f"{OBSERVATIONS}17/").mock(
+            return_value=httpx.Response(
+                200, json={"fid": 17, "layer": 239, "name": "1232", "stage_m": 2.5, "problems": {}}
+            )
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "update_observation",
+                {"project_id": 42, "layer_id": 239, "fid": 17, "changes": {"stage_m": 2.5}},
+            )
+        )
         assert json.loads(patch.calls[0].request.content) == {"stage_m": 2.5}
         assert data["observation"]["stage_m"] == 2.5 and data["http_status"] == 200
         assert f"layer={ALTERNATE}" in data["ui_url"]
@@ -333,16 +421,31 @@ class TestEditDelete:
     @respx.mock
     async def test_update_observation_relays_the_api_problems(self, _server):
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer()))
-        respx.patch(f"{OBSERVATIONS}17/").mock(return_value=httpx.Response(400, json={
-            "error_code": "VALIDATION_ERROR", "problems": {"bound": "must be one of: exact, at_least, at_most"}}))
-        text = _tool_error_text(await _call_as_caller(_server, "update_observation", {
-            "project_id": 42, "layer_id": 239, "fid": 17, "changes": {"bound": "about"}}))
+        respx.patch(f"{OBSERVATIONS}17/").mock(
+            return_value=httpx.Response(
+                400,
+                json={
+                    "error_code": "VALIDATION_ERROR",
+                    "problems": {"bound": "must be one of: exact, at_least, at_most"},
+                },
+            )
+        )
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server,
+                "update_observation",
+                {"project_id": 42, "layer_id": 239, "fid": 17, "changes": {"bound": "about"}},
+            )
+        )
         assert "must be one of: exact, at_least, at_most" in text
 
     @respx.mock
     async def test_update_observation_refuses_empty_changes(self, _server):
-        text = _tool_error_text(await _call_as_caller(_server, "update_observation", {
-            "project_id": 42, "layer_id": 239, "fid": 17, "changes": {}}))
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "update_observation", {"project_id": 42, "layer_id": 239, "fid": 17, "changes": {}}
+            )
+        )
         assert "changes" in text
 
     @respx.mock
@@ -350,8 +453,9 @@ class TestEditDelete:
         _mock_project()
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer()))
         delete = respx.delete(f"{OBSERVATIONS}17/").mock(return_value=httpx.Response(204))
-        data = _tool_json(await _call_as_caller(_server, "delete_observation", {
-            "project_id": 42, "layer_id": 239, "fid": 17}))
+        data = _tool_json(
+            await _call_as_caller(_server, "delete_observation", {"project_id": 42, "layer_id": 239, "fid": 17})
+        )
         assert delete.called and data["deleted"] is True and data["fid"] == 17
         assert "photos" in data["say_to_user"]
 
@@ -359,8 +463,9 @@ class TestEditDelete:
     async def test_delete_observation_404_is_an_error(self, _server):
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer()))
         respx.delete(f"{OBSERVATIONS}99/").mock(return_value=httpx.Response(404, json={"detail": "Not found."}))
-        text = _tool_error_text(await _call_as_caller(_server, "delete_observation", {
-            "project_id": 42, "layer_id": 239, "fid": 99}))
+        text = _tool_error_text(
+            await _call_as_caller(_server, "delete_observation", {"project_id": 42, "layer_id": 239, "fid": 99})
+        )
         assert "404" in text
 
 
@@ -369,30 +474,65 @@ class TestPhotoLinkOnly:
     async def test_photo_link_is_stored_as_reference_only(self, _server):
         _mock_project()
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer()))
-        post = respx.post(f"{OBSERVATIONS}1/photos/").mock(return_value=httpx.Response(201, json={
-            "id": 12, "layer": 239, "fid": 1, "source": "reference_only", "source_label": "Reference link",
-            "reference_url": "https://example.org/towradgi-1998.jpg", "display_url": None, "url": None,
-            "caption": "Debris line, Pioneer Rd", "public_consent": False}))
-        data = _tool_json(await _call_as_caller(_server, "add_observation_photo_link", {
-            "project_id": 42, "layer_id": 239, "fid": 1,
-            "reference_url": "https://example.org/towradgi-1998.jpg", "caption": "Debris line, Pioneer Rd"}))
+        post = respx.post(f"{OBSERVATIONS}1/photos/").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "id": 12,
+                    "layer": 239,
+                    "fid": 1,
+                    "source": "reference_only",
+                    "source_label": "Reference link",
+                    "reference_url": "https://example.org/towradgi-1998.jpg",
+                    "display_url": None,
+                    "url": None,
+                    "caption": "Debris line, Pioneer Rd",
+                    "public_consent": False,
+                },
+            )
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "add_observation_photo_link",
+                {
+                    "project_id": 42,
+                    "layer_id": 239,
+                    "fid": 1,
+                    "reference_url": "https://example.org/towradgi-1998.jpg",
+                    "caption": "Debris line, Pioneer Rd",
+                },
+            )
+        )
         assert json.loads(post.calls[0].request.content) == {
-            "source": "reference_only", "reference_url": "https://example.org/towradgi-1998.jpg",
-            "caption": "Debris line, Pioneer Rd", "credit": "", "public_consent": False}
+            "source": "reference_only",
+            "reference_url": "https://example.org/towradgi-1998.jpg",
+            "caption": "Debris line, Pioneer Rd",
+            "credit": "",
+            "public_consent": False,
+        }
         assert data["photo"]["id"] == 12 and data["http_status"] == 201
 
-    @pytest.mark.parametrize("reference", [
-        "/home/engineer/photos/IMG_0042.jpg",
-        "file:///home/engineer/photos/IMG_0042.HEIC",
-        "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ==",
-        "C:\\Users\\engineer\\IMG_0042.jpg",
-    ])
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            "/home/engineer/photos/IMG_0042.jpg",
+            "file:///home/engineer/photos/IMG_0042.HEIC",
+            "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ==",
+            "C:\\Users\\engineer\\IMG_0042.jpg",
+        ],
+    )
     @respx.mock(assert_all_called=False)
     async def test_observation_photo_file_upload_is_refused_naming_the_ui_path(self, _server, reference):
         """NEGATIVE CONTROL: MCP never uploads a photo file; the refusal names where to do it."""
         post = respx.post(url__startswith=f"{OBSERVATIONS}").mock(return_value=httpx.Response(201, json={}))
-        text = _tool_error_text(await _call_as_caller(_server, "add_observation_photo_link", {
-            "project_id": 42, "layer_id": 239, "fid": 1, "reference_url": reference}))
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server,
+                "add_observation_photo_link",
+                {"project_id": 42, "layer_id": 239, "fid": 1, "reference_url": reference},
+            )
+        )
         assert "photo strip" in text and "Observations" in text and "https://" in text
         assert not post.called
 
@@ -401,8 +541,11 @@ class TestPhotoLinkOnly:
         post = respx.post(OBSERVATIONS).mock(return_value=httpx.Response(201, json={}))
         respx.get(LAYER).mock(return_value=httpx.Response(200, json=_layer()))
         mark = dict(_towradgi_marks()[0], photo="IMG_0042.jpg")
-        text = _tool_error_text(await _call_as_caller(_server, "add_observations", {
-            "project_id": 42, "layer_id": 239, "observations": [mark]}))
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": [mark]}
+            )
+        )
         assert "photo strip" in text and "add_observation_photo_link" in text
         assert not post.called
 
@@ -430,7 +573,8 @@ def _zone_routes(table, **layer_fields):
         router.get(LAYER).mock(return_value=httpx.Response(200, json=_layer(**layer_fields)))
         router.post(OBSERVATIONS).mock(side_effect=table.create)
         router.get(f"{BASE}/projects/42/").mock(
-            return_value=httpx.Response(200, json={"id": 42, "name": "p", "base_map": BASE_MAP}))
+            return_value=httpx.Response(200, json={"id": 42, "name": "p", "base_map": BASE_MAP})
+        )
         yield router
 
 
@@ -441,15 +585,24 @@ class TestObservationDefaultTimezone:
     with no location sends no zone (the API then asks for one)."""
 
     def _timed(self, **extra):
-        return {"subtype": "timed_level", "name": "T1", "value_kind": "stage", "stage_m": 3.1,
-                "observed_start": "1998-08-17T09:00",
-                "geometry": {"type": "Point", "coordinates": [151.74, -32.92]}, **extra}
+        return {
+            "subtype": "timed_level",
+            "name": "T1",
+            "value_kind": "stage",
+            "stage_m": 3.1,
+            "observed_start": "1998-08-17T09:00",
+            "geometry": {"type": "Point", "coordinates": [151.74, -32.92]},
+            **extra,
+        }
 
     async def test_project_zone_is_used_and_reported(self, _server):
         table = FakeLayerTable()
         with _zone_routes(table, default_timezone="Europe/Amsterdam", default_timezone_source="project_location"):
-            data = _tool_json(await _call_as_caller(_server, "add_observations", {
-                "project_id": 42, "layer_id": 239, "observations": [self._timed()]}))
+            data = _tool_json(
+                await _call_as_caller(
+                    _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": [self._timed()]}
+                )
+            )
         assert table.bodies[0]["entry_timezone"] == "Europe/Amsterdam"
         assert data["entry_timezone"] == {"timezone": "Europe/Amsterdam", "source": "project_location"}
         assert "Europe/Amsterdam" in data["say_to_user"] and "project location" in data["say_to_user"]
@@ -457,16 +610,28 @@ class TestObservationDefaultTimezone:
     async def test_negative_control_an_explicit_zone_wins(self, _server):
         table = FakeLayerTable()
         with _zone_routes(table, default_timezone="Europe/Amsterdam", default_timezone_source="project_location"):
-            data = _tool_json(await _call_as_caller(_server, "add_observations", {
-                "project_id": 42, "layer_id": 239, "entry_timezone": "America/Chicago",
-                "observations": [self._timed(), self._timed(name="T2", entry_timezone="Asia/Tokyo")]}))
+            data = _tool_json(
+                await _call_as_caller(
+                    _server,
+                    "add_observations",
+                    {
+                        "project_id": 42,
+                        "layer_id": 239,
+                        "entry_timezone": "America/Chicago",
+                        "observations": [self._timed(), self._timed(name="T2", entry_timezone="Asia/Tokyo")],
+                    },
+                )
+            )
         assert [b["entry_timezone"] for b in table.bodies] == ["America/Chicago", "Asia/Tokyo"]
         assert data["entry_timezone"] == {"timezone": "America/Chicago", "source": "given"}
 
     async def test_no_project_location_sends_no_zone(self, _server):
         table = FakeLayerTable()
         with _zone_routes(table, default_timezone=None, default_timezone_source=None):
-            data = _tool_json(await _call_as_caller(_server, "add_observations", {
-                "project_id": 42, "layer_id": 239, "observations": [self._timed()]}))
+            data = _tool_json(
+                await _call_as_caller(
+                    _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": [self._timed()]}
+                )
+            )
         assert "entry_timezone" not in table.bodies[0]
         assert data["entry_timezone"] == {"timezone": None, "source": None}

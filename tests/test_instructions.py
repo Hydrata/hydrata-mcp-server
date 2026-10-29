@@ -50,6 +50,8 @@ def test_required_phrase_present(instructions, phrase):
     assert phrase.lower() in instructions.lower()
 
 
-@pytest.mark.parametrize("phrase", ["curl", "your own files", "hk_", "multipart", "Authorization", "agent moves the bytes"])
+@pytest.mark.parametrize(
+    "phrase", ["curl", "your own files", "hk_", "multipart", "Authorization", "agent moves the bytes"]
+)
 def test_off_platform_guidance_gone(instructions, phrase):
     assert phrase.lower() not in instructions.lower()

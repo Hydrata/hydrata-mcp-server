@@ -35,8 +35,7 @@ async def test_poll_until_clamps_oversized_timeout(_server):  # noqa: F811
     _server.time.monotonic = lambda: clock["t"]
     _server.asyncio.sleep = fake_sleep
     try:
-        _v, _polls, elapsed, timed_out = await _server._poll_until(
-            fetch, lambda v: v["status"] == "done", 9999, 5)
+        _v, _polls, elapsed, timed_out = await _server._poll_until(fetch, lambda v: v["status"] == "done", 9999, 5)
     finally:
         _server.time.monotonic, _server.asyncio.sleep = orig_mono, orig_sleep
     assert timed_out is True

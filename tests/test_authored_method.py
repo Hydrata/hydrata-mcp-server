@@ -16,6 +16,7 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture
 def _server(env_vars):
     import hydrata_mcp.server as srv
+
     importlib.reload(srv)
     return srv
 
@@ -39,22 +40,40 @@ async def test_authored_method_list_inputs_returns_it_per_row_and_wraps_it_as_da
     for route in ("boundaries", "frictions", "inflows", "rainfalls", "buildings", "mesh-regions", "culverts"):
         rows = []
         if route == "frictions":
-            rows = [{"id": 3, "title": "Friction 01", "gn_layer": None, "has_features": False,
-                     "authored_method": CANARY},
-                    {"id": 4, "title": "Friction 02", "gn_layer": None, "has_features": False,
-                     "authored_method": None}]
+            rows = [
+                {"id": 3, "title": "Friction 01", "gn_layer": None, "has_features": False, "authored_method": CANARY},
+                {"id": 4, "title": "Friction 02", "gn_layer": None, "has_features": False, "authored_method": None},
+            ]
         respx.get(f"{BASE}/projects/42/{route}/").mock(return_value=httpx.Response(200, json=rows))
     data = _assert_enveloped(await _call_as_caller(_server, "list_inputs", {"project_id": 42}))
     first, second = data["inputs"]["friction"]
-    assert first["authored_method"] == f"{OPEN}{CANARY}{CLOSE}"   # an agent's words are data, not instructions
+    assert first["authored_method"] == f"{OPEN}{CANARY}{CLOSE}"  # an agent's words are data, not instructions
     assert second["authored_method"] is None
 
 
 @respx.mock
 async def test_authored_method_list_time_series_returns_it(_server):
-    respx.get(f"{BASE}/projects/42/time-series/").mock(return_value=httpx.Response(200, json={
-        "count": 1, "next": None,
-        "results": [{"id": 77, "name": "Creek", "series_type": "hydrograph", "units": "m3/s", "timezone": "UTC",
-                     "authored_method": "scaled the 1% AEP peak", "data": {"rowData": ROW_DATA}}]}))
-    data = _assert_enveloped(await _call_as_caller(_server, "list_time_series", {"project_id": 42}), canary="scaled the 1% AEP peak")
+    respx.get(f"{BASE}/projects/42/time-series/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "count": 1,
+                "next": None,
+                "results": [
+                    {
+                        "id": 77,
+                        "name": "Creek",
+                        "series_type": "hydrograph",
+                        "units": "m3/s",
+                        "timezone": "UTC",
+                        "authored_method": "scaled the 1% AEP peak",
+                        "data": {"rowData": ROW_DATA},
+                    }
+                ],
+            },
+        )
+    )
+    data = _assert_enveloped(
+        await _call_as_caller(_server, "list_time_series", {"project_id": 42}), canary="scaled the 1% AEP peak"
+    )
     assert data["series"][0]["authored_method"] == f"{OPEN}scaled the 1% AEP peak{CLOSE}"

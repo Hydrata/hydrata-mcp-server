@@ -190,8 +190,7 @@ class RequireAuth:
         request_id = (calls or messages)[0].get("id") if messages else None
 
         # ASGI header names are lowercase bytes; a blank value is not a credential.
-        auths = [value.decode("latin-1") for name, value in scope.get("headers", [])
-                 if name == b"authorization"]
+        auths = [value.decode("latin-1") for name, value in scope.get("headers", []) if name == b"authorization"]
         credentials = [a for a in auths if a.strip()]
         refusal = None
         token_error = ""
@@ -305,18 +304,38 @@ DATA_NOTE = (
 DATA_MARKER = re.compile(r"<[^<>]{0,8}untrusted[\s_-]*data[^<>]{0,8}>", re.IGNORECASE)
 DATA_MARKER_REMOVED = "[marker removed]"
 # Keys whose STRING value is a person's text, wherever they appear in a result.
-DATA_TEXT_KEYS = frozenset({
-    # names, titles, descriptions (projects, scenarios, input rows, terrains, series)
-    "name", "title", "row_title", "description", "abstract", "location_name", "source", "units",
-    # who wrote it: usernames, the agent key's name, the agent's self-declared client
-    "owner_username", "created_by_username", "archived_by_username", "grant", "client",
-    # how an agent says it made an input (free text it wrote)
-    "authored_method",
-    # layer names (GeoNode derives them from the uploaded file)
-    "gn_layer_name", "gn_layer_hillshade_name", "dataset_alternate", "alternate", "layer",
-    # run text that quotes layer content (an ANUGA error names a boundary tag)
-    "log", "error_message", "user_message", "cloudwatch_log_tail",
-})
+DATA_TEXT_KEYS = frozenset(
+    {
+        # names, titles, descriptions (projects, scenarios, input rows, terrains, series)
+        "name",
+        "title",
+        "row_title",
+        "description",
+        "abstract",
+        "location_name",
+        "source",
+        "units",
+        # who wrote it: usernames, the agent key's name, the agent's self-declared client
+        "owner_username",
+        "created_by_username",
+        "archived_by_username",
+        "grant",
+        "client",
+        # how an agent says it made an input (free text it wrote)
+        "authored_method",
+        # layer names (GeoNode derives them from the uploaded file)
+        "gn_layer_name",
+        "gn_layer_hillshade_name",
+        "dataset_alternate",
+        "alternate",
+        "layer",
+        # run text that quotes layer content (an ANUGA error names a boundary tag)
+        "log",
+        "error_message",
+        "user_message",
+        "cloudwatch_log_tail",
+    }
+)
 # Keys holding a VERBATIM third-party record: every string inside is data.
 DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config"})
 
@@ -324,7 +343,7 @@ DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config"})
 def _is_wrapped(text: str) -> bool:
     if not (text.startswith(DATA_OPEN) and text.endswith(DATA_CLOSE)):
         return False
-    inner = text[len(DATA_OPEN):-len(DATA_CLOSE)]
+    inner = text[len(DATA_OPEN) : -len(DATA_CLOSE)]
     return not DATA_MARKER.search(unicodedata.normalize("NFKC", inner))
 
 
@@ -503,8 +522,7 @@ TOOL_ANNOTATIONS = {
     # TASK-3816 / TASK-3844 (epic 3801): Compare with observations. Exclusions
     # are logged and reversible (include it again), so not destructive.
     "get_observation_comparison": ("Compare a run with flood observations", True, False, True),
-    "set_observation_exclusion": ("Exclude or include a flood observation in a run's comparison",
-                                  False, False, True),
+    "set_observation_exclusion": ("Exclude or include a flood observation in a run's comparison", False, False, True),
     # TASK-3848: a saved setting, overwritten by the next save; not destructive.
     "set_comparison_tolerance": ("Save a project's default comparison tolerance", False, False, True),
 }
@@ -538,8 +556,11 @@ def _tool(name: str):
     title, read_only, destructive, idempotent = TOOL_ANNOTATIONS[name]
     register = mcp.tool(
         annotations=ToolAnnotations(
-            title=title, read_only_hint=read_only, destructive_hint=destructive,
-            idempotent_hint=idempotent, open_world_hint=False,
+            title=title,
+            read_only_hint=read_only,
+            destructive_hint=destructive,
+            idempotent_hint=idempotent,
+            open_world_hint=False,
         ),
         output_schema={"type": "object"},
     )
@@ -622,9 +643,7 @@ def _elide_presigned(value):
     if isinstance(value, dict):
         return {
             key: (
-                ELIDED_PRESIGNED
-                if _is_s3_url_key(key) and isinstance(item, str) and item
-                else _elide_presigned(item)
+                ELIDED_PRESIGNED if _is_s3_url_key(key) and isinstance(item, str) and item else _elide_presigned(item)
             )
             for key, item in value.items()
         }
@@ -648,10 +667,26 @@ def _elide_presigned(value):
 # sample: run_anuga run_utils.py fillna(0.0), TASK-2825) and has no other
 # MCP path at all.
 SCENARIO_RECORD_KEYS = (
-    "id", "project", "name", "description", "terrain", "boundary", "friction", "inflow",
-    "rainfall", "building", "mesh_region", "culvert", "resolution", "duration", "computed_status",
-    "mesh_triangle_count_estimate", "mesh_triangle_count_estimate_breakdown",
-    "latest_run_is_valid", "compute_cost_estimate", "vcpu_hours_estimate",
+    "id",
+    "project",
+    "name",
+    "description",
+    "terrain",
+    "boundary",
+    "friction",
+    "inflow",
+    "rainfall",
+    "building",
+    "mesh_region",
+    "culvert",
+    "resolution",
+    "duration",
+    "computed_status",
+    "mesh_triangle_count_estimate",
+    "mesh_triangle_count_estimate_breakdown",
+    "latest_run_is_valid",
+    "compute_cost_estimate",
+    "vcpu_hours_estimate",
     "inflow_anchor_mismatch",
     # TASK-3208: the inputs you wrote that the user has not reviewed yet (members only)
     "unreviewed_inputs",
@@ -800,9 +835,7 @@ async def _layer_summary(alternate) -> dict:
     if not alternate:
         return summary
     try:
-        listing = await client.get_from_origin(
-            "/api/v2/datasets/", params={"filter{alternate}": alternate}
-        )
+        listing = await client.get_from_origin("/api/v2/datasets/", params={"filter{alternate}": alternate})
         datasets = listing.get("datasets") if isinstance(listing, dict) else None
         polygon = (datasets[0].get("ll_bbox_polygon") or {}) if datasets else {}
         ring = (polygon.get("coordinates") or [[]])[0]
@@ -920,7 +953,8 @@ async def get_scenario(
         state["say_to_user"] = (
             f"Time series {names} {'is' if len(unbound) == 1 else 'are'} not used by any inflow or rainfall "
             "feature, so the model ignores it. Say which input should use it, or the model will not "
-            "carry the water you expect.")
+            "carry the water you expect."
+        )
     return json.dumps(state, indent=2)
 
 
@@ -990,10 +1024,15 @@ async def start_simulation(
     result = json.loads(_post_result(_elide_presigned(body), status_code))
     run_id = result.get("id")
     await _hand_back(
-        result, result.get("project"),
-        {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status"),
-         "compute_backend": result.get("compute_backend"),
-         "vcpu_hours_estimate": result.get("vcpu_hours_estimate")},
+        result,
+        result.get("project"),
+        {
+            "run_id": run_id,
+            "scenario_id": scenario_id,
+            "status": result.get("status"),
+            "compute_backend": result.get("compute_backend"),
+            "vcpu_hours_estimate": result.get("vcpu_hours_estimate"),
+        },
         f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}). "
         "Open the link to watch it; the results appear on the map when it completes.",
         run=run_id,
@@ -1030,23 +1069,35 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
     record = None
     polls, elapsed, timed_out = 0, 0.0, True
     if run_id is not None:
+
         async def fetch():
             return await client.get(f"/runs/{run_id}/status/")
 
         record, polls, elapsed, timed_out = await _poll_until(
-            fetch, lambda value: _status_of(value) not in (None, RUN_AWAITING_CONSENT),
-            timeout_seconds, poll_interval_seconds,
+            fetch,
+            lambda value: _status_of(value) not in (None, RUN_AWAITING_CONSENT),
+            timeout_seconds,
+            poll_interval_seconds,
         )
     run_status = _status_of(record)
     cost = refusal.get("quoted_cost_usd")
     if run_status not in (None, RUN_AWAITING_CONSENT):
-        result = {"outcome": "consented", "id": run_id, "run_id": run_id, "scenario_id": scenario_id,
-                  "status": run_status, "quoted_cost_usd": cost, "consent_url": consent_url,
-                  "polls": polls, "elapsed_seconds": elapsed}
+        result = {
+            "outcome": "consented",
+            "id": run_id,
+            "run_id": run_id,
+            "scenario_id": scenario_id,
+            "status": run_status,
+            "quoted_cost_usd": cost,
+            "consent_url": consent_url,
+            "polls": polls,
+            "elapsed_seconds": elapsed,
+        }
         project_id, _scenario = await _run_project_and_scenario(run_id, None)
         price = f" for ${cost}" if cost is not None else ""
         await _hand_back(
-            result, project_id,
+            result,
+            project_id,
             {"run_id": run_id, "scenario_id": scenario_id, "status": run_status, "quoted_cost_usd": cost},
             f"The user gave consent{price}: run {run_id} has started ({run_status}). Open the link to watch "
             "it; the results appear on the map when it completes.",
@@ -1054,13 +1105,17 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
         )
         return result
     if cost is None:
-        say = (f"Hydrata could not price this run in advance, so you need to start it yourself: open {consent_url} "
-               "in your browser (signed in to Hydrata) and press the button. Nothing has started.")
+        say = (
+            f"Hydrata could not price this run in advance, so you need to start it yourself: open {consent_url} "
+            "in your browser (signed in to Hydrata) and press the button. Nothing has started."
+        )
     else:
-        say = (f"This run is quoted at ${cost}, more than this agent key may spend without asking you "
-               f"(${refusal.get('month_to_date_usd')} of its ${refusal.get('monthly_cap_usd')} monthly limit "
-               f"used). To start it, open {consent_url} in your browser (signed in to Hydrata) and press the "
-               "button. Nothing has started.")
+        say = (
+            f"This run is quoted at ${cost}, more than this agent key may spend without asking you "
+            f"(${refusal.get('month_to_date_usd')} of its ${refusal.get('monthly_cap_usd')} monthly limit "
+            f"used). To start it, open {consent_url} in your browser (signed in to Hydrata) and press the "
+            "button. Nothing has started."
+        )
     return {
         "outcome": "consent_required",
         "error_code": CONSENT_REQUIRED,
@@ -1079,9 +1134,11 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
         "polls": polls,
         "elapsed_seconds": elapsed,
         "say_to_user": say,
-        "next_step": ("Give the user consent_url and the price. Only they can approve it, in their browser. Do "
-                      "not call start_simulation again for this run: poll get_run_status(run_id) — it leaves "
-                      "'built' once they approve."),
+        "next_step": (
+            "Give the user consent_url and the price. Only they can approve it, in their browser. Do "
+            "not call start_simulation again for this run: poll get_run_status(run_id) — it leaves "
+            "'built' once they approve."
+        ),
     }
 
 
@@ -1195,11 +1252,13 @@ async def cancel_run(
     result = json.loads(_post_result(body, status_code))
     project_id, scenario_id = await _run_project_and_scenario(run_id, result)
     await _hand_back(
-        result, project_id,
+        result,
+        project_id,
         {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status")},
         f"Run {run_id} is cancelled ({result.get('status')}); its compute has been released. "
         "Open the link to see the scenario.",
-        panel="scenarios", scenario=scenario_id,
+        panel="scenarios",
+        scenario=scenario_id,
     )
     return json.dumps(result, indent=2)
 
@@ -1226,12 +1285,18 @@ async def retry_run(
     result = json.loads(_post_result(body, status_code))
     project_id, scenario_id = await _run_project_and_scenario(run_id, result)
     await _hand_back(
-        result, project_id,
-        {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status"),
-         "rebuilding": result.get("rebuilding")},
+        result,
+        project_id,
+        {
+            "run_id": run_id,
+            "scenario_id": scenario_id,
+            "status": result.get("status"),
+            "rebuilding": result.get("rebuilding"),
+        },
         f"Run {run_id} is being retried: scenario {scenario_id} is rebuilding as a NEW run. "
         "Open the link to follow the build.",
-        panel="scenarios", scenario=scenario_id,
+        panel="scenarios",
+        scenario=scenario_id,
     )
     return json.dumps(result, indent=2)
 
@@ -1304,8 +1369,7 @@ async def create_project(
     name: Annotated[str, "Project name"],
     projection: Annotated[
         str,
-        "Working CRS as an EPSG string, normally the UTM zone of the site, "
-        "e.g. 'EPSG:32756' (WGS 84 / UTM 56S)",
+        "Working CRS as an EPSG string, normally the UTM zone of the site, e.g. 'EPSG:32756' (WGS 84 / UTM 56S)",
     ],
 ) -> str:
     """Create a new ANUGA project. Returns the project record including its id, base_map and ui_url.
@@ -1318,9 +1382,7 @@ async def create_project(
     user presses Publish in its Sharing panel in the browser — you cannot
     publish it. Next step for a new project: presign_terrain_upload.
     """
-    body, status_code = await client.post(
-        "/projects/", json={"name": name, "projection": projection}
-    )
+    body, status_code = await client.post("/projects/", json={"name": name, "projection": projection})
     result = json.loads(_post_result(body, status_code))
     project_id = result.get("id")
     if project_id is not None and result.get("base_map") is None:
@@ -1332,9 +1394,14 @@ async def create_project(
         except HydrataAPIError:
             pass
     await _hand_back(
-        result, project_id,
-        {"project_id": project_id, "name": result.get("name", name),
-         "projection": result.get("projection", projection), "base_map": result.get("base_map")},
+        result,
+        project_id,
+        {
+            "project_id": project_id,
+            "name": result.get("name", name),
+            "projection": result.get("projection", projection),
+            "base_map": result.get("base_map"),
+        },
         f"Project {_data(result.get('name', name))} (id {project_id}, {projection}) is created. "
         "Here is its map; next I will upload the terrain.",
     )
@@ -1355,8 +1422,7 @@ async def presign_terrain_upload(
     ] = "image/tiff",
     size: Annotated[
         int | None,
-        "File size in bytes (`stat -c %s <file>`). The API rejects > 5 GiB up "
-        "front. Omit if unknown.",
+        "File size in bytes (`stat -c %s <file>`). The API rejects > 5 GiB up front. Omit if unknown.",
     ] = None,
 ) -> str:
     """Step 1 of a terrain import: get a presigned S3 PUT URL for a GeoTIFF DEM.
@@ -1393,9 +1459,7 @@ async def presign_terrain_upload(
     payload: dict = {"filename": filename, "content_type": content_type}
     if size is not None:
         payload["size"] = size
-    body, status_code = await client.post(
-        f"/projects/{project_id}/terrain/upload/presign/", json=payload
-    )
+    body, status_code = await client.post(f"/projects/{project_id}/terrain/upload/presign/", json=payload)
     return _post_result(body, status_code)
 
 
@@ -1445,13 +1509,14 @@ async def finalize_terrain_upload(
             )
         payload["vertical_datum_declared"] = declared
     body, status_code = await client.post(
-        f"/projects/{project_id}/terrain/upload/finalize/", json=payload,
+        f"/projects/{project_id}/terrain/upload/finalize/",
+        json=payload,
     )
     result = json.loads(_post_result(body, status_code))
     await _hand_back(
-        result, project_id,
-        {"terrain_id": result.get("id"), "title": result.get("title") or title,
-         "status": result.get("status")},
+        result,
+        project_id,
+        {"terrain_id": result.get("id"), "title": result.get("title") or title, "status": result.get("status")},
         f"The terrain upload is registered (terrain {result.get('id')}, {result.get('status')}). "
         "The import takes minutes; I will tell you when it is ready to check on the map.",
         panel="inputs",
@@ -1486,8 +1551,7 @@ def _terrain_datum(record: dict) -> dict:
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     recorded_row = record.get("recorded_vertical_datum")
     recorded = _datum_name(metadata.get("vertical_datum_recorded")) or (
-        _datum_name(recorded_row) if isinstance(recorded_row, dict) and recorded_row.get("source") == "editor"
-        else None
+        _datum_name(recorded_row) if isinstance(recorded_row, dict) and recorded_row.get("source") == "editor" else None
     )
     declared = _datum_name(metadata.get("vertical_datum_declared"))
     if declared is None and isinstance(recorded_row, dict) and recorded_row.get("source") != "editor":
@@ -1497,8 +1561,11 @@ def _terrain_datum(record: dict) -> dict:
     if isinstance(inferred_raw, dict):
         guess = _datum_name(inferred_raw.get("datum_guess"))
         if guess and guess != "unknown":  # 'unknown' = Hydrata could not tell, not a guess
-            inferred = {"datum": guess, "confidence": inferred_raw.get("confidence"),
-                        "basis": inferred_raw.get("basis")}
+            inferred = {
+                "datum": guess,
+                "confidence": inferred_raw.get("confidence"),
+                "basis": inferred_raw.get("basis"),
+            }
     elif _datum_name(inferred_raw):
         inferred = {"datum": _datum_name(inferred_raw), "confidence": None, "basis": None}
     if recorded:
@@ -1509,8 +1576,13 @@ def _terrain_datum(record: dict) -> dict:
         effective, source = inferred["datum"], "inferred"
     else:
         effective, source = None, None
-    return {"declared": declared, "recorded": recorded, "inferred": inferred,
-            "effective": effective, "effective_source": source}
+    return {
+        "declared": declared,
+        "recorded": recorded,
+        "inferred": inferred,
+        "effective": effective,
+        "effective_source": source,
+    }
 
 
 @_tool("get_terrain")
@@ -1518,8 +1590,7 @@ async def get_terrain(
     project_id: Annotated[int, "The project ID"],
     terrain_id: Annotated[
         int | None,
-        "The terrain ID from finalize_terrain_upload. Omit to follow the "
-        "project's newest terrain.",
+        "The terrain ID from finalize_terrain_upload. Omit to follow the project's newest terrain.",
     ] = None,
     timeout_seconds: Annotated[
         int,
@@ -1592,10 +1663,18 @@ async def get_terrain(
     if terrain_id is None:
         result["terrain_count"] = terrain_count
     record = terrain if isinstance(terrain, dict) else {}
-    summary = {key: record.get(key) for key in (
-        "id", "bbox_wgs84", "dem_elev_min", "dem_elev_max", "nodata_fraction",
-        "native_crs", "native_resolution_m",
-    )}
+    summary = {
+        key: record.get(key)
+        for key in (
+            "id",
+            "bbox_wgs84",
+            "dem_elev_min",
+            "dem_elev_max",
+            "nodata_fraction",
+            "native_crs",
+            "native_resolution_m",
+        )
+    }
     datum = _terrain_datum(record)
     result["vertical_datum"] = datum
     summary["vertical_datum"] = datum
@@ -1625,8 +1704,12 @@ async def get_terrain(
     else:
         say = f"The terrain is still importing ({status}); I am still waiting on it."
     await _hand_back(
-        result, project_id, summary, say,
-        panel="inputs", layer=_alternate(record.get("gn_layer_name")) if outcome == "ready" else None,
+        result,
+        project_id,
+        summary,
+        say,
+        panel="inputs",
+        layer=_alternate(record.get("gn_layer_name")) if outcome == "ready" else None,
     )
     # TASK-3187 — this tool composes its own envelope, so elide the COMPOSED
     # result; the terrain record carries no signed key today (future-proofing).
@@ -1708,8 +1791,11 @@ async def list_terrain_sources(
     if not rows:
         say = "No terrain source Hydrata offers covers that area. Check the box is in WGS84 degrees, or upload your own GeoTIFF."
     elif not usable:
-        say = "Hydrata has terrain for that area but the box is too large for every source: " + "; ".join(
-            _source_line(row) for row in rows) + ". Draw a smaller box."
+        say = (
+            "Hydrata has terrain for that area but the box is too large for every source: "
+            + "; ".join(_source_line(row) for row in rows)
+            + ". Draw a smaller box."
+        )
     else:
         best = usable[0]
         say = (
@@ -1731,7 +1817,10 @@ async def list_terrain_sources(
 
 @_tool("create_terrain_from_source")
 async def create_terrain_from_source(
-    project_id: Annotated[int, "The project ID (the key needs Contributor rights; a launch-level key since the import can start AWS Batch)"],
+    project_id: Annotated[
+        int,
+        "The project ID (the key needs Contributor rights; a launch-level key since the import can start AWS Batch)",
+    ],
     bbox: Annotated[list[float], "The site as [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees"],
     source: Annotated[str, "A source `key` from list_terrain_sources, e.g. `ga_lidar_5m` or `copernicus_glo30`"],
     title: Annotated[str, "Terrain title (default: the source name and box)"] = "",
@@ -1768,12 +1857,17 @@ async def create_terrain_from_source(
             raise HydrataAPIError(f"POST create-from-bbox failed: {status_code} {body}")
         reason = body.get("detail") or body.get("error_code") or f"HTTP {status_code}"
         result = {
-            "outcome": "refused", "http_status": status_code, "error_code": body.get("error_code"),
+            "outcome": "refused",
+            "http_status": status_code,
+            "error_code": body.get("error_code"),
             "detail": _data(str(reason)),
         }
         await _hand_back(
-            result, project_id, {"source": source, "bbox": box, "reason": result["detail"]},
-            f"I did not fetch terrain: {_data(str(reason))} Nothing was created.", panel="inputs",
+            result,
+            project_id,
+            {"source": source, "bbox": box, "reason": result["detail"]},
+            f"I did not fetch terrain: {_data(str(reason))} Nothing was created.",
+            panel="inputs",
         )
         return json.dumps(result, indent=2)
     terrain_id = body.get("id")
@@ -1918,14 +2012,12 @@ def _validate_row_data(data) -> int:
     """
     if not isinstance(data, dict) or not isinstance(data.get("rowData"), list):
         raise ToolError(
-            "data must be an object shaped {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", "
-            "\"value\": <number>}, ...]} — the API answers 500, not 400, to any other shape"
+            'data must be an object shaped {"rowData": [{"timestamp": "<ISO 8601>", '
+            '"value": <number>}, ...]} — the API answers 500, not 400, to any other shape'
         )
     for index, row in enumerate(data["rowData"]):
         if not isinstance(row, dict) or not {"timestamp", "value"} <= set(row):
-            raise ToolError(
-                f"data.rowData row {index} must be an object with 'timestamp' and 'value' keys"
-            )
+            raise ToolError(f"data.rowData row {index} must be an object with 'timestamp' and 'value' keys")
         timestamp = row["timestamp"]
         if not isinstance(timestamp, str):
             raise ToolError(f"data.rowData row {index}: timestamp must be an ISO 8601 string")
@@ -1953,7 +2045,7 @@ async def create_time_series(
     ],
     data: Annotated[
         dict,
-        "The rows: {\"rowData\": [{\"timestamp\": \"1998-08-17T00:00:00\", \"value\": 1.5}, "
+        'The rows: {"rowData": [{"timestamp": "1998-08-17T00:00:00", "value": 1.5}, '
         "...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. "
         "Validated here before anything is sent.",
     ],
@@ -2004,9 +2096,7 @@ async def create_time_series(
     (`say_to_user` does) rather than computing your own.
     """
     if series_type not in SERIES_TYPES:
-        raise ToolError(
-            f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}"
-        )
+        raise ToolError(f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}")
     row_count = _validate_row_data(data)
     allowed = SERIES_UNITS.get(series_type)
     if allowed and units not in allowed:
@@ -2027,7 +2117,7 @@ async def create_time_series(
         "data": data,
     }
     if method.strip():
-        payload["authored_method"] = method.strip()   # TASK-4055: shown on the review screen
+        payload["authored_method"] = method.strip()  # TASK-4055: shown on the review screen
     body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
     if not isinstance(body, dict):
         return _post_result(body, status_code)
@@ -2057,15 +2147,22 @@ async def create_time_series(
     if server_summary:
         say = f"{_series_sentence(result, server_summary)} {say}"
     await _hand_back(
-        result, project_id,
-        {"series_id": result["id"], "name": result["name"], "series_type": result["series_type"],
-         "units": result["units"], "row_count": row_count, "first_timestamp": first,
-         "last_timestamp": last},
+        result,
+        project_id,
+        {
+            "series_id": result["id"],
+            "name": result["name"],
+            "series_type": result["series_type"],
+            "units": result["units"],
+            "row_count": row_count,
+            "first_timestamp": first,
+            "last_timestamp": last,
+        },
         say,
         panel="hydrology",
     )
     if server_summary:
-        result["series_summary"] = server_summary   # Hydrata's numbers, computed from the true timestamps
+        result["series_summary"] = server_summary  # Hydrata's numbers, computed from the true timestamps
     return json.dumps(result, indent=2)
 
 
@@ -2079,7 +2176,7 @@ async def update_time_series(
     name: Annotated[str, "New name (a rainfall polygon binds to its gauge by this exact name)"] = "",
     data: Annotated[
         dict | None,
-        "Replacement rows: {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", \"value\": <number>}, ...]}. "
+        'Replacement rows: {"rowData": [{"timestamp": "<ISO 8601>", "value": <number>}, ...]}. '
         "Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow "
         "values and an all-zero rain or flow series.",
     ] = None,
@@ -2087,8 +2184,7 @@ async def update_time_series(
     units: Annotated[str, "New units (must match the series_type, as in create_time_series)"] = "",
     series_type: Annotated[str, "New series_type: hyetograph, hydrograph, stage or generic"] = "",
     hold_last_value: Annotated[bool | None, "Set true only when the last value is meant to be held"] = None,
-    method: Annotated[
-        str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
+    method: Annotated[str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
 ) -> str:
     """Correct a time series you created (PATCH; only the fields you pass change).
 
@@ -2119,8 +2215,9 @@ async def update_time_series(
     if method.strip():
         changes["authored_method"] = method.strip()
     if not changes or set(changes) == {"authored_method"}:
-        raise ToolError("Nothing to change: pass at least one of name, data, description, units, series_type, "
-                        "hold_last_value.")
+        raise ToolError(
+            "Nothing to change: pass at least one of name, data, description, units, series_type, hold_last_value."
+        )
     body, status_code = await client.patch(f"/projects/{project_id}/time-series/{series_id}/", json=changes)
     if not isinstance(body, dict):
         return _post_result(body, status_code)
@@ -2138,8 +2235,13 @@ async def update_time_series(
     }
     summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
     await _hand_back(
-        result, project_id,
-        {"series_id": result["id"], "name": result["name"], "changed_fields": sorted(k for k in changes if k != "authored_method")},
+        result,
+        project_id,
+        {
+            "series_id": result["id"],
+            "name": result["name"],
+            "changed_fields": sorted(k for k in changes if k != "authored_method"),
+        },
         f"Time series '{_data(result['name'])}' is updated ({', '.join(sorted(changes))}). Open the link to "
         "check its shape in the Hydrology panel; scenarios that use it need a rebuild.",
         panel="hydrology",
@@ -2167,12 +2269,17 @@ async def delete_time_series(
         if "returned 409" in str(exc):
             raise HydrataAPIError(
                 f"{exc} Nothing was deleted. Detach the series from that feature in the map "
-                "(or point the feature at another series), then call delete_time_series again.") from exc
+                "(or point the feature at another series), then call delete_time_series again."
+            ) from exc
         raise
     result = {"id": series_id, "deleted": True, "http_status": status_code}
     await _hand_back(
-        result, project_id, {"series_id": series_id, "deleted": True},
-        f"Time series {series_id} is deleted.", panel="hydrology")
+        result,
+        project_id,
+        {"series_id": series_id, "deleted": True},
+        f"Time series {series_id} is deleted.",
+        panel="hydrology",
+    )
     return json.dumps(result, indent=2)
 
 
@@ -2191,19 +2298,24 @@ async def _unbound_series(project_id, check) -> list:
     """
     if not isinstance(check, dict) or not isinstance(check.get("features"), list):
         return []
-    if any(isinstance(w, dict) and w.get("error_code") in UNBOUND_UNKNOWABLE_CODES
-           for w in check.get("warnings") or []):
+    if any(
+        isinstance(w, dict) and w.get("error_code") in UNBOUND_UNKNOWABLE_CODES for w in check.get("warnings") or []
+    ):
         return []
-    used = {f["series"].get("id") for f in check["features"]
-            if isinstance(f, dict) and isinstance(f.get("series"), dict)}
+    used = {
+        f["series"].get("id") for f in check["features"] if isinstance(f, dict) and isinstance(f.get("series"), dict)
+    }
     try:
         listing = json.loads(await list_time_series(project_id))
     except Exception:  # noqa: BLE001 — a hint on top of the scenario; never fail the read for it
         return []
-    return [{"id": row["id"], "name": row.get("name"), "series_type": row.get("series_type")}
-            for row in listing.get("series") or []
-            if isinstance(row, dict) and row.get("series_type") in UNBOUND_CHECKED_SERIES_TYPES
-            and row.get("id") not in used]
+    return [
+        {"id": row["id"], "name": row.get("name"), "series_type": row.get("series_type")}
+        for row in listing.get("series") or []
+        if isinstance(row, dict)
+        and row.get("series_type") in UNBOUND_CHECKED_SERIES_TYPES
+        and row.get("id") not in used
+    ]
 
 
 def _clock(stamp) -> str:
@@ -2385,8 +2497,7 @@ async def attach_input_layer(
     async def handed_back(result, summary, say, **params):
         if deprecation:
             result["deprecation"] = deprecation
-        await _hand_back(result, project_id, dict({"kind": kind}, **summary), say,
-                         panel="inputs", **params)
+        await _hand_back(result, project_id, dict({"kind": kind}, **summary), say, panel="inputs", **params)
         return json.dumps(result, indent=2)
 
     upload = await _await_upload(execution_id, budget, poll_interval_seconds)
@@ -2416,7 +2527,8 @@ async def attach_input_layer(
         result["outcome"] = "upload_failed"
         result["execution"] = upload["execution"]  # verbatim: the log names the import error
         return await handed_back(
-            result, {"execution_status": status},
+            result,
+            {"execution_status": status},
             f"The {label} file failed to import; it needs fixing before it can be attached.",
         )
 
@@ -2426,7 +2538,8 @@ async def attach_input_layer(
         result["outcome"] = "no_dataset"
         result["execution"] = upload["execution"]
         return await handed_back(
-            result, {"execution_status": status},
+            result,
+            {"execution_status": status},
             f"The {label} upload finished but produced no layer, so nothing was attached.",
         )
 
@@ -2436,18 +2549,16 @@ async def attach_input_layer(
     result["row_ids"] = [row.get("id") for row in rows if isinstance(row, dict)]
     if not rows:
         result["outcome"] = "no_default_row"
-        result["message"] = (
-            f"project {project_id} has no {kind} row to attach to. "
-            + (
-                "A culvert row is not seeded by the terrain import: write the culverts with "
-                "write_input_layer (kind='culvert'), which creates the row."
-                if kind == "culvert" else
-                f"The default '{INPUT_LAYER_DEFAULT_TITLES[kind]}' row is seeded by the terrain import: run "
-                "finalize_terrain_upload, wait for get_terrain to report ready, then ~30 s more."
-            )
+        result["message"] = f"project {project_id} has no {kind} row to attach to. " + (
+            "A culvert row is not seeded by the terrain import: write the culverts with "
+            "write_input_layer (kind='culvert'), which creates the row."
+            if kind == "culvert"
+            else f"The default '{INPUT_LAYER_DEFAULT_TITLES[kind]}' row is seeded by the terrain import: run "
+            "finalize_terrain_upload, wait for get_terrain to report ready, then ~30 s more."
         )
         return await handed_back(
-            result, {"row_ids": []},
+            result,
+            {"row_ids": []},
             f"The project has no {label} layer to attach to yet (its terrain is not imported).",
         )
 
@@ -2466,7 +2577,8 @@ async def attach_input_layer(
             result["outcome"] = "timed_out"
             result["row_id"] = row.get("id") if isinstance(row, dict) else None
             return await handed_back(
-                result, {"row_id": result["row_id"]},
+                result,
+                {"row_id": result["row_id"]},
                 "The project's culvert layer is still being created; I am still waiting on it.",
             )
     body, status_code = await client.patch(
@@ -2550,8 +2662,14 @@ async def _await_upload(execution_id: str, timeout_seconds, poll_interval_second
             # detail route carries the same output_params under `request`.
             detail = await client.get_from_origin(f"/api/v2/executionrequest/{execution_id}/")
             dataset_pk = _first_resource_id(detail.get("request") if isinstance(detail, dict) else None)
-    return {"execution": execution, "execution_status": status, "polls": polls,
-            "elapsed_seconds": elapsed, "timed_out": timed_out, "dataset_pk": dataset_pk}
+    return {
+        "execution": execution,
+        "execution_status": status,
+        "polls": polls,
+        "elapsed_seconds": elapsed,
+        "timed_out": timed_out,
+        "dataset_pk": dataset_pk,
+    }
 
 
 async def _dataset_alternate(dataset_pk):
@@ -2638,8 +2756,10 @@ async def write_input_layer(
     if kind in LEGACY_INPUT_LAYER_KINDS:
         kind, deprecation = LEGACY_INPUT_LAYER_KINDS[kind], LEGACY_KIND_DEPRECATION
     if kind in UNSUPPORTED_INPUT_LAYER_KINDS or kind not in INLINE_LAYER_KINDS:
-        raise ToolError(f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)} "
-                        f"(breakline is refused: {UNSUPPORTED_INPUT_LAYER_REASON})")
+        raise ToolError(
+            f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)} "
+            f"(breakline is refused: {UNSUPPORTED_INPUT_LAYER_REASON})"
+        )
     size = len(json.dumps(features, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
     if size > INLINE_LAYER_MAX_BYTES:
         raise ToolError(
@@ -2649,7 +2769,8 @@ async def write_input_layer(
         )
     body, status_code = await client.post(
         INLINE_WRITE_PATH.format(project_id=project_id),
-        json={"kind": kind, "features": features, "authored_method": method}, raise_for_status=False,
+        json={"kind": kind, "features": features, "authored_method": method},
+        raise_for_status=False,
     )
     if status_code >= 400:
         detail = body.get("detail") if isinstance(body, dict) else None
@@ -2663,13 +2784,14 @@ async def write_input_layer(
     label = kind.replace("_", " ")
     summary = await _layer_summary(alternate)
     summary.update(kind=kind, row_id=result.get("row_id"), feature_count=result.get("feature_count"))
-    say = (f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
-           f"confirm it is the right {label}, in the right place; review it there.")
-    return json.dumps(
-        await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
+    say = (
+        f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
+        f"confirm it is the right {label}, in the right place; review it there."
+    )
+    return json.dumps(await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
 
 
-UPLOAD_PAGE_LIMIT_MB = 100   # the importer's per-file cap (dataset_upload_size)
+UPLOAD_PAGE_LIMIT_MB = 100  # the importer's per-file cap (dataset_upload_size)
 
 
 @_tool("request_input_upload")
@@ -2705,19 +2827,28 @@ async def request_input_upload(
     base_map = await _project_base_map(project_id)
     ui_url = _ui_url(base_map, panel="input-upload", kind=kind)
     if ui_url is None:
-        raise ToolError(f"project {project_id} has no map yet, so it has no upload page; "
-                        "upload a terrain first (presign_terrain_upload) and ask again.")
+        raise ToolError(
+            f"project {project_id} has no map yet, so it has no upload page; "
+            "upload a terrain first (presign_terrain_upload) and ask again."
+        )
     label = kind.replace("_", " ")
     result: dict = {
-        "outcome": "link", "project_id": project_id, "kind": kind, "ui_url": ui_url,
+        "outcome": "link",
+        "project_id": project_id,
+        "kind": kind,
+        "ui_url": ui_url,
         "limit_mb": UPLOAD_PAGE_LIMIT_MB,
-        "summary": {"kind": kind, "accepts": ["GeoJSON", "zipped shapefile", "GeoPackage"],
-                    "limit_mb": UPLOAD_PAGE_LIMIT_MB},
+        "summary": {
+            "kind": kind,
+            "accepts": ["GeoJSON", "zipped shapefile", "GeoPackage"],
+            "limit_mb": UPLOAD_PAGE_LIMIT_MB,
+        },
         "say_to_user": (
             f"Open the link and drop your {label} file (GeoJSON, a zipped shapefile or a GeoPackage, up to "
             f"{UPLOAD_PAGE_LIMIT_MB} MB) on the page. Hydrata converts it into the project's grid and replaces "
             f"the project's {label} layer; it is your own input, so there is nothing to approve. Tell me when "
-            "it is done and I will check it with list_inputs."),
+            "it is done and I will check it with list_inputs."
+        ),
     }
     if deprecation:
         result["deprecation"] = deprecation
@@ -2793,7 +2924,7 @@ async def list_inputs(
                 "gn_layer": row.get("gn_layer"),
                 "dataset_alternate": alternate,
             }
-            if "authored_method" in row:   # TASK-4055: how an agent made it (null = nobody said)
+            if "authored_method" in row:  # TASK-4055: how an agent made it (null = nobody said)
                 entry["authored_method"] = row.get("authored_method")
             # TASK-3749: never a /gs/ WFS count (refused for every agent key since
             # TASK-3728). Every wrapper serializer carries has_features (friction
@@ -2839,23 +2970,24 @@ async def list_time_series(
             row_data = data.get("rowData") if isinstance(data.get("rowData"), list) else []
             first = row_data[0] if row_data and isinstance(row_data[0], dict) else {}
             last = row_data[-1] if row_data and isinstance(row_data[-1], dict) else {}
-            series.append({
-                "id": row.get("id"),
-                "name": row.get("name"),
-                "series_type": row.get("series_type"),
-                "units": row.get("units"),
-                "timezone": row.get("timezone"),
-                "row_count": len(row_data),
-                "first_timestamp": first.get("timestamp"),
-                "last_timestamp": last.get("timestamp"),
-            })
-            if "authored_method" in row:   # TASK-4055
+            series.append(
+                {
+                    "id": row.get("id"),
+                    "name": row.get("name"),
+                    "series_type": row.get("series_type"),
+                    "units": row.get("units"),
+                    "timezone": row.get("timezone"),
+                    "row_count": len(row_data),
+                    "first_timestamp": first.get("timestamp"),
+                    "last_timestamp": last.get("timestamp"),
+                }
+            )
+            if "authored_method" in row:  # TASK-4055
                 series[-1]["authored_method"] = row.get("authored_method")
         if not isinstance(page, dict) or not page.get("next"):
             break
         params = dict(params, page=params["page"] + 1)
-    result = {"project_id": project_id, "count": total if total is not None else len(series),
-              "series": series}
+    result = {"project_id": project_id, "count": total if total is not None else len(series), "series": series}
     if total is not None and total > len(series):
         result["truncated"] = True
     return json.dumps(result, indent=2)
@@ -2892,10 +3024,20 @@ OBSERVATION_PHOTO_UI_PATH = (
     "10 photos per observation)"
 )
 # Keys an agent might use to smuggle photo bytes or a file path onto an observation.
-OBSERVATION_PHOTO_KEYS = frozenset({
-    "photo", "photos", "file", "files", "image", "images", "photo_file", "photo_path",
-    "photo_url", "photo_base64",
-})
+OBSERVATION_PHOTO_KEYS = frozenset(
+    {
+        "photo",
+        "photos",
+        "file",
+        "files",
+        "image",
+        "images",
+        "photo_file",
+        "photo_path",
+        "photo_url",
+        "photo_base64",
+    }
+)
 # One add_observations call POSTs one observation at a time; prod's /mcp/ proxy
 # cuts a call at 300 s, so a batch is bounded well inside that.
 ADD_OBSERVATIONS_MAX = 200
@@ -2992,30 +3134,48 @@ async def create_observation_layer(
         detail, polls, elapsed, timed_out = await _poll_until(
             lambda: _observation_layer(project_id, layer_id),
             lambda layer: bool(layer.get("gn_layer")),
-            timeout_seconds, poll_interval_seconds,
+            timeout_seconds,
+            poll_interval_seconds,
         )
     except (HydrataAPIError, ToolError) as exc:
         # The layer already exists: a failed poll must not hide its id (a re-call
         # would make a second layer). Report what the POST answered instead.
         detail, polls, elapsed, timed_out = _observation_layer_entry(body), 0, 0.0, False
         poll_error = str(exc)
-    result = {**detail, "ready": bool(detail.get("gn_layer")), "timed_out": timed_out,
-              "polls": polls, "elapsed_seconds": elapsed, "http_status": status_code}
+    result = {
+        **detail,
+        "ready": bool(detail.get("gn_layer")),
+        "timed_out": timed_out,
+        "polls": polls,
+        "elapsed_seconds": elapsed,
+        "http_status": status_code,
+    }
     if poll_error:
         result["poll_error"] = poll_error
     if result["ready"]:
-        say = (f"Flood observation layer {_data(detail['title'])} ({_datum_words(detail)}) is ready. "
-               "Add observations with add_observations; open the link to see it in the "
-               "Observations group of the map.")
+        say = (
+            f"Flood observation layer {_data(detail['title'])} ({_datum_words(detail)}) is ready. "
+            "Add observations with add_observations; open the link to see it in the "
+            "Observations group of the map."
+        )
     else:
-        say = (f"Flood observation layer {_data(title)} was created (layer {layer_id}) but its map "
-               "layer is still being made; check with list_observations in a few seconds "
-               "before adding observations.")
+        say = (
+            f"Flood observation layer {_data(title)} was created (layer {layer_id}) but its map "
+            "layer is still being made; check with list_observations in a few seconds "
+            "before adding observations."
+        )
     await _hand_back(
-        result, project_id,
-        {"layer_id": layer_id, "title": detail.get("title"), "vertical_datum": detail.get("vertical_datum"),
-         "datum_offset_m": detail.get("datum_offset_m"), "ready": result["ready"]},
-        say, layer=detail.get("dataset_alternate"),
+        result,
+        project_id,
+        {
+            "layer_id": layer_id,
+            "title": detail.get("title"),
+            "vertical_datum": detail.get("vertical_datum"),
+            "datum_offset_m": detail.get("datum_offset_m"),
+            "ready": result["ready"],
+        },
+        say,
+        layer=detail.get("dataset_alternate"),
     )
     return json.dumps(result, indent=2)
 
@@ -3023,9 +3183,7 @@ async def create_observation_layer(
 @_tool("list_observations")
 async def list_observations(
     project_id: Annotated[int, "The project ID"],
-    layer_id: Annotated[
-        int | None, "A flood observation layer id; omit to list the project's layers instead"
-    ] = None,
+    layer_id: Annotated[int | None, "A flood observation layer id; omit to list the project's layers instead"] = None,
 ) -> str:
     """List a project's flood observation layers, or one layer's observations.
 
@@ -3100,16 +3258,17 @@ async def add_observations(
     layer = await _observation_layer(project_id, layer_id)
     if not layer["gn_layer"]:
         raise ToolError(
-            f"flood observation layer {layer_id} is still being created (no map layer yet); "
-            "try again in a few seconds"
+            f"flood observation layer {layer_id} is still being created (no map layer yet); try again in a few seconds"
         )
     path = f"/projects/{project_id}/flood-observations/{layer_id}/observations/"
     # TASK-3875: no zone given -> the project's own (never a constant).
     if entry_timezone:
         zone = {"timezone": entry_timezone, "source": "given"}
     else:
-        zone = {"timezone": layer.get("default_timezone"),
-                "source": layer.get("default_timezone_source") if layer.get("default_timezone") else None}
+        zone = {
+            "timezone": layer.get("default_timezone"),
+            "source": layer.get("default_timezone_source") if layer.get("default_timezone") else None,
+        }
     entry_timezone = zone["timezone"]
     zone_filled = False
     created, rejected, stopped = [], [], None
@@ -3130,47 +3289,76 @@ async def add_observations(
             break
         answer = answer if isinstance(answer, dict) else {"response": answer}
         if status_code in (200, 201):
-            entry = {"index": index, "fid": answer.get("fid"), "name": answer.get("name"),
-                     "subtype": answer.get("subtype")}
+            entry = {
+                "index": index,
+                "fid": answer.get("fid"),
+                "name": answer.get("name"),
+                "subtype": answer.get("subtype"),
+            }
             if answer.get("problems"):
                 entry["problems"] = answer["problems"]
             created.append(entry)
         elif status_code == 400:
-            rejected.append({"index": index, "name": row.get("name"), "http_status": status_code,
-                             "problems": answer.get("problems", answer)})
+            rejected.append(
+                {
+                    "index": index,
+                    "name": row.get("name"),
+                    "http_status": status_code,
+                    "problems": answer.get("problems", answer),
+                }
+            )
         else:
             stopped = {"index": index, "name": row.get("name"), "http_status": status_code, "body": answer}
             break
-    result = {"layer_id": layer_id, "dataset_alternate": layer["dataset_alternate"],
-              "vertical_datum": layer["vertical_datum"], "datum_offset_m": layer["datum_offset_m"],
-              "created_count": len(created), "rejected_count": len(rejected),
-              "created": created, "rejected": rejected, "entry_timezone": zone}
+    result = {
+        "layer_id": layer_id,
+        "dataset_alternate": layer["dataset_alternate"],
+        "vertical_datum": layer["vertical_datum"],
+        "datum_offset_m": layer["datum_offset_m"],
+        "created_count": len(created),
+        "rejected_count": len(rejected),
+        "created": created,
+        "rejected": rejected,
+        "entry_timezone": zone,
+    }
     if stopped is not None:
         result["stopped"] = stopped
         result["not_sent_count"] = len(observations) - stopped["index"] - 1
-    say = (f"{len(created)} flood observation(s) added to {_data(layer['title'])} "
-           f"({_datum_words(layer)}).")
+    say = f"{len(created)} flood observation(s) added to {_data(layer['title'])} ({_datum_words(layer)})."
     if zone_filled:
         where = "from the project location" if zone["source"] == "project_location" else "as given"
         say += f" Times are in {zone['timezone']} ({where})."
     if rejected:
         say += f" {len(rejected)} were refused; each is listed with the field that is wrong."
         # TASK-3847: a Flood mark / Dry point must say which flood it is.
-        if any(isinstance(r.get("problems"), dict) and {"observed_start", "flood_name"} <= set(r["problems"])
-               for r in rejected):
-            say += (" A Flood mark or Dry point must say which flood it is: ask the user which flood "
-                    "(its name, or the dates it was observed) and send flood_name or "
-                    "observed_start / observed_end; never guess a date.")
+        if any(
+            isinstance(r.get("problems"), dict) and {"observed_start", "flood_name"} <= set(r["problems"])
+            for r in rejected
+        ):
+            say += (
+                " A Flood mark or Dry point must say which flood it is: ask the user which flood "
+                "(its name, or the dates it was observed) and send flood_name or "
+                "observed_start / observed_end; never guess a date."
+            )
     if stopped is not None:
         why = f"HTTP {stopped['http_status']}" if stopped["http_status"] else stopped["error"]
-        say += (f" The batch stopped at row {stopped['index']} ({why}); that row and "
-                f"{result['not_sent_count']} after it were not added.")
+        say += (
+            f" The batch stopped at row {stopped['index']} ({why}); that row and "
+            f"{result['not_sent_count']} after it were not added."
+        )
     say += " Open the link to check them on the map."
     await _hand_back(
-        result, project_id,
-        {"layer_id": layer_id, "title": layer["title"], "created_count": len(created),
-         "rejected_count": len(rejected), "vertical_datum": layer["vertical_datum"]},
-        say, layer=layer["dataset_alternate"],
+        result,
+        project_id,
+        {
+            "layer_id": layer_id,
+            "title": layer["title"],
+            "created_count": len(created),
+            "rejected_count": len(rejected),
+            "vertical_datum": layer["vertical_datum"],
+        },
+        say,
+        layer=layer["dataset_alternate"],
     )
     return json.dumps(result, indent=2)
 
@@ -3182,7 +3370,7 @@ async def update_observation(
     fid: Annotated[int, "The observation's fid (from list_observations / add_observations)"],
     changes: Annotated[
         dict,
-        "Only the fields to change, in the add_observations write shape (e.g. {\"stage_m\": 2.5} "
+        'Only the fields to change, in the add_observations write shape (e.g. {"stage_m": 2.5} '
         "or a new geometry); validated by the API against the stored observation (a flood_mark "
         "or dry_point must keep a date window or a flood_name)",
     ],
@@ -3198,12 +3386,13 @@ async def update_observation(
     _refuse_photo_keys(changes, "changes")
     layer = await _observation_layer(project_id, layer_id)
     body, status_code = await client.patch(
-        f"/projects/{project_id}/flood-observations/{layer_id}/observations/{fid}/", json=changes)
-    result = {"layer_id": layer_id, "fid": fid, "observation": _elide_presigned(body),
-              "http_status": status_code}
+        f"/projects/{project_id}/flood-observations/{layer_id}/observations/{fid}/", json=changes
+    )
+    result = {"layer_id": layer_id, "fid": fid, "observation": _elide_presigned(body), "http_status": status_code}
     name = body.get("name") if isinstance(body, dict) else None
     await _hand_back(
-        result, project_id,
+        result,
+        project_id,
         {"layer_id": layer_id, "fid": fid, "changed_fields": sorted(changes)},
         f"Flood observation {_data(name) if name else fid} on {_data(layer['title'])} is updated "
         f"({', '.join(sorted(changes))}). Open the link to check it on the map.",
@@ -3224,11 +3413,12 @@ async def delete_observation(
     missing fid is an error (404), not a silent success.
     """
     layer = await _observation_layer(project_id, layer_id)
-    status_code = await client.delete(
-        f"/projects/{project_id}/flood-observations/{layer_id}/observations/{fid}/")
+    status_code = await client.delete(f"/projects/{project_id}/flood-observations/{layer_id}/observations/{fid}/")
     result = {"layer_id": layer_id, "fid": fid, "deleted": True, "http_status": status_code}
     await _hand_back(
-        result, project_id, {"layer_id": layer_id, "fid": fid, "deleted": True},
+        result,
+        project_id,
+        {"layer_id": layer_id, "fid": fid, "deleted": True},
         f"Flood observation {fid} on {_data(layer['title'])} is deleted, with its photos.",
         layer=layer["dataset_alternate"],
     )
@@ -3262,12 +3452,18 @@ async def add_observation_photo_link(
     layer = await _observation_layer(project_id, layer_id)
     body, status_code = await client.post(
         f"/projects/{project_id}/flood-observations/{layer_id}/observations/{fid}/photos/",
-        json={"source": "reference_only", "reference_url": link, "caption": caption,
-              "credit": credit, "public_consent": public_consent},
+        json={
+            "source": "reference_only",
+            "reference_url": link,
+            "caption": caption,
+            "credit": credit,
+            "public_consent": public_consent,
+        },
     )
     result = {"layer_id": layer_id, "fid": fid, "photo": _elide_presigned(body), "http_status": status_code}
     await _hand_back(
-        result, project_id,
+        result,
+        project_id,
         {"layer_id": layer_id, "fid": fid, "reference_url": link, "public_consent": public_consent},
         f"Photo link added to flood observation {fid} on {_data(layer['title'])}"
         f"{' (shown to public visitors)' if public_consent else ' (members only)'}.",
@@ -3408,13 +3604,21 @@ async def get_observation_comparison(
     project_id, scenario_id = None, None
     if status_code == 404 and isinstance(body, dict) and body.get("error_code") == "NO_COMPARISON":
         project_id, scenario_id = await _run_project_and_scenario(run_id, None)
-        result = {"run": run_id, "has_comparison": False, "error_code": "NO_COMPARISON",
-                  "detail": body.get("detail"), "http_status": status_code}
+        result = {
+            "run": run_id,
+            "has_comparison": False,
+            "error_code": "NO_COMPARISON",
+            "detail": body.get("detail"),
+            "http_status": status_code,
+        }
         await _hand_back(
-            result, project_id, {"run_id": run_id, "has_comparison": False},
-            f"Run {run_id}: {NO_COMPARISON_WORDS}. A design storm run is not compared with "
-            "flood observations.",
-            panel="scenarios", scenario=scenario_id, run=run_id,
+            result,
+            project_id,
+            {"run_id": run_id, "has_comparison": False},
+            f"Run {run_id}: {NO_COMPARISON_WORDS}. A design storm run is not compared with flood observations.",
+            panel="scenarios",
+            scenario=scenario_id,
+            run=run_id,
         )
         return json.dumps(result, indent=2)
     if status_code != 200 or not isinstance(body, dict):
@@ -3434,8 +3638,9 @@ async def get_observation_comparison(
                 f"run {run_id} has no row for layer {layer_id} fid {fid} in its comparison (check "
                 "the ids with list_observations; an observation just added is compared a few seconds later)"
             )
-        result["history"] = (await client.get(
-            _comparison_path(run_id, "history/"), params={"layer": layer_id, "fid": fid})).get("history")
+        result["history"] = (
+            await client.get(_comparison_path(run_id, "history/"), params={"layer": layer_id, "fid": fid})
+        ).get("history")
     if not include_series:
         _elide_series(rows)
     result["rows"] = rows
@@ -3449,13 +3654,19 @@ async def get_observation_comparison(
             outcome = f"residual {row['residual_m']} m (modelled - observed)"
         else:
             outcome = f"not scored ({row.get('not_scored_reason') or 'no residual'})"
-        say += (f" {row.get('subtype_label') or 'Observation'} {_data(row.get('name')) or fid}: {outcome}"
-                + (" (excluded)" if row.get("excluded") else "") + ".")
+        say += (
+            f" {row.get('subtype_label') or 'Observation'} {_data(row.get('name')) or fid}: {outcome}"
+            + (" (excluded)" if row.get("excluded") else "")
+            + "."
+        )
     # TASK-3850: warn only when both datums are known and differ (`warning`);
     # a terrain with no recorded datum is stated, not warned about.
     checks = [check for check in result.get("datum_checks") or [] if isinstance(check, dict)]
-    warnings = [check.get("message") for check in checks
-                if (check.get("warning") or check.get("status") == "mismatch") and check.get("message")]
+    warnings = [
+        check.get("message")
+        for check in checks
+        if (check.get("warning") or check.get("status") == "mismatch") and check.get("message")
+    ]
     if warnings:
         say += " Datum warning: " + " ".join(warnings)
     notes = sorted({check.get("note") for check in checks if check.get("note") and not check.get("warning")})
@@ -3464,14 +3675,23 @@ async def get_observation_comparison(
     # TASK-3843: an older run's store has no per-triangle peak; say so.
     fallback = (result.get("sampling") or {}).get("nearest_node_fallback") or 0
     if fallback:
-        say += (f" This is an older run: {fallback} observation{'s' if fallback != 1 else ''} "
-                "read the nearest mesh node's value, not the peak of the triangle it sits in.")
+        say += (
+            f" This is an older run: {fallback} observation{'s' if fallback != 1 else ''} "
+            "read the nearest mesh node's value, not the peak of the triangle it sits in."
+        )
     await _hand_back(
-        result, project_id,
-        {"run_id": run_id, "headline": result.get("headline"), "tolerance_m": result.get("tolerance_m"),
-         "row_count": len(rows)},
+        result,
+        project_id,
+        {
+            "run_id": run_id,
+            "headline": result.get("headline"),
+            "tolerance_m": result.get("tolerance_m"),
+            "row_count": len(rows),
+        },
         say + " Open the link to see the run in the map.",
-        panel="scenarios", scenario=scenario_id, run=run_id,
+        panel="scenarios",
+        scenario=scenario_id,
+        run=run_id,
     )
     return json.dumps(result, indent=2)
 
@@ -3515,22 +3735,35 @@ async def set_observation_exclusion(
             "Nothing was changed."
         )
     result = await _comparison_write(
-        run_id, "exclusions/", {"layer": layer_id, "fid": fid, "excluded": excluded, "reason": reason},
+        run_id,
+        "exclusions/",
+        {"layer": layer_id, "fid": fid, "excluded": excluded, "reason": reason},
         f"set_observation_exclusion on run {run_id}",
     )
     project_id, scenario_id = await _run_project_and_scenario(run_id, None)
     if result.get("excluded"):
-        say = (f"Flood observation {fid} is excluded from run {run_id}'s comparison "
-               f"(reason: {_data(result.get('reason') or reason)}).")
+        say = (
+            f"Flood observation {fid} is excluded from run {run_id}'s comparison "
+            f"(reason: {_data(result.get('reason') or reason)})."
+        )
     else:
         say = f"Flood observation {fid} is included again in run {run_id}'s comparison."
     if result.get("headline_after"):
         say += f" Now: {result['headline_after']}."
     await _hand_back(
-        result, project_id,
-        {"run_id": run_id, "layer_id": layer_id, "fid": fid, "excluded": result.get("excluded"),
-         "reason": result.get("reason")},
-        say, panel="scenarios", scenario=scenario_id, run=run_id,
+        result,
+        project_id,
+        {
+            "run_id": run_id,
+            "layer_id": layer_id,
+            "fid": fid,
+            "excluded": result.get("excluded"),
+            "reason": result.get("reason"),
+        },
+        say,
+        panel="scenarios",
+        scenario=scenario_id,
+        run=run_id,
     )
     return json.dumps(result, indent=2)
 
@@ -3550,11 +3783,14 @@ async def set_comparison_tolerance(
     figures at another tolerance, pass `tolerance` to get_observation_comparison.
     """
     body, status_code = await client.patch(
-        f"/projects/{project_id}/comparison-tolerance/", json={"tolerance_m": tolerance_m})
+        f"/projects/{project_id}/comparison-tolerance/", json={"tolerance_m": tolerance_m}
+    )
     result = {**(body if isinstance(body, dict) else {"response": body}), "http_status": status_code}
     saved = result.get("tolerance_m", tolerance_m)
     await _hand_back(
-        result, project_id, {"project_id": project_id, "tolerance_m": saved},
+        result,
+        project_id,
+        {"project_id": project_id, "tolerance_m": saved},
         f"Project {project_id}'s default comparison tolerance is now ±{float(saved):.2f} m.",
         panel="scenarios",
     )
@@ -3641,9 +3877,7 @@ def _build_state(detail, **extra) -> dict:
 
 
 def _build_refusal(detail, reason: str) -> str:
-    return json.dumps(
-        _build_state(detail, outcome="refused", posted=False, reason=reason), indent=2
-    )
+    return json.dumps(_build_state(detail, outcome="refused", posted=False, reason=reason), indent=2)
 
 
 # The server's pre-build admission refusals (api_v2 _pre_build_admission_refusal):
@@ -3789,19 +4023,11 @@ async def create_scenario(
         "36-40 m gives ~16-20k triangles, 10 m ~255k, 1 m ~25M (refused by the API).",
     ],
     duration: Annotated[int, "Simulation duration in seconds (e.g. 43200 = 12 h)"],
-    terrain: Annotated[
-        int | None, "Terrain id (get_terrain → terrain.id); the build fails without one"
-    ] = None,
-    boundary: Annotated[
-        int | None, "Boundary row id (attach_input_layer kind=boundary → row_id)"
-    ] = None,
+    terrain: Annotated[int | None, "Terrain id (get_terrain → terrain.id); the build fails without one"] = None,
+    boundary: Annotated[int | None, "Boundary row id (attach_input_layer kind=boundary → row_id)"] = None,
     friction: Annotated[int | None, "Friction row id (optional)"] = None,
-    inflow: Annotated[
-        int | None, "Inflow row id (optional; the build needs an inflow OR a rainfall)"
-    ] = None,
-    rainfall: Annotated[
-        int | None, "Rainfall row id (optional; the build needs an inflow OR a rainfall)"
-    ] = None,
+    inflow: Annotated[int | None, "Inflow row id (optional; the build needs an inflow OR a rainfall)"] = None,
+    rainfall: Annotated[int | None, "Rainfall row id (optional; the build needs an inflow OR a rainfall)"] = None,
     building: Annotated[int | None, "Building row id (optional)"] = None,
     mesh_region: Annotated[
         int | None,
@@ -3879,14 +4105,21 @@ async def create_scenario(
     estimate = result.get("mesh_triangle_count_estimate")
     cost = result.get("compute_cost_estimate")
     await _hand_back(
-        result, project_id,
-        {"scenario_id": scenario_id, "resolution": result.get("resolution"),
-         "duration": result.get("duration"), "mesh_triangle_count_estimate": estimate,
-         "compute_cost_estimate": cost, "vcpu_hours_estimate": result.get("vcpu_hours_estimate")},
+        result,
+        project_id,
+        {
+            "scenario_id": scenario_id,
+            "resolution": result.get("resolution"),
+            "duration": result.get("duration"),
+            "mesh_triangle_count_estimate": estimate,
+            "compute_cost_estimate": cost,
+            "vcpu_hours_estimate": result.get("vcpu_hours_estimate"),
+        },
         f"Draft scenario {_data(result.get('name', name))} is set up: about "
         f"{_fmt_count(estimate)} triangles at {result.get('resolution')} m, estimated "
         f"{_fmt_usd(cost)} to run. Open the link to review its inputs before I build it.",
-        panel="scenarios", scenario=scenario_id,
+        panel="scenarios",
+        scenario=scenario_id,
     )
     return json.dumps(result, indent=2)
 
@@ -3985,14 +4218,28 @@ async def build_scenario(
     answer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.
     """
     hand_back: dict = {}  # filled by the spend gates: which boundary to point the human at
-    result = json.loads(await _build_scenario_core(
-        project_id, scenario_id, confirm, rebuild, timeout_seconds, poll_interval_seconds, hand_back,
-    ))
+    result = json.loads(
+        await _build_scenario_core(
+            project_id,
+            scenario_id,
+            confirm,
+            rebuild,
+            timeout_seconds,
+            poll_interval_seconds,
+            hand_back,
+        )
+    )
     return json.dumps(await _build_hand_back(result, project_id, scenario_id, hand_back), indent=2)
 
 
 async def _build_scenario_core(
-    project_id, scenario_id, confirm, rebuild, timeout_seconds, poll_interval_seconds, hand_back,
+    project_id,
+    scenario_id,
+    confirm,
+    rebuild,
+    timeout_seconds,
+    poll_interval_seconds,
+    hand_back,
 ) -> str:
     """build_scenario's steps 1-5 (its docstring); `hand_back` collects the boundary seen."""
     path = f"/projects/{project_id}/scenarios/{scenario_id}/"
@@ -4046,8 +4293,9 @@ async def _build_scenario_core(
     if boundary_id is None:
         hand_back["refusal"] = "no_boundary"
         return _build_refusal(
-            detail, "boundary has no features: the scenario has no boundary attached "
-            "(attach_input_layer kind=boundary, then set it on the scenario)"
+            detail,
+            "boundary has no features: the scenario has no boundary attached "
+            "(attach_input_layer kind=boundary, then set it on the scenario)",
         )
     boundary = await client.get(f"/projects/{project_id}/boundaries/{boundary_id}/")
     if isinstance(boundary, dict):
@@ -4055,9 +4303,10 @@ async def _build_scenario_core(
     if not (isinstance(boundary, dict) and boundary.get("has_features")):
         hand_back["refusal"] = "boundary_has_no_features"
         return _build_refusal(
-            detail, f"boundary has no features: Boundary {boundary_id} has_features is false "
+            detail,
+            f"boundary has no features: Boundary {boundary_id} has_features is false "
             "(the server would admit the build and fail it in make_package) — upload the "
-            "boundary GeoJSON and attach_input_layer kind=boundary first"
+            "boundary GeoJSON and attach_input_layer kind=boundary first",
         )
     estimate = detail.get("mesh_triangle_count_estimate")
     if estimate is None:
