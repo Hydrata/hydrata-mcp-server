@@ -341,9 +341,209 @@ def build_record(
     }
 
 
+# ---------------------------------------------------------------------------
+# Argument samples (TASK-3962, epic 3958 D3/D4): sampled, cut down, size-capped. NEVER bulk.
+#
+# A ``kind=sample`` line sits next to the call record (same request_id) when the sampler picks the
+# call: every refused / invalid / broken call, and the first ok call per tool per user per day,
+# at most SAMPLE_DAILY_CAP samples per user per day. The per-day state is process memory: the unit
+# runs one uvicorn worker, so a restart only allows a few extra samples.
+# ---------------------------------------------------------------------------
+SAMPLE_DAILY_CAP = 50
+SAMPLE_MAX_BYTES = 16 * 1024
+SAMPLE_MAX_IDENTITIES = 5000  # a flood of made-up keys must not grow the table without bound
+ALWAYS_SAMPLED_TOOLS = frozenset({"suggest_capability"})  # the roadmap signal: outside the daily cap
+STRING_KEEP = 1000
+LIST_KEEP = 50
+DICT_KEEP = 100
+DEPTH_LIMIT = 8
+
+_SECRET_KEY = re.compile(
+    r"token|secret|passw|authoriz|api[-_]?key|credential|signature|cookie|bearer|private[-_]?key", re.IGNORECASE
+)
+_BASE64 = re.compile(r"^[A-Za-z0-9+/_-]+={0,2}$")
+_DATA_URI = re.compile(r"^data:[^,;]{0,80};base64,", re.IGNORECASE)
+_GEOMETRY_TYPES = frozenset(
+    {"Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon", "GeometryCollection"}
+)
+REDACTED = "<redacted>"
+
+
+def _utc_day() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+class Sampler:
+    """Decides which calls get an argument sample (D4). Per-process, per-UTC-day state."""
+
+    def __init__(self, day=_utc_day) -> None:
+        self._day = day
+        self.reset()
+
+    def reset(self) -> None:
+        self._current = self._day()
+        self._counts: dict[str, int] = {}
+        self._first_ok: set[tuple[str, str]] = set()
+
+    def decide(self, identity: str | None, tool: str | None, outcome: str) -> bool:
+        if tool in ALWAYS_SAMPLED_TOOLS:
+            return True
+        today = self._day()
+        if today != self._current:
+            self.reset()
+            self._current = today
+        who = identity or "anonymous"
+        if who not in self._counts and len(self._counts) >= SAMPLE_MAX_IDENTITIES:
+            return False
+        if self._counts.get(who, 0) >= SAMPLE_DAILY_CAP:
+            return False
+        if outcome == OK:
+            if (who, tool or "") in self._first_ok:
+                return False
+            self._first_ok.add((who, tool or ""))
+        self._counts[who] = self._counts.get(who, 0) + 1
+        return True
+
+
+SAMPLER = Sampler()
+
+
+def _vertices(coords, depth=0):
+    """(count, minx, miny, maxx, maxy) over a GeoJSON coordinates array, or None when it is not one."""
+    if depth > 6 or not isinstance(coords, list):
+        return None
+    if coords and all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in coords):
+        if len(coords) < 2:
+            return None
+        return 1, coords[0], coords[1], coords[0], coords[1]
+    total, box = 0, None
+    for item in coords:
+        part = _vertices(item, depth + 1)
+        if part is None:
+            return None
+        total += part[0]
+        box = (
+            part[1:]
+            if box is None
+            else (min(box[0], part[1]), min(box[1], part[2]), max(box[2], part[3]), max(box[3], part[4]))
+        )
+    return (total, *box) if box else (0, None, None, None, None)
+
+
+def _reduce_geometry(value: dict):
+    """A GeoJSON geometry as type / vertex count / bbox, or None when ``value`` is not one."""
+    if value.get("type") not in _GEOMETRY_TYPES:
+        return None
+    if value["type"] == "GeometryCollection":
+        geometries = value.get("geometries")
+        if not isinstance(geometries, list):
+            return None
+        return {"type": "GeometryCollection", "geometries": _reduce_list(geometries, LIST_KEEP, STRING_KEEP, 1)}
+    found = _vertices(value.get("coordinates"))
+    if found is None:
+        return None
+    count, minx, miny, maxx, maxy = found
+    bbox = [round(v, 6) for v in (minx, miny, maxx, maxy)] if minx is not None else None
+    return {"type": value["type"], "vertices": count, "bbox": bbox}
+
+
+def _binary_summary(text: str):
+    """``{type, size, sha256}`` for a base64 blob or data URI, else None. Never keeps the bytes."""
+    prefixed = _DATA_URI.match(text)
+    body = text[prefixed.end() :] if prefixed else text
+    if not prefixed and not (len(text) >= 200 and _BASE64.match(text) and len(set(text)) >= 16):
+        return None
+    try:
+        raw = base64.b64decode(body.replace("-", "+").replace("_", "/") + "=" * (-len(body) % 4))
+    except ValueError:
+        return None
+    return {"type": "base64", "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _reduce_string(text: str, keep: int):
+    binary = _binary_summary(text)
+    if binary:
+        return binary
+    from ._helpers import _elide_presigned  # late: _helpers imports _common, which imports this module
+
+    clean = _SECRET.sub(REDACTED, _elide_presigned(text))
+    if len(clean) > keep:
+        return {"text": clean[:keep], "length": len(text), "truncated": True}
+    return clean
+
+
+def _reduce_list(items: list, keep_items: int, keep_chars: int, depth: int):
+    reduced = [_reduce(item, keep_items, keep_chars, depth + 1) for item in items[:keep_items]]
+    if len(items) > keep_items:
+        return {"items": reduced, "total": len(items), "truncated": True}
+    return reduced
+
+
+def _reduce(value, keep_items=LIST_KEEP, keep_chars=STRING_KEEP, depth=0, key=None):
+    """``value`` cut down for a sample: see the section comment. Returns a new, JSON-safe structure."""
+    if key is not None and _SECRET_KEY.search(str(key)):
+        return REDACTED
+    if depth > DEPTH_LIMIT:
+        return "<depth limit>"
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if value == value and value not in (float("inf"), float("-inf")) else str(value)
+    if isinstance(value, str):
+        return _reduce_string(value, keep_chars)
+    if isinstance(value, (bytes, bytearray)):
+        return {"type": "binary", "size": len(value), "sha256": hashlib.sha256(bytes(value)).hexdigest()}
+    if isinstance(value, dict):
+        geometry = _reduce_geometry(value)
+        if geometry is not None:
+            return geometry
+        items = list(value.items())
+        out = {str(k)[:100]: _reduce(v, keep_items, keep_chars, depth + 1, key=k) for k, v in items[:DICT_KEEP]}
+        if len(items) > DICT_KEEP:
+            out["_keys_total"] = len(items)
+        return out
+    if isinstance(value, (list, tuple)):
+        return _reduce_list(list(value), keep_items, keep_chars, depth)
+    return str(type(value).__name__)
+
+
+def build_sample(record: dict, arguments) -> dict:
+    """The ``kind=sample`` line for ``record``: its join keys and identity, plus the reduced arguments.
+
+    Over the 16 KB ceiling the cut-downs tighten step by step (50 -> 10 -> 3 -> 1 items, 1000 -> 200 -> 50
+    characters); if even that is too big, only the argument names and sizes are kept.
+    """
+    head = {
+        "event": EVENT,
+        "kind": "sample",
+        "ts": record["ts"],
+        "request_id": record["request_id"],
+        "tool": record["tool"],
+        "outcome": record["outcome"],
+        "user_id": record["user_id"],
+        "username": record["username"],
+        "internal": record["internal"],
+        "identity": record["identity"],
+        "identity_source": record["identity_source"],
+    }
+    args = arguments if isinstance(arguments, dict) else {}
+    for keep_items, keep_chars in ((LIST_KEEP, STRING_KEEP), (10, 200), (3, 50), (1, 20)):
+        sample = {**head, "arguments": _reduce(args, keep_items, keep_chars)}
+        if len(_dump(sample)) <= SAMPLE_MAX_BYTES:
+            return sample
+    return {
+        **head,
+        "arguments": {"_dropped": "over 16 KB after cut-downs", "names": sorted(str(k)[:100] for k in args)[:50]},
+    }
+
+
+def _dump(record: dict) -> bytes:
+    return json.dumps(record, ensure_ascii=True, separators=(",", ":")).encode()
+
+
 def emit(record: dict) -> None:
     """One JSON line on stdout (journald -> promtail). ASCII-only, so one line stays one line."""
-    sys.stdout.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+    sys.stdout.write(_dump(record).decode() + "\n")
     sys.stdout.flush()
 
 
@@ -400,5 +600,7 @@ class ToolCallRecorder(Middleware):
                 client_fields=_client_fields(context, headers),
             )
             emit(record)
+            if SAMPLER.decide(record["identity"], record["tool"], record["outcome"]):
+                emit(build_sample(record, arguments))
         except Exception:  # noqa: BLE001 - a telemetry bug must never fail the customer's call
             logger.exception("mcp_tool_call record failed")

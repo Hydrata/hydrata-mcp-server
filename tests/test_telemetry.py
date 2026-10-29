@@ -310,11 +310,11 @@ async def test_tool_call_record_never_contains_arguments_tokens_or_presigned_url
     await _call(_server, "get_project", {"project_id": canary})  # pydantic echoes input_value
     await _call(_server, canary)  # unknown tool name is a name, not a value, and is clipped
     out = _stdout_text(capsys)
-    assert out.count("mcp_tool_call") == 3
+    assert out.count('"kind":"call"') == 3
     for secret in ("X-Amz-Signature", "deadbeef", "SECRETSECRET", "abc.def.ghi"):
         assert secret not in out, secret
     records = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
-    assert canary not in records[1]["error"]
+    assert canary not in [r for r in records if r["kind"] == "call"][1]["error"]
 
 
 async def test_tool_call_record_error_text_is_clipped_to_300():
