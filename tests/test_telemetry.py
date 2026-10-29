@@ -351,3 +351,56 @@ async def test_tool_call_record_wrapped_409_keeps_its_status(_server, capsys):
     assert result["isError"] is True
     (record,) = _records(capsys)
     assert (record["outcome"], record["http_status"], record["error_code"]) == ("refused", 409, "SERIES_IN_USE")
+
+
+# TASK-4081: tool-side errors that wrap an upstream status carry it, so the outcome follows the status.
+_LAYER_FC = {
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[151.0, -33.8], [151.01, -33.8]]},
+            "properties": {"name": "C1"},
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(("status", "outcome"), [(500, "broken"), (503, "broken"), (422, "refused")])
+@respx.mock
+async def test_tool_call_record_write_input_layer_follows_the_upstream_status(_server, capsys, status, outcome):
+    respx.post(f"{BASE}/projects/42/input-layers/write/").mock(
+        return_value=httpx.Response(status, json={"detail": "nope", "error_code": "SOME_CODE"})
+    )
+    args = {"project_id": 42, "kind": "culvert", "features": _LAYER_FC, "method": "traced"}
+    result = await _call(_server, "write_input_layer", args)
+    assert result["isError"] is True
+    (record,) = _records(capsys)
+    assert (record["outcome"], record["http_status"]) == (outcome, status)
+
+
+@pytest.mark.parametrize(("status", "outcome"), [(500, "broken"), (422, "refused")])
+@respx.mock
+async def test_tool_call_record_comparison_route_follows_the_upstream_status(_server, capsys, status, outcome):
+    respx.get(f"{BASE}/runs/1591/comparison/").mock(return_value=httpx.Response(status, json={"detail": "x"}))
+    result = await _call(_server, "get_observation_comparison", {"run_id": 1591})
+    assert result["isError"] is True
+    (record,) = _records(capsys)
+    assert (record["outcome"], record["http_status"]) == (outcome, status)
+
+
+@respx.mock
+async def test_tool_call_record_describe_input_kinds_bad_body_is_broken(_server, capsys):
+    respx.get(f"{BASE}/input-kinds/").mock(return_value=httpx.Response(200, json={"nope": 1}))
+    result = await _call(_server, "describe_input_kinds")
+    assert result["isError"] is True
+    (record,) = _records(capsys)
+    assert record["outcome"] == "broken"
+
+
+async def test_tool_call_record_plain_validation_tool_error_is_still_invalid(_server, capsys):
+    args = {"project_id": 42, "kind": "not_a_kind", "features": _LAYER_FC, "method": "traced"}
+    result = await _call(_server, "write_input_layer", args)
+    assert result["isError"] is True
+    (record,) = _records(capsys)
+    assert (record["outcome"], record["http_status"]) == ("invalid", None)

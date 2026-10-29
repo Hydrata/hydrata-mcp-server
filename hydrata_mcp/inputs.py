@@ -888,7 +888,11 @@ async def write_input_layer(
     )
     if status_code >= 400:
         detail = body.get("detail") if isinstance(body, dict) else None
-        raise ToolError(f"Hydrata refused the {kind} layer ({status_code}): {detail or body}")
+        code = body.get("error_code") if isinstance(body, dict) and isinstance(body.get("error_code"), str) else None
+        # TASK-4081: carry the upstream status so a 5xx is recorded broken, a 4xx refused.
+        raise HydrataAPIError(
+            f"Hydrata refused the {kind} layer ({status_code}): {detail or body}", status=status_code, code=code
+        )
     result = dict(body) if isinstance(body, dict) else {"body": body}
     result["outcome"] = "written"
     result["http_status"] = status_code
@@ -998,7 +1002,10 @@ async def describe_input_kinds(
     wanted = kind.strip().lower().replace("-", "_")
     body = await client.get("/input-kinds/")
     if not isinstance(body, dict) or not isinstance(body.get("kinds"), dict):
-        raise ToolError("Hydrata did not return the input kinds. Try again shortly.")
+        # A 200 with the wrong shape is Hydrata's fault, not the caller's: 502 so it alerts (TASK-4081).
+        raise HydrataAPIError(
+            "Hydrata did not return the input kinds. Try again shortly.", status=502, code="BAD_UPSTREAM_BODY"
+        )
     kinds = body["kinds"]
     if wanted:
         if wanted not in kinds:

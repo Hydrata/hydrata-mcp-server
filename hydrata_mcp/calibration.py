@@ -7,6 +7,7 @@ from fastmcp.exceptions import ToolError
 
 from ._common import _data, _tool, client
 from ._helpers import _elide_presigned, _hand_back
+from .client import HydrataAPIError
 from .runs import _run_project_and_scenario
 
 # ---------------------------------------------------------------------------
@@ -77,13 +78,20 @@ def _elide_series(rows: list) -> None:
             row["modelled_series_points"] = len(series.get("time_s") or [])
 
 
-def _comparison_refusal(body, status_code: int, what: str) -> ToolError:
-    """A 4xx from a comparison route as a ToolError the agent can act on."""
+def _comparison_refusal(body, status_code: int, what: str) -> HydrataAPIError:
+    """A non-success from a comparison route as an error the agent can act on.
+
+    TASK-4081: it carries the upstream status (and the body's ``error_code``), so the call
+    record classifies a 5xx as broken and a 4xx as refused rather than a status-less invalid.
+    """
     body = body if isinstance(body, dict) else {"response": body}
-    if status_code == 404 and body.get("error_code") == "NO_COMPARISON":
-        return ToolError(f"{what} refused: {NO_COMPARISON_WORDS}.")
+    code = body.get("error_code") if isinstance(body.get("error_code"), str) else None
+    if status_code == 404 and code == "NO_COMPARISON":
+        return HydrataAPIError(f"{what} refused: {NO_COMPARISON_WORDS}.", status=status_code, code=code)
     detail = body.get("problems") or body.get("detail") or body
-    return ToolError(f"{what} refused: Hydrata API returned {status_code} — {json.dumps(detail)}")
+    return HydrataAPIError(
+        f"{what} refused: Hydrata API returned {status_code} — {json.dumps(detail)}", status=status_code, code=code
+    )
 
 
 async def _comparison_headline(run_id) -> tuple[str | None, str | None]:
