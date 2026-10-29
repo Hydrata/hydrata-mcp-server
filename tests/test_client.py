@@ -46,9 +46,7 @@ class TestGetErrorWrapping:
     @respx.mock
     @pytest.mark.asyncio
     async def test_success(self, client):
-        respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(200, json={"results": []})
-        )
+        respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={"results": []}))
         data = await client.get("/projects/")
         assert data == {"results": []}
 
@@ -57,18 +55,14 @@ class TestPostErrorWrapping:
     @respx.mock
     @pytest.mark.asyncio
     async def test_connect_error(self, client):
-        respx.post(f"{BASE}/scenarios/1/run/").mock(
-            side_effect=httpx.ConnectError("refused")
-        )
+        respx.post(f"{BASE}/scenarios/1/run/").mock(side_effect=httpx.ConnectError("refused"))
         with pytest.raises(HydrataAPIError, match="unreachable"):
             await client.post("/scenarios/1/run/", json={})
 
     @respx.mock
     @pytest.mark.asyncio
     async def test_timeout(self, client):
-        respx.post(f"{BASE}/scenarios/1/run/").mock(
-            side_effect=httpx.ReadTimeout("timed out")
-        )
+        respx.post(f"{BASE}/scenarios/1/run/").mock(side_effect=httpx.ReadTimeout("timed out"))
         with pytest.raises(HydrataAPIError, match="timed out"):
             await client.post("/scenarios/1/run/", json={})
 
@@ -99,9 +93,7 @@ class TestPostErrorWrapping:
     @respx.mock
     @pytest.mark.asyncio
     async def test_empty_body(self, client):
-        respx.post(f"{BASE}/runs/1/cancel/").mock(
-            return_value=httpx.Response(200, content=b"")
-        )
+        respx.post(f"{BASE}/runs/1/cancel/").mock(return_value=httpx.Response(200, content=b""))
         body, status = await client.post("/runs/1/cancel/")
         assert body == {}
         assert status == 200

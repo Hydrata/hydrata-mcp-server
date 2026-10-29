@@ -3,6 +3,7 @@
 import pytest
 
 from hydrata_mcp.config import Config
+from tests.helpers import reload_server
 
 
 @pytest.fixture(autouse=True)
@@ -35,3 +36,9 @@ def env_vars(monkeypatch):
 def config(env_vars):
     """Build a Config from the test env vars."""
     return Config.from_env()
+
+
+@pytest.fixture
+def _server(env_vars):
+    """The server modules, reloaded after the env vars are set (Config.from_env runs at import)."""
+    return reload_server()

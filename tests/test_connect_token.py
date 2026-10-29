@@ -4,8 +4,8 @@ With HYDRATA_MCP_RESOURCE_URL set, a 401 names the protected-resource metadata
 and a ``Bearer <JWT>`` tools/call is forwarded to Django verbatim (Django
 verifies it; this server never does). Unset, nothing changes: agent keys only.
 """
+
 import base64
-import importlib
 import json
 import time
 
@@ -13,7 +13,7 @@ import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     CALLER_BASIC,
     CALLER_KEY,
@@ -26,7 +26,7 @@ from tests.test_server import (
     _call,
     _parse,
     _rpc,
-    _server,  # noqa: F401  (_server is the shared fixture)
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -40,9 +40,7 @@ JWT = "Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJ1c2VyXzAxIn0.c2lnbm
 @pytest.fixture
 def connect_server(env_vars, monkeypatch):
     monkeypatch.setenv("HYDRATA_MCP_RESOURCE_URL", RESOURCE)
-    import hydrata_mcp.server as srv
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 class TestConnectOn:
@@ -63,8 +61,9 @@ class TestConnectOn:
         respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
         assert (await _call(connect_server, CALLER_KEY)).status_code == 200
 
-    @pytest.mark.parametrize("auth", [CALLER_BASIC, CALLER_OAUTH, "Bearer a.b", "Bearer a.b.c.d",
-                                      "Basic YS5iLmM=", "Token a.b.c"])
+    @pytest.mark.parametrize(
+        "auth", [CALLER_BASIC, CALLER_OAUTH, "Bearer a.b", "Bearer a.b.c.d", "Basic YS5iLmM=", "Token a.b.c"]
+    )
     @respx.mock
     async def test_everything_else_is_still_401(self, connect_server, auth):
         upstream = respx.route().mock(return_value=httpx.Response(200, json=UPSTREAM_OK))
@@ -102,8 +101,9 @@ class TestEveryMethodNeedsSignIn:
 
     async def test_expired_jwt_initialize_is_401_invalid_token(self, connect_server):
         """The client refreshes on this 401, whichever method it was sending."""
-        resp = await _rpc_as(connect_server, _jwt({"sub": "user_01", "exp": int(time.time()) - 10}),
-                             "initialize", INITIALIZE_PARAMS)
+        resp = await _rpc_as(
+            connect_server, _jwt({"sub": "user_01", "exp": int(time.time()) - 10}), "initialize", INITIALIZE_PARAMS
+        )
         assert resp.status_code == 401
         assert 'error="invalid_token"' in resp.headers["www-authenticate"]
 
@@ -121,6 +121,7 @@ class TestConnectOff:
 def _jwt(payload: dict) -> str:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
     return f"Bearer {seg({'alg': 'RS256', 'kid': 'k1'})}.{seg(payload)}.c2lnbmF0dXJl"
 
 
@@ -152,8 +153,9 @@ class TestExpiredConnectToken:
         assert resp.status_code == 200
         assert upstream.calls[0].request.headers["authorization"] == token
 
-    @pytest.mark.parametrize("token", [JWT, "Bearer eyJhIjoxfQ.bm90IGpzb24.c2ln",
-                                       _jwt({"sub": "user_01", "exp": "soon"})])
+    @pytest.mark.parametrize(
+        "token", [JWT, "Bearer eyJhIjoxfQ.bm90IGpzb24.c2ln", _jwt({"sub": "user_01", "exp": "soon"})]
+    )
     @respx.mock
     async def test_no_readable_exp_is_left_to_django(self, connect_server, token):
         respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json=UPSTREAM_OK))

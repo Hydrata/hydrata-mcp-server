@@ -11,14 +11,14 @@ inside a call: the agent polls get_scenario, whose compact record carries
 ``unreviewed_inputs[]``. The inflow rule (from 3209): never invent an inflow
 location.
 """
-import importlib
+
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     BUILD_URL,
     SCENARIO_URL,
@@ -26,18 +26,39 @@ from tests.test_server import (
     _mock_boundary,
     _scenario,
     _tool_json,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
 
 PROJECT_URL = f"{BASE}/projects/42/"
 UNREVIEWED = [
-    {"kind": "boundary", "layer_id": 27497, "title": "Boundary 01", "version": "a" * 64, "readable": True,
-     "grant": "Claude Desktop", "grant_level": "launch", "client": "hydrata-mcp/1.0",
-     "gn_layer_name": "geonode:bdy_42_boundary_01", "feature_count": 4, "reopened": False},
-    {"kind": "friction", "layer_id": 124557, "title": "Friction 01", "version": "b" * 64, "readable": True,
-     "grant": "Claude Desktop", "grant_level": "launch", "client": "hydrata-mcp/1.0",
-     "gn_layer_name": "geonode:fri_42_friction_01", "feature_count": 2, "reopened": True},
+    {
+        "kind": "boundary",
+        "layer_id": 27497,
+        "title": "Boundary 01",
+        "version": "a" * 64,
+        "readable": True,
+        "grant": "Claude Desktop",
+        "grant_level": "launch",
+        "client": "hydrata-mcp/1.0",
+        "gn_layer_name": "geonode:bdy_42_boundary_01",
+        "feature_count": 4,
+        "reopened": False,
+    },
+    {
+        "kind": "friction",
+        "layer_id": 124557,
+        "title": "Friction 01",
+        "version": "b" * 64,
+        "readable": True,
+        "grant": "Claude Desktop",
+        "grant_level": "launch",
+        "client": "hydrata-mcp/1.0",
+        "gn_layer_name": "geonode:fri_42_friction_01",
+        "feature_count": 2,
+        "reopened": True,
+    },
 ]
 UNREVIEWED_409 = {
     "error_code": "UNREVIEWED_INPUTS",
@@ -58,9 +79,7 @@ INVALIDATED_409 = {
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 def _mock_project():
@@ -68,8 +87,9 @@ def _mock_project():
 
 
 async def _build(srv):
-    return await _call_as_caller(srv, "build_scenario", {"project_id": 42, "scenario_id": 5,
-                                                         "poll_interval_seconds": 0})
+    return await _call_as_caller(
+        srv, "build_scenario", {"project_id": 42, "scenario_id": 5, "poll_interval_seconds": 0}
+    )
 
 
 class TestBuildRelay:
@@ -79,7 +99,7 @@ class TestBuildRelay:
         _mock_boundary(True)
         _mock_project()
         build = respx.post(BUILD_URL).mock(return_value=httpx.Response(409, json=UNREVIEWED_409))
-        data = _tool_json(await _build(_server))      # a normal result, not isError
+        data = _tool_json(await _build(_server))  # a normal result, not isError
         assert build.call_count == 1
         assert data["outcome"] == "unreviewed_inputs"
         assert data["error_code"] == "UNREVIEWED_INPUTS" and data["http_status"] == 409
@@ -96,7 +116,7 @@ class TestBuildRelay:
         _mock_project()
         respx.post(BUILD_URL).mock(return_value=httpx.Response(409, json=UNREVIEWED_409))
         await _build(_server)
-        assert detail.call_count == 1     # the pre-check read only: no poll loop
+        assert detail.call_count == 1  # the pre-check read only: no poll loop
 
     @respx.mock
     async def test_the_outcome_is_keyed_on_error_code_not_on_the_409(self, _server):
@@ -134,8 +154,11 @@ class TestRunRelay:
     @respx.mock
     async def test_another_run_409_still_raises(self, _server):
         """NEGATIVE CONTROL: INVALID_TRANSITION stays an error, as before."""
-        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(
-            409, json={"error_code": "INVALID_TRANSITION", "detail": "Scenario has no runs."}))
+        respx.post(f"{BASE}/scenarios/5/run/").mock(
+            return_value=httpx.Response(
+                409, json={"error_code": "INVALID_TRANSITION", "detail": "Scenario has no runs."}
+            )
+        )
         result = await _call_as_caller(_server, "start_simulation", {"scenario_id": 5})
         assert result.get("isError") is True
 
@@ -144,16 +167,18 @@ class TestGetScenarioCarriesUnreviewedInputs:
     @respx.mock
     async def test_get_scenario_compact_record_carries_unreviewed_inputs(self, _server):
         respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
-            return_value=httpx.Response(200, json=_scenario(unreviewed_inputs=UNREVIEWED)))
+            return_value=httpx.Response(200, json=_scenario(unreviewed_inputs=UNREVIEWED))
+        )
         data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
         assert data["unreviewed_inputs"] == UNREVIEWED
 
     @respx.mock
     async def test_a_stranger_read_has_no_unreviewed_inputs_key(self, _server):
         respx.get(f"{BASE}/projects/42/scenarios/5/").mock(
-            return_value=httpx.Response(200, json={"id": 5, "name": "x", "latest_run": None}))
+            return_value=httpx.Response(200, json={"id": 5, "name": "x", "latest_run": None})
+        )
         data = json.loads(await _server.get_scenario(project_id=42, scenario_id=5))
-        assert "unreviewed_inputs" not in data          # withheld is not "nothing to review"
+        assert "unreviewed_inputs" not in data  # withheld is not "nothing to review"
 
 
 class TestInflowRuleAndInstructions:

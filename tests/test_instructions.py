@@ -1,16 +1,13 @@
 """TASK-4064: the connect-time instructions send agents to platform tools, not off-platform."""
 
-import importlib
-
 import pytest
+
+from tests.helpers import reload_server
 
 
 @pytest.fixture
 def instructions(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv.mcp.instructions
+    return reload_server().mcp.instructions
 
 
 REQUIRED = [
@@ -50,6 +47,8 @@ def test_required_phrase_present(instructions, phrase):
     assert phrase.lower() in instructions.lower()
 
 
-@pytest.mark.parametrize("phrase", ["curl", "your own files", "hk_", "multipart", "Authorization", "agent moves the bytes"])
+@pytest.mark.parametrize(
+    "phrase", ["curl", "your own files", "hk_", "multipart", "Authorization", "agent moves the bytes"]
+)
 def test_off_platform_guidance_gone(instructions, phrase):
     assert phrase.lower() not in instructions.lower()

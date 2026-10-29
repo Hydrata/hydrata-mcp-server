@@ -14,8 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_server import _server  # noqa: F401  (shared fixture)
-
 pytestmark = pytest.mark.asyncio
 
 SNAPSHOT = Path(__file__).resolve().parent / "snapshots" / "tools.json"
@@ -35,7 +33,7 @@ def _render(tools):
     return json.dumps(tools, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-async def test_tool_list_matches_snapshot(_server):  # noqa: F811
+async def test_tool_list_matches_snapshot(_server):
     live = _render(await _live_tools(_server))
     if os.environ.get("UPDATE_SNAPSHOT") == "1":
         SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
@@ -61,6 +59,6 @@ async def test_tool_list_matches_snapshot(_server):  # noqa: F811
         pytest.fail("tool list changed; if intended run UPDATE_SNAPSHOT=1 pytest tests/test_tool_snapshot.py\n" + diff)
 
 
-async def test_snapshot_covers_every_annotated_tool(_server):  # noqa: F811
+async def test_snapshot_covers_every_annotated_tool(_server):
     names = {t["name"] for t in json.loads(SNAPSHOT.read_text())}
     assert names == set(_server.TOOL_ANNOTATIONS)

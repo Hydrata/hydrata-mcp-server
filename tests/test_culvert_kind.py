@@ -7,14 +7,13 @@ re-upload / default-row creation (and their tests) are gone; tests/
 test_attach_one_path.py pins that. create_scenario still takes `culvert`.
 """
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     CALLER_KEY,
     EXEC_ID,
@@ -25,6 +24,7 @@ from tests.test_server import (
     _exec,
     _row,
     _tool_json,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -34,10 +34,8 @@ CULVERTS = f"{BASE}/projects/42/culverts/"
 
 @pytest.fixture
 def _server(env_vars):
-    """The server module, reloaded after the env vars are set (as in test_server)."""
-    import hydrata_mcp.server as srv
-    importlib.reload(srv)
-    return srv
+    """The server module, reloaded after the env vars are set (as in the shared `_server` fixture)."""
+    return reload_server()
 
 
 async def _attach(srv, **extra):
@@ -50,13 +48,15 @@ class TestCulvertKindAttach:
     @respx.mock
     async def test_culvert_kind_attach_patches_the_uploaded_dataset_straight_onto_the_row(self, _server):
         status = respx.get(EXEC_STATUS_URL).mock(
-            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+            return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}]))
+        )
         respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
-            return_value=httpx.Response(200, json=_dataset(1502, "geonode:cul_42_culverts")))
-        respx.get(CULVERTS).mock(return_value=httpx.Response(
-            200, json=[_row(9, "Culvert 01", gn_layer=1450)]))
-        patch = respx.patch(f"{CULVERTS}9/").mock(return_value=httpx.Response(
-            200, json=_row(9, "Culvert 01", gn_layer=1700)))
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:cul_42_culverts"))
+        )
+        respx.get(CULVERTS).mock(return_value=httpx.Response(200, json=[_row(9, "Culvert 01", gn_layer=1450)]))
+        patch = respx.patch(f"{CULVERTS}9/").mock(
+            return_value=httpx.Response(200, json=_row(9, "Culvert 01", gn_layer=1700))
+        )
         respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
         respx.get(url__startswith=f"{ORIGIN}/api/v2/").mock(return_value=httpx.Response(200, json={"datasets": []}))
         # Any other request (a features read-back, an upload, a POST) would be unmocked and fail.
@@ -84,22 +84,21 @@ class TestCulvertKindAttach:
 class TestCulvertKindScenario:
     @respx.mock
     async def test_culvert_kind_create_scenario_sends_culvert_and_reads_it_back(self, _server):
-        post = respx.post(f"{BASE}/projects/42/scenarios/").mock(
-            return_value=httpx.Response(201, json={"id": 77}))
+        post = respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 77}))
         respx.get(f"{BASE}/projects/42/scenarios/77/").mock(
-            return_value=httpx.Response(200, json={"id": 77, "name": "s", "culvert": 9}))
+            return_value=httpx.Response(200, json={"id": 77, "name": "s", "culvert": 9})
+        )
         respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1}))
-        data = json.loads(await _server.create_scenario(
-            project_id=42, name="s", resolution=10, duration=60, culvert=9))
+        data = json.loads(await _server.create_scenario(project_id=42, name="s", resolution=10, duration=60, culvert=9))
         assert json.loads(post.calls[0].request.content)["culvert"] == 9
         assert data["culvert"] == 9
 
     @respx.mock
     async def test_culvert_kind_create_scenario_omits_culvert_when_not_given(self, _server):
-        post = respx.post(f"{BASE}/projects/42/scenarios/").mock(
-            return_value=httpx.Response(201, json={"id": 77}))
+        post = respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 77}))
         respx.get(f"{BASE}/projects/42/scenarios/77/").mock(
-            return_value=httpx.Response(200, json={"id": 77, "name": "s"}))
+            return_value=httpx.Response(200, json={"id": 77, "name": "s"})
+        )
         respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1}))
         await _server.create_scenario(project_id=42, name="s", resolution=10, duration=60)
         assert "culvert" not in json.loads(post.calls[0].request.content)
