@@ -24,6 +24,7 @@ from . import inputs  # noqa: F401
 from . import observations  # noqa: F401
 from . import calibration  # noqa: F401
 from . import scenarios  # noqa: F401
+from . import feedback  # noqa: F401
 # isort: on
 
 

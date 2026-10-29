@@ -529,7 +529,7 @@ async def create_terrain_from_source(
     body = body if isinstance(body, dict) else {"response": body}
     if status_code >= 400:
         if status_code >= 500:
-            raise HydrataAPIError(f"POST create-from-bbox failed: {status_code} {body}")
+            raise HydrataAPIError(f"POST create-from-bbox failed: {status_code} {body}", status=status_code)
         reason = body.get("detail") or body.get("error_code") or f"HTTP {status_code}"
         result = {
             "outcome": "refused",

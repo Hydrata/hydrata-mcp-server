@@ -1367,6 +1367,36 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Tell the Hydrata team about a capability that is missing"
+    },
+    "description": "Tell the Hydrata team about something the person asked for that NO existing tool can do.\n\nUse it only when you have checked the other tools and none can do what the person asked\n(never to report a bug, and never instead of a tool that can do it). Describe the need, not a\nworkaround; send no personal data, keys or file contents. It changes none of the person's data.\nThe reply tells you what to say: relay `say_to_user` to the person as it is. Limit: 20 a day\nper person.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "default": "",
+          "description": "What they were trying to achieve with it (optional)",
+          "type": "string"
+        },
+        "what": {
+          "description": "What the person asked for that no tool can do, in one or two plain sentences",
+          "type": "string"
+        }
+      },
+      "required": [
+        "what"
+      ],
+      "type": "object"
+    },
+    "name": "suggest_capability",
+    "title": "Tell the Hydrata team about a capability that is missing"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false,

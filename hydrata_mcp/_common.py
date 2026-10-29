@@ -14,6 +14,7 @@ from mcp_types import ToolAnnotations
 
 from .client import HydrataClient
 from .config import Config
+from .telemetry import ToolCallRecorder
 
 config = Config.from_env()
 client = HydrataClient(config)
@@ -231,11 +232,14 @@ mcp = FastMCP(
         "pass or fail: report the headline); set_observation_exclusion excludes one with the "
         "engineer's reason (ask for it, never invent one) or includes it again; "
         "set_comparison_tolerance saves the project's default tolerance (an Editor's choice: "
-        "to try another, pass tolerance to get_observation_comparison instead)."
-        + (DATA_INSTRUCTIONS if config.data_envelope else "")
+        "to try another, pass tolerance to get_observation_comparison instead). "
+        "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
+        "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),
     lifespan=lifespan,
 )
+# TASK-3961: one mcp_tool_call line per tools/call (see telemetry.py).
+mcp.add_middleware(ToolCallRecorder())
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +294,8 @@ TOOL_ANNOTATIONS = {
     "set_observation_exclusion": ("Exclude or include a flood observation in a run's comparison", False, False, True),
     # TASK-3848: a saved setting, overwritten by the next save; not destructive.
     "set_comparison_tolerance": ("Save a project's default comparison tolerance", False, False, True),
+    # TASK-3964 (epic 3958 D7): tells the Hydrata team a tool is missing; changes none of the user's data.
+    "suggest_capability": ("Tell the Hydrata team about a capability that is missing", True, False, False),
 }
 
 

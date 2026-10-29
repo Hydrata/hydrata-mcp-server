@@ -79,7 +79,11 @@ async def start_simulation(
         result = dict(body, http_status=status_code)
         return json.dumps(await _input_review_hand_back(result, body.get("project_id"), scenario_id), indent=2)
     if status_code >= 400:
-        raise HydrataAPIError(_api_refusal_message(status_code, "POST", f"/scenarios/{scenario_id}/run/", body))
+        raise HydrataAPIError(
+            _api_refusal_message(status_code, "POST", f"/scenarios/{scenario_id}/run/", body),
+            status=status_code,
+            code=body.get("error_code") if isinstance(body, dict) else None,
+        )
     # TASK-3187 — the 202 relays RunSerializerV2 for a run that is already
     # `built`, so it ALREADY holds the signed package URL: elide here, never in
     # `_post_result` (presign_terrain_upload shares it and must keep its URL).

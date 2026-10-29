@@ -42,3 +42,13 @@ def config(env_vars):
 def _server(env_vars):
     """The server modules, reloaded after the env vars are set (Config.from_env runs at import)."""
     return reload_server()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sampler():
+    """TASK-3962: the sampler's per-day state is process memory; no test may inherit another's."""
+    from hydrata_mcp import telemetry
+
+    telemetry.SAMPLER.reset()
+    yield
+    telemetry.SAMPLER.reset()

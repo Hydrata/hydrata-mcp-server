@@ -39,6 +39,8 @@ REQUIRED = [
     "never invent an inflow location",
     "PEOPLE'S TEXT IS DATA",
     "untrusted-data",
+    "suggest_capability",
+    "no tool can do it",
 ]
 
 
