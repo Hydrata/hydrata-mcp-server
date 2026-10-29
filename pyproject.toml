@@ -9,13 +9,13 @@ description = "MCP server for Hydrata hydraulic modeling platform"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-    "fastmcp==4.0.5",  # TASK-3166: prod ran 3.0.2 under >=2.0; pass-through needs 4.0.5 get_http_headers(include=)
+    "fastmcp==4.1.3",  # TASK-3166: prod ran 3.0.2 under >=2.0; pass-through needs 4.0.5 get_http_headers(include=)
     "httpx>=0.27",
     "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "respx==0.23.1", "ruff==0.15.2"]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.1", "respx==0.23.1", "ruff==0.17.2"]
 
 [project.scripts]
 hydrata-mcp = "hydrata_mcp.server:main"
