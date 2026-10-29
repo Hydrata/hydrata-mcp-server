@@ -59,6 +59,12 @@ CANCEL_BROKEN_AFTER_S = 290
 
 OK, REFUSED, INVALID, BROKEN = "ok", "refused", "invalid", "broken"
 
+
+def _clock() -> float:
+    """The call-duration clock. Tests patch this, never time.monotonic: asyncio's event loop reads that too."""
+    return time.monotonic()
+
+
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _SECRET = re.compile(r"hk_[A-Za-z0-9_\-]{6,}|[Bb]earer\s+\S+|eyJ[\w-]+\.[\w-]+\.[\w-]*")
 _ARG_VALUE = re.compile(r"input_value=.*?, input_type=")
@@ -567,14 +573,14 @@ class ToolCallRecorder(Middleware):
             headers = {}
         state = CallState(request_id=clean_request_id(headers.get("x-request-id")) or uuid.uuid4().hex)
         token = _state.set(state)
-        started = time.monotonic()
+        started = _clock()
         tool = getattr(context.message, "name", None)
         arguments = getattr(context.message, "arguments", None)
         outcome, status, code, error_type, message = OK, None, None, None, None
         try:
             result = await call_next(context)
         except BaseException as exc:
-            outcome, status, code, message = classify_exception(exc, time.monotonic() - started)
+            outcome, status, code, message = classify_exception(exc, _clock() - started)
             error_type = type(exc).__name__
             self._record(
                 context, tool, arguments, state, headers, started, outcome, status, code, error_type, message, 0
@@ -602,7 +608,7 @@ class ToolCallRecorder(Middleware):
                 code=code,
                 error_type=error_type,
                 message=message,
-                duration_ms=int((time.monotonic() - started) * 1000),
+                duration_ms=int((_clock() - started) * 1000),
                 response_bytes=size,
                 state=state,
                 headers=headers,

@@ -415,15 +415,16 @@ class _Ctx:
 async def test_tool_call_record_cancelled_call_is_broken_only_after_290s(capsys, monkeypatch, elapsed, outcome):
     import asyncio
 
-    real = telemetry.time.monotonic
-    start = real()
+    start = 1000.0
     calls = []
 
-    def fake_monotonic():
+    def fake_clock():
         calls.append(1)
         return start if len(calls) == 1 else start + elapsed  # the start stamp, then every later read
 
-    monkeypatch.setattr(telemetry.time, "monotonic", fake_monotonic)
+    # Patch the recorder's own clock, never time.monotonic: the event loop reads that too, and on CI
+    # its read took the fake start stamp (the 290 s case came out "invalid").
+    monkeypatch.setattr(telemetry, "_clock", fake_clock)
 
     async def cancelled(_context):
         raise asyncio.CancelledError
