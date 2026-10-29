@@ -2774,6 +2774,36 @@ class TestHandBackUiUrl:
         assert "WARNING" in data["say_to_user"]
 
     @respx.mock
+    async def test_attach_input_layer_reports_the_converted_layer_the_row_now_uses(self, _server):
+        """TASK-3918/TASK-4041: the v2 PATCH converts the upload (1502) into the kind's
+        canonical table (1600) and the row points at THAT; the map carries 1600 only.
+        Reporting the raw upload gave the wrong typename and a false 'map does not show
+        the new layer' WARNING on every kind but culvert (28-10-26, project 1114)."""
+        _mock_project()
+        respx.get(EXEC_STATUS_URL).mock(return_value=httpx.Response(200, json=_exec("finished", [{"id": 1502}])))
+        respx.get(f"{BASE}/projects/42/boundaries/").mock(
+            return_value=httpx.Response(200, json=[_row(27497, "Boundary 01", gn_layer=1400)]))
+        patch_route = respx.patch(f"{BASE}/projects/42/boundaries/27497/").mock(
+            return_value=httpx.Response(200, json=dict(_row(27497, "Boundary 01", gn_layer=1600), has_features=True)))
+        raw_route = respx.get(f"{ORIGIN}/api/v2/datasets/1502/").mock(
+            return_value=httpx.Response(200, json=_dataset(1502, "geonode:sullivans_boundary")))
+        converted_alternate = "geonode:bdy_42_boundary_01_dfec"
+        respx.get(f"{ORIGIN}/api/v2/datasets/1600/").mock(
+            return_value=httpx.Response(200, json=_dataset(1600, converted_alternate)))
+        _mock_layer_summary(converted_alternate)
+        data = json.loads(await _server.attach_input_layer(
+            project_id=42, kind="boundary", execution_id=EXEC_ID, poll_interval_seconds=0))
+        assert json.loads(patch_route.calls[0].request.content) == {"gn_layer": 1502}
+        assert data["outcome"] == "attached"
+        assert data["dataset_pk"] == 1600 and data["gn_layer"] == 1600
+        assert data["source_dataset_pk"] == 1502
+        assert data["dataset_alternate"] == converted_alternate
+        assert data["summary"]["layer"] == converted_alternate
+        assert data["summary"]["map_updated"] is True
+        assert "WARNING" not in data["say_to_user"]
+        assert not raw_route.called
+
+    @respx.mock
     async def test_ui_url_create_scenario_opens_the_scenario_with_estimate_and_price(self, _server):
         _mock_project()
         respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 5}))

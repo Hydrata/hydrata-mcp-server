@@ -61,7 +61,9 @@ class TestCulvertKindAttach:
         respx.get(url__startswith=f"{ORIGIN}/api/v2/").mock(return_value=httpx.Response(200, json={"datasets": []}))
         # Any other request (a features read-back, an upload, a POST) would be unmocked and fail.
         data = await _attach(_server)
-        assert data["outcome"] == "attached" and data["row_id"] == 9 and data["dataset_pk"] == 1502
+        # TASK-3918: dataset_pk is the converted layer the row now uses; the upload is source_dataset_pk.
+        assert data["outcome"] == "attached" and data["row_id"] == 9 and data["dataset_pk"] == 1700
+        assert data["source_dataset_pk"] == 1502
         assert json.loads(patch.calls[0].request.content) == {"gn_layer": 1502}
         assert patch.calls[0].request.headers["authorization"] == CALLER_KEY
         assert status.called

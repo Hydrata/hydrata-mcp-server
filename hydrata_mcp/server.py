@@ -2309,8 +2309,9 @@ async def attach_input_layer(
     The culvert engine conveys flow through each culvert in a run (GPU
     lanes and localhost; the multi-core CPU lanes refuse a culvert scenario).
 
-    `outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk,
-    dataset_alternate — the WFS typename — and every row id seen);
+    `outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk and
+    dataset_alternate — the WFS typename — of the CONVERTED layer the row now
+    uses, source_dataset_pk — the dataset you uploaded — and every row id seen);
     `timed_out` (still importing: call
     again with the same arguments, except pass `retry_execution_id` as
     execution_id when the result carries one); `upload_failed` (the
@@ -2472,19 +2473,27 @@ async def attach_input_layer(
         f"/projects/{project_id}/{route}/{row['id']}/", json={"gn_layer": dataset_pk}
     )
     result.pop("retry_execution_id", None)
+    gn_layer = body.get("gn_layer") if isinstance(body, dict) else None
+    # TASK-3918 / TASK-4041: the v2 PATCH converts the upload into the kind's
+    # canonical table and points the row (and the map) at THAT dataset, so the
+    # row's gn_layer is what the scenario uses; the upload stays visible as
+    # source_dataset_pk.
+    attached_pk = gn_layer if gn_layer is not None else dataset_pk
     result.update(
         {
             "outcome": "attached",
             "row_id": row["id"],
             "row_title": row.get("title"),
-            "gn_layer": body.get("gn_layer") if isinstance(body, dict) else None,
+            "gn_layer": gn_layer,
+            "dataset_pk": attached_pk,
+            "source_dataset_pk": dataset_pk,
             "http_status": status_code,
         }
     )
     # The layer's typename (workspace:name), the name the map link frames.
     # Best effort: the attach already happened.
     try:
-        result["dataset_alternate"] = await _dataset_alternate(dataset_pk)
+        result["dataset_alternate"] = await _dataset_alternate(attached_pk)
     except HydrataAPIError as exc:
         result["dataset_alternate"] = None
         result["dataset_lookup_error"] = str(exc)
