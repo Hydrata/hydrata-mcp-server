@@ -21,6 +21,18 @@ The MCP server is a stateless protocol adapter in front of Hydrata's REST API. I
 | That refusal applies to every JSON-RPC method (`initialize`, `tools/list`, `ping`, `tools/call`), not only tool calls | `mcp: hydrata_mcp/server.py:186-188`; tests `mcp: tests/test_server.py:250`, `:270`, `:287`, `:303` |
 | A connect-flow token whose `exp` has passed is answered `401` with `error="invalid_token"`; `exp` is read without verifying the signature, only to give the client a correct `401`. A token with no readable `exp` is left to Hydrata | `mcp: hydrata_mcp/server.py:87-101` and `:210-212`; tests `mcp: tests/test_connect_token.py:138`, `:148`, `:158` |
 
+### What the server records (TASK-3961)
+
+"Holds no identity" means the server never decides who a caller is. It does write one JSON line to stdout (journald, then Loki) for every authenticated `tools/call`, and the identity in that line is Hydrata's answer, not the server's.
+
+| Claim | Evidence |
+|---|---|
+| One `mcp_tool_call` line per `tools/call`, whether the call succeeds, is refused or raises. A failure to write the line never fails the call. Requests refused with `401` before FastMCP runs are not recorded here (nginx counts them) | `mcp: hydrata_mcp/telemetry.py:350` (`ToolCallRecorder`), `mcp: hydrata_mcp/_common.py:241`; tests `mcp: tests/test_telemetry.py` (`exactly_one_line_per_call`, `unauthenticated_requests_are_not_recorded_here`, `telemetry_failure_never_fails_the_call`) |
+| Who the caller is comes from Hydrata's `X-Hydrata-Actor` reply header (user id, username, grant, credential type, internal flag); the first reply that carries it wins. With no such reply the line carries only a fingerprint of the credential (an `hk_` key's id prefix, never its secret part; or a hash of a JWT `sub`) and `identity_source=credential` | `mcp: hydrata_mcp/telemetry.py:88`, `:111`, `:137`; `mcp: hydrata_mcp/client.py:197`; tests `identity_copied_from_actor_header`, `first_reply_wins`, `without_a_reply_falls_back_to_the_credential_fingerprint` |
+| `X-Request-ID` (the inbound one, else a minted one) is forwarded on every call to Hydrata so the Django log row, the nginx line and this record join | `mcp: hydrata_mcp/client.py:163`; test `forwards_the_inbound_request_id_on_every_call` |
+| The outcome is `ok`, `refused` (any 4xx, the kill-switch `503 AGENT_PAUSED`, a returned result with `http_status` >= 400), `invalid` (unknown tool, bad arguments, a refusal raised with no status) or `broken` (any other 5xx, timeout, connect error, an unexpected exception). Alerts key on `broken` only | `mcp: hydrata_mcp/telemetry.py:195`, `:205`, `:235`; test `outcome_is_four_way_not_the_exception_class` |
+| The line holds no tool result, no argument value, no token and no presigned URL. The only argument-derived fields are integer `project_id`, `scenario_id` and `run_id`. Error text is clipped to 300 characters and scrubbed | `mcp: hydrata_mcp/telemetry.py:168`; test `never_contains_arguments_tokens_or_presigned_urls` |
+
 ## 2. How Hydrata verifies a connect-flow token (JWT)
 
 When the one-click connect flow is on, Hydrata accepts an access token only if all of these hold:

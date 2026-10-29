@@ -381,7 +381,9 @@ async def delete_time_series(
         if "returned 409" in str(exc):
             raise HydrataAPIError(
                 f"{exc} Nothing was deleted. Detach the series from that feature in the map "
-                "(or point the feature at another series), then call delete_time_series again."
+                "(or point the feature at another series), then call delete_time_series again.",
+                status=exc.status,
+                code=exc.code,
             ) from exc
         raise
     result = {"id": series_id, "deleted": True, "http_status": status_code}

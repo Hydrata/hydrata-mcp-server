@@ -14,6 +14,7 @@ from mcp_types import ToolAnnotations
 
 from .client import HydrataClient
 from .config import Config
+from .telemetry import ToolCallRecorder
 
 config = Config.from_env()
 client = HydrataClient(config)
@@ -236,6 +237,8 @@ mcp = FastMCP(
     ),
     lifespan=lifespan,
 )
+# TASK-3961: one mcp_tool_call line per tools/call (see telemetry.py).
+mcp.add_middleware(ToolCallRecorder())
 
 
 # ---------------------------------------------------------------------------
