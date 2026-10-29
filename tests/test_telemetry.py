@@ -404,3 +404,40 @@ async def test_tool_call_record_plain_validation_tool_error_is_still_invalid(_se
     assert result["isError"] is True
     (record,) = _records(capsys)
     assert (record["outcome"], record["http_status"]) == ("invalid", None)
+
+
+# TASK-4082: a call cancelled by client disconnect is broken only after the nginx 300 s timeout.
+class _Ctx:
+    message = type("M", (), {"name": "list_projects", "arguments": {}})()
+
+
+@pytest.mark.parametrize(("elapsed", "outcome"), [(5, "invalid"), (289, "invalid"), (290, "broken"), (299, "broken")])
+async def test_tool_call_record_cancelled_call_is_broken_only_after_290s(capsys, monkeypatch, elapsed, outcome):
+    import asyncio
+
+    real = telemetry.time.monotonic
+    start = real()
+    calls = []
+
+    def fake_monotonic():
+        calls.append(1)
+        return start if len(calls) == 1 else start + elapsed  # the start stamp, then every later read
+
+    monkeypatch.setattr(telemetry.time, "monotonic", fake_monotonic)
+
+    async def cancelled(_context):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):  # re-raised, never swallowed
+        await telemetry.ToolCallRecorder().on_call_tool(_Ctx(), cancelled)
+    (record,) = _records(capsys)
+    assert (record["outcome"], record["error_code"], record["http_status"]) == (outcome, "CANCELLED", None)
+
+
+async def test_tool_call_record_cancelled_inside_a_wrapped_error_is_found_in_the_chain():
+    import asyncio
+
+    wrapped = ToolError("Error calling tool")
+    wrapped.__cause__ = asyncio.CancelledError()
+    assert telemetry.classify_exception(wrapped, 3)[:3] == ("invalid", None, "CANCELLED")
+    assert telemetry.classify_exception(wrapped, 300)[0] == "broken"

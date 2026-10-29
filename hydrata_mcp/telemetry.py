@@ -12,8 +12,9 @@ systemd journals stdout; promtail ships it (job=hydrata-mcp, kind label) to Loki
 * OUTCOME separates our faults from working-as-designed refusals, so alerts never page on a
   refusal. ``HydrataAPIError`` is raised for EVERY 4xx and 5xx; the class alone says nothing.
   ok / refused (a 4xx, the kill-switch 503 AGENT_PAUSED, a returned ``http_status`` >= 400) /
-  invalid (unknown tool, bad arguments, a tool-side refusal with no status) / broken (any
-  other 5xx, timeout, connect error, an unexpected exception in our own code).
+  invalid (unknown tool, bad arguments, a tool-side refusal with no status, a call the client
+  cancelled in under 290 s) / broken (any other 5xx, timeout, connect error, an unexpected
+  exception in our own code, a cancelled call that ran 290 s or more).
 * NO VALUES. Never a tool result, argument value, token or presigned URL. Ids (project,
   scenario, run) are the only argument-derived fields. Argument samples are a separate,
   capped record (``kind=sample``).
@@ -21,6 +22,7 @@ systemd journals stdout; promtail ships it (job=hydrata-mcp, kind label) to Loki
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextvars
 import hashlib
@@ -50,6 +52,10 @@ ERROR_TEXT_MAX = 300
 CLIENT_TEXT_MAX = 200
 REQUEST_ID_MAX = 64
 AGENT_PAUSED = "AGENT_PAUSED"
+CANCELLED = "CANCELLED"
+# nginx proxy_read_timeout is 300 s: a call cancelled at or after this was cut off by our own
+# slowness; anything sooner is the client walking away (TASK-4082).
+CANCEL_BROKEN_AFTER_S = 290
 
 OK, REFUSED, INVALID, BROKEN = "ok", "refused", "invalid", "broken"
 
@@ -202,16 +208,20 @@ def classify_status(status: int | None, code: str | None) -> str:
     return BROKEN
 
 
-def classify_exception(exc: BaseException) -> tuple[str, int | None, str | None, str]:
+def classify_exception(exc: BaseException, duration_s: float = 0.0) -> tuple[str, int | None, str | None, str]:
     """``(outcome, http_status, error_code, message)`` for an exception raised out of a tool call.
 
     client.py raises HydrataAPIError INSIDE ``except`` without ``from``, so the original
     httpx error sits on ``__context__``; FastMCP wraps tool exceptions as ``ToolError from e``.
-    Walk the whole chain.
+    Walk the whole chain. A call cancelled by client disconnect (``CancelledError`` anywhere in
+    the chain) is ``broken`` only after ``CANCEL_BROKEN_AFTER_S`` seconds, else ``invalid``;
+    both carry error_code CANCELLED (TASK-4082).
     """
     from .client import HydrataAPIError  # late: client imports this module
 
     chain = _chain(exc)
+    if any(isinstance(e, asyncio.CancelledError) for e in chain):
+        return (BROKEN if duration_s >= CANCEL_BROKEN_AFTER_S else INVALID), None, CANCELLED, str(exc)
     api_errors = [e for e in chain if isinstance(e, HydrataAPIError)]
     message = str(api_errors[0] if api_errors else exc)
     for e in api_errors:
@@ -564,7 +574,7 @@ class ToolCallRecorder(Middleware):
         try:
             result = await call_next(context)
         except BaseException as exc:
-            outcome, status, code, message = classify_exception(exc)
+            outcome, status, code, message = classify_exception(exc, time.monotonic() - started)
             error_type = type(exc).__name__
             self._record(
                 context, tool, arguments, state, headers, started, outcome, status, code, error_type, message, 0
