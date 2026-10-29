@@ -11,11 +11,11 @@ They cover:
 - **Tool contract.** Every tool's name, description, input schema and annotations (`tests/test_tool_snapshot.py` against
   `tests/snapshots/tools.json`).
 - **Request building.** Each tool sends the expected method, path, query and body to the Hydrata API
-  (`tests/test_server.py`, `tests/test_client.py` and the per-feature files).
+  (one `tests/test_<family>.py` per tool family, `tests/test_client.py` and the per-feature files; shared helpers in `tests/helpers.py`).
 - **Response shaping.** What the tool hands back to the agent: summaries, `ui_url` links, elided presigned URLs,
   the data envelope, the relay of Hydrata's refusals (for example `CONSENT_REQUIRED` and unreviewed inputs).
 - **Credential shape gate.** Requests without exactly one accepted `Authorization` credential get `401` before reaching
-  the MCP SDK; the credential is forwarded unchanged (`tests/test_connect_token.py` and `tests/test_server.py`).
+  the MCP SDK; the credential is forwarded unchanged (`tests/test_connect_token.py` and `tests/test_app.py`).
 - **Configuration and version parity** (`tests/test_config.py`, `tests/test_version.py`).
 
 ## What they do not cover

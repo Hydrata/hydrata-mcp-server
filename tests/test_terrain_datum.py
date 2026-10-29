@@ -6,14 +6,13 @@ Hydrata's own guess exists it tells the agent to ASK the user. It also hands bac
 terrain's true elevation range untouched (the range itself is fixed in hydrata).
 """
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import BASE, CALLER_KEY, _call_as_caller, _tool_error_text, _tool_json
+from tests.helpers import BASE, CALLER_KEY, _call_as_caller, _tool_error_text, _tool_json, reload_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,10 +23,7 @@ GUESS = {"datum_guess": "orthometric_egm2008", "confidence": 0.7, "basis": "dod"
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 def _ready(**extra):

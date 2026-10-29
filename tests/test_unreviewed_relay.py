@@ -12,14 +12,13 @@ inside a call: the agent polls get_scenario, whose compact record carries
 location.
 """
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     BUILD_URL,
     SCENARIO_URL,
@@ -27,6 +26,7 @@ from tests.test_server import (
     _mock_boundary,
     _scenario,
     _tool_json,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -79,10 +79,7 @@ INVALIDATED_409 = {
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 def _mock_project():

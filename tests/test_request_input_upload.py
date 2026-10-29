@@ -5,13 +5,11 @@ person drops the file there and Hydrata converts and attaches it (authored_metho
 'uploaded by the user'), which list_inputs then shows.
 """
 
-import importlib
-
 import httpx
 import pytest
 import respx
 
-from tests.test_server import BASE, _call_as_caller, _tool_error_text, _tool_json
+from tests.helpers import BASE, _call_as_caller, _tool_error_text, _tool_json, reload_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -20,10 +18,7 @@ PROJECT = f"{BASE}/projects/42/"
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 @respx.mock

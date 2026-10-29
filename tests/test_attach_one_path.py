@@ -5,7 +5,6 @@ The MCP no longer rewrites culverts: no read-back, no attribute mapping, no re-u
 TASK-4042), no default-row POST. Hydrata's canonical conversion, judged by table shape, does the work.
 """
 
-import importlib
 import json
 import re
 from pathlib import Path
@@ -14,7 +13,7 @@ import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     EXEC_ID,
     EXEC_STATUS_URL,
@@ -24,6 +23,7 @@ from tests.test_server import (
     _exec,
     _row,
     _tool_json,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -43,10 +43,7 @@ ROUTES = {
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 async def test_attach_one_path_the_culvert_rewrite_helpers_are_gone():

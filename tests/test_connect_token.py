@@ -6,7 +6,6 @@ verifies it; this server never does). Unset, nothing changes: agent keys only.
 """
 
 import base64
-import importlib
 import json
 import time
 
@@ -14,7 +13,7 @@ import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     CALLER_BASIC,
     CALLER_KEY,
@@ -27,7 +26,7 @@ from tests.test_server import (
     _call,
     _parse,
     _rpc,
-    _server,  # noqa: F401  (_server is the shared fixture)
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -41,10 +40,7 @@ JWT = "Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJ1c2VyXzAxIn0.c2lnbm
 @pytest.fixture
 def connect_server(env_vars, monkeypatch):
     monkeypatch.setenv("HYDRATA_MCP_RESOURCE_URL", RESOURCE)
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 class TestConnectOn:

@@ -1,13 +1,21 @@
 """TASK-4056 (epic 4051 W1.5) — update_time_series / delete_time_series."""
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import BASE, CALLER_KEY, ROW_DATA, _call_as_caller, _series_row, _tool_error_text, _tool_json
+from tests.helpers import (
+    BASE,
+    CALLER_KEY,
+    ROW_DATA,
+    _call_as_caller,
+    _series_row,
+    _tool_error_text,
+    _tool_json,
+    reload_server,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -16,10 +24,7 @@ URL = f"{BASE}/projects/42/time-series/77/"
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 def _stub_hand_back():

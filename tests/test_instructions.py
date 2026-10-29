@@ -1,16 +1,13 @@
 """TASK-4064: the connect-time instructions send agents to platform tools, not off-platform."""
 
-import importlib
-
 import pytest
+
+from tests.helpers import reload_server
 
 
 @pytest.fixture
 def instructions(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv.mcp.instructions
+    return reload_server().mcp.instructions
 
 
 REQUIRED = [

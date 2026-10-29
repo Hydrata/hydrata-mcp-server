@@ -22,14 +22,13 @@ without a reason sends nothing.
 """
 
 import copy
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     BASE_MAP,
     CALLER_KEY,
@@ -42,6 +41,7 @@ from tests.test_server import (
     _tool_error_text,
     _tool_json,
     _tools_call,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -56,10 +56,7 @@ TOLERANCE = f"{BASE}/projects/42/comparison-tolerance/"
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 def _row(fid, name, **overrides):

@@ -14,7 +14,6 @@ add_observations sends 48 POSTs, list_observations reads the same 48 back.
 
 import contextlib
 import csv
-import importlib
 import json
 from pathlib import Path
 
@@ -22,7 +21,7 @@ import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     BASE_MAP,
     KEY_HEADERS,
@@ -33,6 +32,7 @@ from tests.test_server import (
     _rpc,
     _tool_error_text,
     _tool_json,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -54,11 +54,8 @@ OBSERVATION_TOOLS = {
 
 @pytest.fixture
 def _server(env_vars):
-    """The server module, reloaded after the env vars are set (as in test_server)."""
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    """The server module, reloaded after the env vars are set (as in the shared `_server` fixture)."""
+    return reload_server()
 
 
 def _layer(gn_layer=9876, **overrides):

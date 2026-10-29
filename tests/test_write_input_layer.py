@@ -5,14 +5,13 @@ a payload over ~150 KB is refused up front, naming the browser upload link; a
 Hydrata refusal reaches the agent as a refusal.
 """
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import BASE, CALLER_KEY, ORIGIN, _call_as_caller, _tool_error_text, _tool_json
+from tests.helpers import BASE, CALLER_KEY, ORIGIN, _call_as_caller, _tool_error_text, _tool_json, reload_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,10 +22,7 @@ FC = {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": 
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 def _written(kind="culvert"):

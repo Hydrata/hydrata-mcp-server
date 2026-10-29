@@ -7,14 +7,13 @@ re-upload / default-row creation (and their tests) are gone; tests/
 test_attach_one_path.py pins that. create_scenario still takes `culvert`.
 """
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     CALLER_KEY,
     EXEC_ID,
@@ -25,6 +24,7 @@ from tests.test_server import (
     _exec,
     _row,
     _tool_json,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -34,11 +34,8 @@ CULVERTS = f"{BASE}/projects/42/culverts/"
 
 @pytest.fixture
 def _server(env_vars):
-    """The server module, reloaded after the env vars are set (as in test_server)."""
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    """The server module, reloaded after the env vars are set (as in the shared `_server` fixture)."""
+    return reload_server()
 
 
 async def _attach(srv, **extra):

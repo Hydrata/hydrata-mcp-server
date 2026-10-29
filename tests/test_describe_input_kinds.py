@@ -1,12 +1,10 @@
 """TASK-4057 (epic 4051 W1.6) — describe_input_kinds wraps Hydrata's generated input-kinds endpoint."""
 
-import importlib
-
 import httpx
 import pytest
 import respx
 
-from tests.test_server import BASE, CALLER_KEY, _call_as_caller, _tool_error_text, _tool_json
+from tests.helpers import BASE, CALLER_KEY, _call_as_caller, _tool_error_text, _tool_json, reload_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -29,10 +27,7 @@ PAYLOAD = {
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 @respx.mock

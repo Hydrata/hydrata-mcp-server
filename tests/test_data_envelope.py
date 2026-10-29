@@ -17,7 +17,6 @@ Negative control: HYDRATA_MCP_DATA_ENVELOPE=off (the harness's negative-control
 switch) returns the canary bare — so the assertions here can fail.
 """
 
-import importlib
 import json
 import re
 
@@ -25,7 +24,7 @@ import httpx
 import pytest
 import respx
 
-from tests.test_server import (
+from tests.helpers import (
     BASE,
     BASE_MAP,
     CALLER_KEY,
@@ -47,6 +46,7 @@ from tests.test_server import (
     _scenario,
     _schema_args,
     _tools_call,
+    reload_server,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -82,22 +82,16 @@ def _assert_enveloped(result, canary=CANARY):
 
 @pytest.fixture
 def _server(env_vars):
-    """The server module, reloaded after the env vars are set (as in test_server)."""
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    """The server module, reloaded after the env vars are set (as in the shared `_server` fixture)."""
+    return reload_server()
 
 
 @pytest.fixture
 def _no_envelope_server(env_vars, monkeypatch):
     monkeypatch.setenv("HYDRATA_MCP_DATA_ENVELOPE", "off")
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    yield srv
+    yield reload_server()
     monkeypatch.delenv("HYDRATA_MCP_DATA_ENVELOPE")
-    importlib.reload(srv)
+    reload_server()
 
 
 def _mock_project(name=CANARY, owner="stranger"):

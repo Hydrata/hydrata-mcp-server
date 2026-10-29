@@ -1,24 +1,20 @@
 """TASK-4055 (epic 4051 W1.4) — authored_method travels out on agent writes and back on the read tools."""
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
+from tests.helpers import BASE, ROW_DATA, _call_as_caller, _series_args, _series_row, reload_server
 from tests.test_data_envelope import CANARY, CLOSE, OPEN, _assert_enveloped
-from tests.test_server import BASE, ROW_DATA, _call_as_caller, _series_args, _series_row
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 @respx.mock
