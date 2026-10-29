@@ -1,4 +1,4 @@
-"""Hydrata MCP Server — 28 hand-crafted tools for ANUGA flood simulation."""
+"""Hydrata MCP Server — 29 hand-crafted tools for ANUGA flood simulation."""
 
 import asyncio
 import base64
@@ -310,6 +310,8 @@ DATA_TEXT_KEYS = frozenset({
     "name", "title", "row_title", "description", "abstract", "location_name", "source", "units",
     # who wrote it: usernames, the agent key's name, the agent's self-declared client
     "owner_username", "created_by_username", "archived_by_username", "grant", "client",
+    # how an agent says it made an input (free text it wrote)
+    "authored_method",
     # layer names (GeoNode derives them from the uploaded file)
     "gn_layer_name", "gn_layer_hillshade_name", "dataset_alternate", "alternate", "layer",
     # run text that quotes layer content (an ANUGA error names a boundary tag)
@@ -386,22 +388,32 @@ mcp = FastMCP(
     version=PACKAGE_VERSION,
     instructions=(
         "Hydrata is a geospatial hydraulic modeling platform. Use these tools to "
-        "manage ANUGA flood simulation projects, scenarios, and runs. "
+        "manage ANUGA flood simulation projects, scenarios, and runs. Use the "
+        "platform's tools first; do not look for another way to move data. "
         "To see what a project already holds, use list_inputs and list_time_series. "
         "A typical workflow is: list_projects → get_scenario → start_simulation → "
         "poll get_run_status until complete → get_run for results. "
-        "To author a project from your own files: create_project → "
-        "presign_terrain_upload → PUT the GeoTIFF yourself (curl --upload-file) → "
-        "finalize_terrain_upload → get_terrain (polls until ready) → for each "
-        "input GeoJSON (boundary, friction, inflow, rainfall, building, mesh_region, culvert): "
-        "multipart-POST it yourself to <origin>/api/v2/uploads/upload/ with the "
-        "same agent key (-H 'Authorization: Bearer hk_...'), then attach_input_layer "
-        "with the execution_id → "
-        "create_time_series for each rain gauge / hydrograph → create_scenario "
-        "(reports the mesh-triangle estimate from the detail) → build_scenario "
+        "To build a project: create_project → terrain → inputs → time series → "
+        "create_scenario (reports the mesh-triangle estimate) → build_scenario "
         "(polls computed_status to built; asks for confirm=true above 100,000 "
         "triangles; returns the API's 422 MESH_TOO_LARGE body verbatim) → "
-        "start_simulation. No tool accepts file contents; the agent moves the bytes. "
+        "start_simulation. "
+        "TERRAIN: never fetch your own terrain where a platform source covers the area. "
+        "Call list_terrain_sources, then create_terrain_from_source, then get_terrain. "
+        "If no source covers the site, the user uploads their own DEM in the project map; "
+        "you cannot move file bytes (presign_terrain_upload and finalize_terrain_upload are "
+        "for a client that can). Ask the user which height datum their levels are in, and "
+        "pass the answer as vertical_datum_declared. Never relay the datum Hydrata inferred "
+        "as fact. "
+        "INPUTS: call describe_input_kinds for the formats. Send vector inputs (boundary, "
+        "friction, inflow, rainfall, building, mesh_region, culvert) inline with "
+        "write_input_layer. For a file above the inline cap, call request_input_upload and "
+        "give the user the link, so they drop the file in their browser. "
+        "The design storm, the catchment and the mesh region are supplied by you or the user. "
+        "Say how you made them with authored_method. "
+        "TIME SERIES: create_time_series for each rain gauge or hydrograph; fix mistakes with "
+        "update_time_series or delete_time_series. Rainfall must be rainfall AFTER losses "
+        "(rainfall excess), because the simulation applies no losses. "
         "THE HUMAN REVIEWS: every tool that changes something returns `ui_url` (a "
         "link that opens the project map on the thing that changed), a `summary` of "
         "numbers the engineer can check, and `say_to_user` (what to tell them). Relay "
@@ -420,6 +432,8 @@ mcp = FastMCP(
         "scenario's review screen until the user reviews them — you cannot. Give "
         "them the link, then poll get_scenario every 30-60 s (its unreviewed_inputs "
         "list empties as they review) and build again; never loop on build. "
+        "Polling tools stop after a short ceiling: if a result says timed_out, call it again. "
+        "get_run reports the state of the full time series (sww) download. "
         "INFLOWS: never invent an inflow location. Take it from the study's files, "
         "or give the user the ui_url to draw it in the map, and tell them the inflow "
         "is unreviewed until they have checked where it is. "
@@ -455,7 +469,12 @@ TOOL_ANNOTATIONS = {
     "get_run": ("Get a run's full record", True, False, True),
     "list_runs": ("List a project's runs", True, False, True),
     "get_terrain": ("Wait for a terrain import", True, False, True),
+    # TASK-4059: Hydrata's own terrain sources (GA 5 m, Copernicus), listed then fetched.
+    "list_terrain_sources": ("List the terrain Hydrata can fetch for a site", True, False, True),
+    "create_terrain_from_source": ("Fetch terrain from a Hydrata source", False, False, False),
     "list_inputs": ("List a project's input layers", True, False, True),
+    # TASK-4057: the input formats, generated by Hydrata from its own models.
+    "describe_input_kinds": ("Describe the input layer formats", True, False, True),
     "list_time_series": ("List a project's time series", True, False, True),
     "start_simulation": ("Start a simulation run (spends compute)", False, False, False),
     "cancel_run": ("Cancel a run", False, True, True),
@@ -464,8 +483,13 @@ TOOL_ANNOTATIONS = {
     "presign_terrain_upload": ("Get a terrain upload URL", False, False, False),
     "finalize_terrain_upload": ("Register an uploaded terrain", False, False, False),
     "create_time_series": ("Create a time series", False, False, False),
-    # TASK-3641: not idempotent — a culvert attach re-uploads its mapped culverts.
+    # TASK-4056: an agent corrects or removes its own series.
+    "update_time_series": ("Correct a time series", False, False, True),
+    "delete_time_series": ("Delete a time series", False, True, True),
     "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, False),
+    # TASK-4052: writes the layer's features straight into the project (replaces the kind's layer).
+    "write_input_layer": ("Write a project input layer from GeoJSON", False, False, False),
+    "request_input_upload": ("Get a browser upload link for a big input layer", True, False, True),
     "create_scenario": ("Create a draft scenario", False, False, False),
     "build_scenario": ("Build a scenario's mesh and package", False, False, False),
     # TASK-3812 (epic 3801): flood observations. delete_observation is the second
@@ -656,14 +680,14 @@ def _scenario_record(detail) -> dict:
 # Bounded polling — ONE loop for every tool that waits on the platform
 # (get_terrain, attach_input_layer, build_scenario).
 #
-# Why bounded, and why 240/280: prod's nginx proxies /mcp/ with a 300 s
+# Why bounded, and why 180/200 (TASK-4063): prod's nginx proxies /mcp/ with a 300 s
 # proxy_read_timeout (geonode-https.j2). A tool call cut by the proxy returns
 # NOTHING to the agent, so a call that stops early, reports `timed_out` with
 # the last status and lets the agent re-call is strictly better than a longer
 # one. Values above the ceiling are clamped rather than refused.
 # ---------------------------------------------------------------------------
-POLL_DEFAULT_TIMEOUT_SECONDS = 240
-POLL_MAX_TIMEOUT_SECONDS = 280
+POLL_DEFAULT_TIMEOUT_SECONDS = 180
+POLL_MAX_TIMEOUT_SECONDS = 200
 
 
 def _status_of(record) -> str | None:
@@ -713,7 +737,7 @@ async def _poll_until(fetch, is_terminal, timeout_seconds, poll_interval_seconds
 # happened, so a lookup error leaves `ui_url` null and says so in
 # `hand_back_error` rather than hiding the result.
 # ---------------------------------------------------------------------------
-HAND_BACK_PARAM_ORDER = ("panel", "layer", "scenario", "run")
+HAND_BACK_PARAM_ORDER = ("panel", "layer", "scenario", "run", "kind")
 
 
 def _ui_origin() -> str:
@@ -864,7 +888,8 @@ async def get_scenario(
     run. `latest_run_is_valid` is false after any edit since the last build.
     `unreviewed_inputs` lists the inputs written by an agent key that the user
     has not reviewed at their current content (kind, layer_id, title,
-    feature_count, the grant that wrote it, `reopened` when an edit undid an
+    feature_count, the grant that wrote it, `authored_method` (the agent's own account of
+    how it made the input, when it gave one), `reopened` when an edit undid an
     earlier input review): while it is not empty, build and run are refused
     UNREVIEWED_INPUTS. Only the user reviews, in the browser — poll this tool
     every 30-60 s after giving them the review link.
@@ -905,15 +930,10 @@ async def get_scenario(
 @_tool("start_simulation")
 async def start_simulation(
     scenario_id: Annotated[int, "The scenario ID to run"],
-    compute_backend: Annotated[
-        str,
-        "Compute backend: 'local' (Celery), 'ec2' (dedicated instance), "
-        "or 'batch' (AWS Batch spot, cheapest). Default: 'local'",
-    ] = "local",
     consent_timeout_seconds: Annotated[
         int,
         "When the run needs the person's consent (CONSENT_REQUIRED), how long this "
-        "call keeps polling the run for their click before it returns (ceiling 280). "
+        "call keeps polling the run for their click before it returns (ceiling 200). "
         "Default 0: return the consent link at once, so you can give it to them — "
         "they cannot press a button they have not been shown.",
     ] = 0,
@@ -952,7 +972,7 @@ async def start_simulation(
     """
     body, status_code = await client.post(
         f"/scenarios/{scenario_id}/run/",
-        json={"compute_backend": compute_backend},
+        json={},
         raise_for_status=False,
     )
     if status_code == 409 and isinstance(body, dict) and body.get("error_code") == CONSENT_REQUIRED:
@@ -972,7 +992,7 @@ async def start_simulation(
     await _hand_back(
         result, result.get("project"),
         {"run_id": run_id, "scenario_id": scenario_id, "status": result.get("status"),
-         "compute_backend": result.get("compute_backend", compute_backend),
+         "compute_backend": result.get("compute_backend"),
          "vcpu_hours_estimate": result.get("vcpu_hours_estimate")},
         f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}). "
         "Open the link to watch it; the results appear on the map when it completes.",
@@ -1099,6 +1119,30 @@ def _run_phase(status_record: dict) -> str:
     return status
 
 
+async def _sww_summary(run_id, run) -> dict:
+    """`{state, size_bytes, ui_url}` for a run's full time series (TASK-4062).
+
+    Only those keys are copied from the API answer, so a download link could
+    never ride along. Best effort: a failed lookup gives `state: null` and a
+    short `error`, never a failed get_run.
+    """
+    summary: dict = {"state": None, "size_bytes": None, "ui_url": None}
+    try:
+        body = await client.get(f"/runs/{run_id}/sww/")
+        if isinstance(body, dict):
+            summary["state"] = body.get("state")
+            summary["size_bytes"] = body.get("size_bytes")
+    except Exception as exc:
+        summary["error"] = f"could not check the time series: {exc}"
+        return summary
+    try:
+        base_map = await _project_base_map(run.get("project"))
+        summary["ui_url"] = _ui_url(base_map, panel="results", scenario=run.get("scenario"))
+    except Exception:
+        pass
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Tool 6: get_run
 # ---------------------------------------------------------------------------
@@ -1116,9 +1160,17 @@ async def get_run(
     The presigned `s3_*_url` download links are ELIDED — each is a 6-hour
     capability and no tool relays one. The results stay viewable through the
     `gn_layer_*` entries (published WMS layers on the project's map).
+
+    `sww` reports the run's full time series (the raw ANUGA output): `state`
+    (available, not_kept, archived or restoring), `size_bytes`, and a `ui_url`
+    to the Results panel where the person downloads it (or requests a restore
+    of an archived one and is emailed when it is ready). The download link
+    itself is never returned.
     """
-    data = await client.get(f"/runs/{run_id}/")
-    return json.dumps(_elide_presigned(data), indent=2)
+    data = _elide_presigned(await client.get(f"/runs/{run_id}/"))
+    if isinstance(data, dict):
+        data["sww"] = await _sww_summary(run_id, data)
+    return json.dumps(data, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1309,6 +1361,11 @@ async def presign_terrain_upload(
 ) -> str:
     """Step 1 of a terrain import: get a presigned S3 PUT URL for a GeoTIFF DEM.
 
+    Only for a client that has a shell and an agent key AND a DEM no platform
+    source covers. A connector agent with no shell (claude.ai) uses
+    list_terrain_sources then create_terrain_from_source instead, or asks the
+    user to upload their own DEM in the map.
+
     The import needs a launch-level agent key: a draft key can presign, but
     finalize_terrain_upload (and the multipart fallback below) answer a read or
     draft key 403 AGENT_LEVEL_INSUFFICIENT — check the key before moving bytes.
@@ -1355,6 +1412,13 @@ async def finalize_terrain_upload(
         "progress record is reused; the API tolerates its absence)",
     ] = "",
     title: Annotated[str, "Terrain title (default: the filename without .tif)"] = "",
+    vertical_datum_declared: Annotated[
+        str,
+        "TASK-4061: the datum the user SAYS the heights are on: `ahd` (Australian Height "
+        "Datum), `orthometric_egm2008` or `ellipsoid`. Pass it only when the user told you; "
+        "if they did not, ask them, do not guess. Stored as the terrain's declared datum, "
+        "which beats Hydrata's own inference. Omit when unknown.",
+    ] = "",
 ) -> str:
     """Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.
 
@@ -1370,9 +1434,18 @@ async def finalize_terrain_upload(
     means no object is at `staging_key`: the PUT did not land (check its status
     code and Content-Type) — do not retry finalize until it has.
     """
+    payload = {"staging_key": staging_key, "process_id": process_id, "title": title}
+    declared = (vertical_datum_declared or "").strip().lower()
+    if declared:
+        if declared not in TERRAIN_DECLARED_DATUMS:
+            raise ToolError(
+                f"vertical_datum_declared must be one of {', '.join(TERRAIN_DECLARED_DATUMS)} "
+                f"(got {vertical_datum_declared!r}). If the user has not said which datum the "
+                "heights are on, ask them and leave this out."
+            )
+        payload["vertical_datum_declared"] = declared
     body, status_code = await client.post(
-        f"/projects/{project_id}/terrain/upload/finalize/",
-        json={"staging_key": staging_key, "process_id": process_id, "title": title},
+        f"/projects/{project_id}/terrain/upload/finalize/", json=payload,
     )
     result = json.loads(_post_result(body, status_code))
     await _hand_back(
@@ -1389,6 +1462,57 @@ async def finalize_terrain_upload(
 # ---------------------------------------------------------------------------
 # Tool 13: get_terrain
 # ---------------------------------------------------------------------------
+TERRAIN_DECLARED_DATUMS = ("ahd", "orthometric_egm2008", "ellipsoid")
+
+
+def _datum_name(value) -> str | None:
+    """A datum as a short string: a plain string, a `describe()` dict, or an inference dict."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        for key in ("value", "label", "name", "datum_guess"):
+            if isinstance(value.get(key), str) and value[key].strip():
+                return value[key].strip()
+    return None
+
+
+def _terrain_datum(record: dict) -> dict:
+    """TASK-4061 (D9): `{declared, recorded, inferred, effective, effective_source}` for a terrain.
+
+    Precedence recorded > declared > inferred. `recorded` is what a person recorded on the
+    terrain (an Editor's entry); `declared` what was said at upload or by the terrain source;
+    `inferred` is Hydrata's own guess from the raster, which is NOT a fact.
+    """
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    recorded_row = record.get("recorded_vertical_datum")
+    recorded = _datum_name(metadata.get("vertical_datum_recorded")) or (
+        _datum_name(recorded_row) if isinstance(recorded_row, dict) and recorded_row.get("source") == "editor"
+        else None
+    )
+    declared = _datum_name(metadata.get("vertical_datum_declared"))
+    if declared is None and isinstance(recorded_row, dict) and recorded_row.get("source") != "editor":
+        declared = _datum_name(recorded_row)  # a source stamp or embedded tag counts as declared
+    inferred_raw = record.get("vertical_datum")
+    inferred = None
+    if isinstance(inferred_raw, dict):
+        guess = _datum_name(inferred_raw.get("datum_guess"))
+        if guess and guess != "unknown":  # 'unknown' = Hydrata could not tell, not a guess
+            inferred = {"datum": guess, "confidence": inferred_raw.get("confidence"),
+                        "basis": inferred_raw.get("basis")}
+    elif _datum_name(inferred_raw):
+        inferred = {"datum": _datum_name(inferred_raw), "confidence": None, "basis": None}
+    if recorded:
+        effective, source = recorded, "recorded"
+    elif declared:
+        effective, source = declared, "declared"
+    elif inferred:
+        effective, source = inferred["datum"], "inferred"
+    else:
+        effective, source = None, None
+    return {"declared": declared, "recorded": recorded, "inferred": inferred,
+            "effective": effective, "effective_source": source}
+
+
 @_tool("get_terrain")
 async def get_terrain(
     project_id: Annotated[int, "The project ID"],
@@ -1400,7 +1524,7 @@ async def get_terrain(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling before it returns `timed_out` "
-        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
@@ -1472,6 +1596,9 @@ async def get_terrain(
         "id", "bbox_wgs84", "dem_elev_min", "dem_elev_max", "nodata_fraction",
         "native_crs", "native_resolution_m",
     )}
+    datum = _terrain_datum(record)
+    result["vertical_datum"] = datum
+    summary["vertical_datum"] = datum
     if outcome == "ready":
         nodata = record.get("nodata_fraction")
         nodata = f"{nodata:.1%}" if isinstance(nodata, (int, float)) else "an unknown share"
@@ -1480,6 +1607,17 @@ async def get_terrain(
             f"{record.get('dem_elev_max')} m, {nodata} of cells without data, native CRS "
             f"{record.get('native_crs')}. Open the link and check it covers the whole site."
         )
+        if datum["effective_source"] == "inferred":
+            say += (
+                f" Hydrata's own check guesses the heights are on {datum['effective']}, but that is "
+                "a guess, not a fact. Ask the user which vertical datum their levels are in "
+                "(for example AHD, EGM2008 or ellipsoidal) before you rely on it, and do not tell "
+                "them it is confirmed."
+            )
+        elif datum["effective"]:
+            say += f" Heights are on {datum['effective']} ({datum['effective_source']})."
+        else:
+            say += " No vertical datum is recorded: ask the user which datum their levels are in."
     elif outcome == "error":
         say = "The terrain import failed; the GeoTIFF needs fixing and uploading again."
     elif outcome == "not_found":
@@ -1493,6 +1631,190 @@ async def get_terrain(
     # TASK-3187 — this tool composes its own envelope, so elide the COMPOSED
     # result; the terrain record carries no signed key today (future-proofing).
     return json.dumps(_elide_presigned(result), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4059 (W3.1, epic 4051) — Hydrata's own terrain sources.
+#
+# Wraps two EXISTING routes (no hydrata change): GET terrain/sources/?bbox= and
+# POST terrain/create-from-bbox/. An agent that needs a DEM for a site asks
+# Hydrata what it can fetch (GA 5 m LiDAR where it has data, Copernicus 30 m
+# elsewhere) instead of pulling its own from a bucket with operator credentials.
+# ---------------------------------------------------------------------------
+def _bbox_args(bbox) -> list[float] | None:
+    """`[min_lon, min_lat, max_lon, max_lat]` as four finite numbers, west < east, south < north, else None."""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in bbox):
+        return None
+    if not (bbox[0] < bbox[2] and bbox[1] < bbox[3]):
+        return None
+    return [float(v) for v in bbox]
+
+
+_BBOX_REFUSAL = (
+    "bbox must be [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees (4 numbers, "
+    "west < east, south < north). Nothing was sent."
+)
+
+
+def _source_line(row: dict) -> str:
+    cap = row.get("cap") or {}
+    line = (
+        f"{row.get('name')} ({row.get('resolution_m'):g} m, covers {row.get('coverage_pct'):.0f}% of the box, "
+        f"heights on {row.get('vertical_datum')}, licence {row.get('licence')})"
+        if isinstance(row.get("resolution_m"), (int, float)) and isinstance(row.get("coverage_pct"), (int, float))
+        else f"{row.get('name')}"
+    )
+    if cap.get("state") != "ok":
+        line += f" - too large: {cap.get('message')}"
+    return line
+
+
+@_tool("list_terrain_sources")
+async def list_terrain_sources(
+    project_id: Annotated[int, "The project ID (the key needs Contributor rights on it)"],
+    bbox: Annotated[
+        list[float],
+        "The site as [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees, e.g. "
+        "[149.105, -35.285, 149.135, -35.255] for Sullivans Creek, Canberra.",
+    ],
+) -> str:
+    """List the terrain Hydrata can fetch for a site, finest resolution first.
+
+    Ask this BEFORE fetching or uploading your own DEM. Each source row has `key`,
+    `name`, `resolution_m`, `coverage_pct` (share of your box it has data for),
+    `cap` (`state` ok | too_large, the area and the maximum, and a plain `message`
+    when too large), `vertical_datum`, `credit` and `licence`. Only sources with some
+    coverage appear: Copernicus GLO-30 (30 m, worldwide) always, and finer regional
+    LiDAR such as Geoscience Australia 5 m where it has data. Pick one whose `cap.state`
+    is ok and pass its `key` to create_terrain_from_source. Tell the user which source
+    you chose, its resolution, licence and datum (`say_to_user` says it for you).
+    """
+    box = _bbox_args(bbox)
+    if box is None:
+        raise HydrataAPIError(_BBOX_REFUSAL)
+    data = await client.get(
+        f"/projects/{project_id}/terrain/sources/", params={"bbox": ",".join(f"{v:g}" for v in box)}
+    )
+    rows = (data.get("sources") if isinstance(data, dict) else None) or []
+    result: dict = {
+        "outcome": "listed" if rows else "no_coverage",
+        "bbox": box,
+        "count": len(rows),
+        "sources": rows,
+    }
+    usable = [row for row in rows if (row.get("cap") or {}).get("state") == "ok"]
+    if not rows:
+        say = "No terrain source Hydrata offers covers that area. Check the box is in WGS84 degrees, or upload your own GeoTIFF."
+    elif not usable:
+        say = "Hydrata has terrain for that area but the box is too large for every source: " + "; ".join(
+            _source_line(row) for row in rows) + ". Draw a smaller box."
+    else:
+        best = usable[0]
+        say = (
+            f"Hydrata can fetch terrain for that area. Finest available: {_source_line(best)}. "
+            + (f"Others: {'; '.join(_source_line(r) for r in rows if r is not best)}. " if len(rows) > 1 else "")
+            + "Tell the user which source you would use and why, then call create_terrain_from_source."
+        )
+    summary = {
+        "bbox": box,
+        "sources": [
+            {key: row.get(key) for key in ("key", "name", "resolution_m", "coverage_pct", "vertical_datum", "licence")}
+            | {"cap_state": (row.get("cap") or {}).get("state")}
+            for row in rows
+        ],
+    }
+    await _hand_back(result, project_id, summary, say, panel="inputs")
+    return json.dumps(result, indent=2)
+
+
+@_tool("create_terrain_from_source")
+async def create_terrain_from_source(
+    project_id: Annotated[int, "The project ID (the key needs Contributor rights; a launch-level key since the import can start AWS Batch)"],
+    bbox: Annotated[list[float], "The site as [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees"],
+    source: Annotated[str, "A source `key` from list_terrain_sources, e.g. `ga_lidar_5m` or `copernicus_glo30`"],
+    title: Annotated[str, "Terrain title (default: the source name and box)"] = "",
+    timeout_seconds: Annotated[
+        int,
+        "How long this call keeps polling the import before it returns `timed_out` (default 180, "
+        "ceiling 200). 0 = start it and return at once; then call get_terrain.",
+    ] = POLL_DEFAULT_TIMEOUT_SECONDS,
+    poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
+) -> str:
+    """Have Hydrata fetch a terrain from one of its own sources, then wait for the import (like get_terrain).
+
+    Use a `key` from list_terrain_sources. Hydrata fetches, reprojects and publishes the
+    DEM and seeds the project's default input rows; the DEM's datum is stamped by the source.
+    The result is get_terrain's envelope (`outcome` ready | error | timed_out, `terrain`,
+    `polls`) plus `terrain_source`: the source's `key`, `name`, `resolution_m`, `licence`,
+    `credit` and `vertical_datum`. `timed_out` is normal for a large area: keep calling
+    get_terrain(project_id, terrain_id). A refusal (the box is over the source's size cap,
+    the source has no data there, an unknown source) comes back as `outcome: refused`
+    with the reason in `say_to_user` and nothing is created.
+    """
+    box = _bbox_args(bbox)
+    if box is None:
+        raise HydrataAPIError(_BBOX_REFUSAL)
+    payload: dict = {"source": source, "bbox": box}
+    if title:
+        payload["title"] = title
+    body, status_code = await client.post(
+        f"/projects/{project_id}/terrain/create-from-bbox/", json=payload, raise_for_status=False
+    )
+    body = body if isinstance(body, dict) else {"response": body}
+    if status_code >= 400:
+        if status_code >= 500:
+            raise HydrataAPIError(f"POST create-from-bbox failed: {status_code} {body}")
+        reason = body.get("detail") or body.get("error_code") or f"HTTP {status_code}"
+        result = {
+            "outcome": "refused", "http_status": status_code, "error_code": body.get("error_code"),
+            "detail": _data(str(reason)),
+        }
+        await _hand_back(
+            result, project_id, {"source": source, "bbox": box, "reason": result["detail"]},
+            f"I did not fetch terrain: {_data(str(reason))} Nothing was created.", panel="inputs",
+        )
+        return json.dumps(result, indent=2)
+    terrain_id = body.get("id")
+    # One poll helper: get_terrain IS it (module functions stay plain callables).
+    polled = json.loads(await get_terrain(project_id, terrain_id, timeout_seconds, poll_interval_seconds))
+    # The registry row for what was fetched: resolution, licence, credit, datum. Best effort.
+    row: dict = {}
+    try:
+        listing = await client.get(
+            f"/projects/{project_id}/terrain/sources/", params={"bbox": ",".join(f"{v:g}" for v in box)}
+        )
+        row = next((r for r in (listing.get("sources") or []) if r.get("key") == source), {})
+    except Exception as exc:
+        polled["terrain_source_error"] = f"could not read the source details: {exc}"
+    record = polled.get("terrain") if isinstance(polled.get("terrain"), dict) else {}
+    terrain_source = {
+        "key": source,
+        "name": row.get("name"),
+        "resolution_m": row.get("resolution_m"),
+        "licence": row.get("licence"),
+        "credit": row.get("credit"),
+        "vertical_datum": row.get("vertical_datum") or record.get("recorded_vertical_datum"),
+    }
+    polled["terrain_source"] = terrain_source
+    polled["terrain_id"] = terrain_id
+    summary = dict(polled.get("summary") or {})
+    summary.update(terrain_source=terrain_source, terrain_id=terrain_id)
+    outcome = polled.get("outcome")
+    credit = (
+        f"Source: {terrain_source['name'] or source}, {terrain_source['resolution_m']} m, heights on "
+        f"{terrain_source['vertical_datum']}, licence {terrain_source['licence']}."
+    )
+    if outcome == "ready":
+        say = f"The terrain is ready. {credit} {polled.get('say_to_user', '')}".strip()
+    elif outcome == "error":
+        say = f"The terrain fetch failed. {credit} Try another source or upload a GeoTIFF."
+    else:
+        say = f"The terrain fetch is under way ({polled.get('status')}). {credit} I am still waiting on it."
+    polled["summary"] = summary
+    polled["say_to_user"] = say
+    return json.dumps(_elide_presigned(polled), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -1542,9 +1864,8 @@ INPUT_LAYER_ROUTES = {
     "building": "buildings",
     "mesh_region": "mesh-regions",
     # TASK-3641 (epic 3585): Hydraulic Structures. Unlike the six above, the
-    # terrain chain seeds NO culvert row, so attach_input_layer creates the
-    # default 'Culvert 01' on demand (POST, then waits for the layer factory
-    # to finish BEFORE its PATCH, so the factory cannot overwrite gn_layer).
+    # terrain chain seeds NO culvert row: write_input_layer makes it on demand
+    # (TASK-4052); attach_input_layer reports no_default_row without one.
     "culvert": "culverts",
 }
 # TASK-3586: the building-footprint layer was called 'structure' before the
@@ -1658,6 +1979,11 @@ async def create_time_series(
         "hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end "
         "the series with a 0 row instead, unless holding is really intended.",
     ] = False,
+    method: Annotated[
+        str,
+        "One short phrase saying how you got these numbers (e.g. 'read off the council hydrograph PDF', "
+        "'scaled the 1% AEP peak'). Shown to the person who reviews the inputs.",
+    ] = "",
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
 
@@ -1700,6 +2026,8 @@ async def create_time_series(
         "hold_last_value": hold_last_value,
         "data": data,
     }
+    if method.strip():
+        payload["authored_method"] = method.strip()   # TASK-4055: shown on the review screen
     body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
     if not isinstance(body, dict):
         return _post_result(body, status_code)
@@ -1738,6 +2066,113 @@ async def create_time_series(
     )
     if server_summary:
         result["series_summary"] = server_summary   # Hydrata's numbers, computed from the true timestamps
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4056 (epic 4051 W1.5) — correct or remove a time series the agent made.
+# ---------------------------------------------------------------------------
+@_tool("update_time_series")
+async def update_time_series(
+    project_id: Annotated[int, "The project ID"],
+    series_id: Annotated[int, "The time series id (from list_time_series or create_time_series)"],
+    name: Annotated[str, "New name (a rainfall polygon binds to its gauge by this exact name)"] = "",
+    data: Annotated[
+        dict | None,
+        "Replacement rows: {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", \"value\": <number>}, ...]}. "
+        "Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow "
+        "values and an all-zero rain or flow series.",
+    ] = None,
+    description: Annotated[str, "New description"] = "",
+    units: Annotated[str, "New units (must match the series_type, as in create_time_series)"] = "",
+    series_type: Annotated[str, "New series_type: hyetograph, hydrograph, stage or generic"] = "",
+    hold_last_value: Annotated[bool | None, "Set true only when the last value is meant to be held"] = None,
+    method: Annotated[
+        str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
+) -> str:
+    """Correct a time series you created (PATCH; only the fields you pass change).
+
+    Use it to fix a series instead of leaving a wrong one behind. The same
+    rules as create_time_series apply to new rows (units match the type, a
+    hydrograph or hyetograph ends at 0 unless `hold_last_value`, at least 2
+    rows, no negative rain or flow, not all zero) and Hydrata refuses with the
+    reason in plain words. A series already used by a built scenario changes the
+    scenario: it needs a rebuild and the user reviews it again. Returns a compact
+    record, not the rows.
+    """
+    changes: dict = {}
+    if name:
+        changes["name"] = name
+    if description:
+        changes["description"] = description
+    if units:
+        changes["units"] = units
+    if series_type:
+        if series_type not in SERIES_TYPES:
+            raise ToolError(f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}")
+        changes["series_type"] = series_type
+    if hold_last_value is not None:
+        changes["hold_last_value"] = hold_last_value
+    if data is not None:
+        _validate_row_data(data)
+        changes["data"] = data
+    if method.strip():
+        changes["authored_method"] = method.strip()
+    if not changes or set(changes) == {"authored_method"}:
+        raise ToolError("Nothing to change: pass at least one of name, data, description, units, series_type, "
+                        "hold_last_value.")
+    body, status_code = await client.patch(f"/projects/{project_id}/time-series/{series_id}/", json=changes)
+    if not isinstance(body, dict):
+        return _post_result(body, status_code)
+    landed = body.get("data")
+    rows = landed.get("rowData") if isinstance(landed, dict) and isinstance(landed.get("rowData"), list) else []
+    result = {
+        "id": body.get("id", series_id),
+        "name": body.get("name"),
+        "series_type": body.get("series_type"),
+        "units": body.get("units"),
+        "timezone": body.get("timezone"),
+        "row_count": len(rows),
+        "authored_method": body.get("authored_method"),
+        "http_status": status_code,
+    }
+    summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
+    await _hand_back(
+        result, project_id,
+        {"series_id": result["id"], "name": result["name"], "changed_fields": sorted(k for k in changes if k != "authored_method")},
+        f"Time series '{_data(result['name'])}' is updated ({', '.join(sorted(changes))}). Open the link to "
+        "check its shape in the Hydrology panel; scenarios that use it need a rebuild.",
+        panel="hydrology",
+    )
+    if summary:
+        result["series_summary"] = summary
+    return json.dumps(result, indent=2)
+
+
+@_tool("delete_time_series")
+async def delete_time_series(
+    project_id: Annotated[int, "The project ID"],
+    series_id: Annotated[int, "The time series id"],
+) -> str:
+    """Delete a time series (cannot be undone). Needs the Manager role on the project.
+
+    A series still used by a feature of an inflow, rainfall or boundary layer is
+    refused (409) and the refusal names the layer and the feature that use it:
+    detach it there (or point that feature at another series), then call again.
+    A series that no feature uses is deleted.
+    """
+    try:
+        status_code = await client.delete(f"/projects/{project_id}/time-series/{series_id}/")
+    except HydrataAPIError as exc:
+        if "returned 409" in str(exc):
+            raise HydrataAPIError(
+                f"{exc} Nothing was deleted. Detach the series from that feature in the map "
+                "(or point the feature at another series), then call delete_time_series again.") from exc
+        raise
+    result = {"id": series_id, "deleted": True, "http_status": status_code}
+    await _hand_back(
+        result, project_id, {"series_id": series_id, "deleted": True},
+        f"Time series {series_id} is deleted.", panel="hydrology")
     return json.dumps(result, indent=2)
 
 
@@ -1821,300 +2256,6 @@ def _pick_default_row(rows: list, kind: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# TASK-3641 (W2b, epic 3585) — culvert attribute mapping.
-#
-# The build reads each culvert's details from the layer's columns BY THEIR D10
-# NAMES (hydrata gn_anuga/models/culvert.py CULVERT_FIELDS) and refuses a
-# culvert missing any it needs; the true-scale style draws barrels from them.
-# An agent's GeoJSON rarely uses those names (the Towradgi bundle says
-# `shape: pipe`, `anuga_label`, `barrel_manning`), and attach_input_layer
-# never sees the file. So for kind=culvert the tool reads the uploaded
-# features back over WFS, renames recognised attributes onto the D10 fields,
-# fills the D10 defaults (the map's WFS-T inserts send explicit NULLs, so the
-# layer must carry them, not a column DEFAULT), keeps every other attribute
-# verbatim, and re-uploads that as the culvert layer. A layer that already
-# reads as D10 with defaults filled is attached as uploaded.
-# ---------------------------------------------------------------------------
-CULVERT_FIELDS = (
-    "name", "shape", "width_m", "height_m", "diameter_m",
-    "upstream_invert_m", "downstream_invert_m", "barrels", "wall_thickness_m",
-    "entrance_type", "material", "manning_n", "blockage_pct",
-    "length_override_m", "description",
-)
-CULVERT_NUMBER_FIELDS = (
-    "width_m", "height_m", "diameter_m", "upstream_invert_m", "downstream_invert_m",
-    "wall_thickness_m", "manning_n", "blockage_pct", "length_override_m",
-)
-# Mirrors CULVERT_FEATURE_DEFAULTS + MATERIAL_MANNING_N (hydrata culvert.py).
-CULVERT_DEFAULTS = {
-    "barrels": 1,
-    "wall_thickness_m": 0.20,
-    "entrance_type": "square_edge_headwall",
-    "material": "concrete",
-    "blockage_pct": 0.0,
-}
-CULVERT_MATERIAL_MANNING_N = {"concrete": 0.013, "corrugated_metal": 0.024}
-# TASK-3662: the 14 valid (entrance code, shape, material) combinations. Mirrors
-# hydrata gn_anuga.models.culvert.CULVERT_ENTRANCE_TYPES (pinned equal to the gmc
-# ENTRANCE_TYPES table and the engine catalogue); the build refuses any other.
-CULVERT_ENTRANCE_TYPES = (
-    ("square_edge_headwall", "circular", "concrete"),
-    ("groove_end_headwall", "circular", "concrete"),
-    ("groove_end_projecting", "circular", "concrete"),
-    ("bevelled_ring_45", "circular", "concrete"),
-    ("square_edge_headwall", "circular", "corrugated_metal"),
-    ("mitred_to_slope", "circular", "corrugated_metal"),
-    ("projecting", "circular", "corrugated_metal"),
-    ("square_edge_headwall", "box", "concrete"),
-    ("wingwalls_30_75", "box", "concrete"),
-    ("wingwalls_0", "box", "concrete"),
-    ("wingwalls_45_top_bevel", "box", "concrete"),
-    ("headwall_bevelled_45", "box", "concrete"),
-    ("square_edge_headwall", "box", "corrugated_metal"),
-    ("thin_wall_projecting", "box", "corrugated_metal"),
-)
-CULVERT_ENTRANCE_CODES = frozenset(code for code, _shape, _material in CULVERT_ENTRANCE_TYPES)
-CULVERT_MAX_BARRELS = 20
-# Other attribute names (matched case-insensitively) taken for each D10 field,
-# in priority order. The D10 name itself always wins when it carries a value.
-CULVERT_ATTRIBUTE_ALIASES = {
-    "name": ("label", "anuga_label", "culvert_name", "structure_name"),
-    "shape": ("culvert_shape", "section", "section_shape", "cross_section"),
-    "width_m": ("width", "span", "span_m", "box_width"),
-    "height_m": ("height", "rise", "rise_m", "box_height"),
-    "diameter_m": ("diameter", "dia", "diam", "pipe_diameter"),
-    "upstream_invert_m": ("upstream_invert", "us_invert", "us_invert_m", "inlet_invert",
-                          "inlet_invert_m", "invert_us", "invert_upstream"),
-    "downstream_invert_m": ("downstream_invert", "ds_invert", "ds_invert_m", "outlet_invert",
-                            "outlet_invert_m", "invert_ds", "invert_downstream"),
-    "barrels": ("barrel_count", "num_barrels", "n_barrels", "number_of_barrels", "no_barrels", "cells"),
-    "wall_thickness_m": ("wall_thickness", "wall_m"),
-    "entrance_type": ("entrance", "inlet_type", "entrance_loss_type"),
-    "material": ("culvert_material", "barrel_material"),
-    "manning_n": ("manning", "mannings_n", "manning_s_n", "barrel_manning", "roughness"),
-    "blockage_pct": ("blockage", "blockage_percent", "blocked_pct", "blockage_percentage"),
-    "length_override_m": ("length", "length_m", "barrel_length", "culvert_length"),
-    "description": ("desc", "notes", "comment", "comments"),
-}
-CULVERT_SHAPE_ALIASES = {
-    "box": "box", "rectangular": "box", "rectangle": "box", "rect": "box", "rcbc": "box",
-    "circular": "circular", "circle": "circular", "pipe": "circular", "round": "circular",
-    "circ": "circular", "rcp": "circular",
-}
-CULVERT_MATERIAL_ALIASES = {
-    "concrete": "concrete", "rc": "concrete", "rcp": "concrete", "rcbc": "concrete",
-    "reinforced_concrete": "concrete",
-    "corrugated_metal": "corrugated_metal", "cmp": "corrugated_metal",
-    "corrugated_steel": "corrugated_metal", "corrugated_metal_pipe": "corrugated_metal",
-}
-# The importer's primary-key column; never a culvert attribute.
-CULVERT_SKIPPED_ATTRIBUTES = frozenset({"fid", "ogc_fid"})
-# The most culverts one attach reads back. The read asks the route for this + 1 (TASK-3828), so a
-# layer over the cap is seen as over it.
-CULVERT_MAX_FEATURES = 2000
-CULVERT_UPLOAD_PATH = "/api/v2/uploads/upload/"
-
-
-def _culvert_number(value):
-    """A finite float for a numeric-looking value; anything else unchanged."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool):
-        return value
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return value
-    return number if math.isfinite(number) else value
-
-
-def _culvert_slug(value):
-    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
-
-
-def _map_culvert_properties(properties: dict) -> tuple[dict, dict, list]:
-    """One feature's attributes renamed onto the D10 fields, with defaults filled.
-
-    Returns (properties, renamed {source attribute: D10 field}, filled [D10
-    fields given a default]). Unrecognised attributes are kept verbatim; an
-    alias whose D10 field already had a value is dropped (the D10 name wins).
-    """
-    source = {key: value for key, value in (properties or {}).items()
-              if key.lower() not in CULVERT_SKIPPED_ATTRIBUTES}
-    by_lower = {key.strip().lower(): key for key in source}
-    out: dict = {}
-    renamed: dict = {}
-    consumed = set()
-    for field in CULVERT_FIELDS:
-        value = None
-        for candidate in (field, *CULVERT_ATTRIBUTE_ALIASES[field]):
-            key = by_lower.get(candidate)
-            if key is None:
-                continue
-            consumed.add(key)
-            if (value is None or value == "") and source[key] not in (None, ""):
-                value = source[key]
-                if key != field:
-                    renamed[key] = field
-        out[field] = value
-    for field in CULVERT_NUMBER_FIELDS:
-        out[field] = _culvert_number(out[field])
-    barrels = _culvert_number(out["barrels"])
-    if isinstance(barrels, float) and barrels.is_integer():
-        barrels = int(barrels)
-    out["barrels"] = barrels
-    if isinstance(out["shape"], str) and out["shape"].strip():
-        out["shape"] = CULVERT_SHAPE_ALIASES.get(_culvert_slug(out["shape"]), out["shape"])
-    if isinstance(out["material"], str) and out["material"].strip():
-        out["material"] = CULVERT_MATERIAL_ALIASES.get(_culvert_slug(out["material"]), out["material"])
-    if isinstance(out["entrance_type"], str) and _culvert_slug(out["entrance_type"]) in CULVERT_ENTRANCE_CODES:
-        out["entrance_type"] = _culvert_slug(out["entrance_type"])
-    filled = []
-    for field, default in CULVERT_DEFAULTS.items():
-        if out[field] is None or out[field] == "":
-            out[field] = default
-            filled.append(field)
-    if out["manning_n"] is None and out["material"] in CULVERT_MATERIAL_MANNING_N:
-        out["manning_n"] = CULVERT_MATERIAL_MANNING_N[out["material"]]
-        filled.append("manning_n")
-    extras = {key: value for key, value in source.items() if key not in consumed}
-    return {**out, **extras}, renamed, filled
-
-
-def _culvert_vertex_count(geometry) -> int | None:
-    """Vertices of a LineString (or a single-part MultiLineString, as the importer stores it)."""
-    if not isinstance(geometry, dict):
-        return None
-    coordinates = geometry.get("coordinates")
-    if geometry.get("type") == "MultiLineString" and isinstance(coordinates, list) and len(coordinates) == 1:
-        coordinates = coordinates[0]
-    elif geometry.get("type") != "LineString":
-        return None
-    return len(coordinates) if isinstance(coordinates, list) else None
-
-
-def _shown(value) -> str:
-    """repr() of an attribute value for a problem line; a string is the uploader's text (TASK-3511)."""
-    return _data(repr(value)) if isinstance(value, str) else repr(value)
-
-
-def _culvert_problems(index: int, properties: dict, geometry) -> list:
-    """What the build will refuse about one mapped culvert (advisory; the build decides)."""
-    # TASK-3511: the name and any echoed attribute value are the uploader's text.
-    label = f"Culvert {_data(repr(properties['name']))}" if properties.get("name") else f"Culvert #{index + 1}"
-    problems = []
-    if _culvert_vertex_count(geometry) != 2:
-        problems.append("must be a straight line of exactly two points (Inlet, then Outlet)")
-    shape = properties.get("shape")
-    if shape not in ("box", "circular"):
-        problems.append(f"shape must be 'box' or 'circular' (got {_shown(shape)})")
-    else:
-        sizes = ("width_m", "height_m") if shape == "box" else ("diameter_m",)
-        for key in sizes:
-            value = properties.get(key)
-            if not isinstance(value, float) or value <= 0:
-                problems.append(f"{key} must be a positive number for a {shape} culvert")
-    material = properties.get("material")
-    if material not in CULVERT_MATERIAL_MANNING_N:
-        problems.append("material must be 'concrete' or 'corrugated_metal'")
-    elif shape in ("box", "circular"):
-        valid = [code for code, s, m in CULVERT_ENTRANCE_TYPES if s == shape and m == material]
-        entrance = properties.get("entrance_type")
-        if entrance not in valid:
-            problems.append(
-                f"entrance_type {_shown(entrance)} is not available for a {shape} "
-                f"{material.replace('_', ' ')} culvert (choose one of: {', '.join(valid)})")
-    for key in ("upstream_invert_m", "downstream_invert_m"):
-        if not isinstance(properties.get(key), float):
-            problems.append(f"{key} is required")
-    barrels = properties.get("barrels")
-    if not isinstance(barrels, int) or isinstance(barrels, bool) or not 1 <= barrels <= CULVERT_MAX_BARRELS:
-        problems.append(f"barrels must be a whole number from 1 to {CULVERT_MAX_BARRELS}")
-    blockage = properties.get("blockage_pct")
-    if not isinstance(blockage, float) or not 0 <= blockage < 100:
-        problems.append("blockage_pct must be from 0 to below 100")
-    return [f"{label}: " + "; ".join(problems)] if problems else []
-
-
-def _comparable(properties: dict) -> dict:
-    """Attributes as the rewrite check compares them: no nulls (a WFS read may omit
-    or include a null column alike) and no importer key (GeoServer's JSON carries
-    the `fid` primary key as a property)."""
-    return {key: value for key, value in properties.items()
-            if value is not None and key.lower() not in CULVERT_SKIPPED_ATTRIBUTES}
-
-
-def _map_culvert_collection(collection) -> tuple[dict, dict]:
-    """The uploaded culverts mapped onto D10, plus a report.
-
-    report = {feature_count, renamed (source -> D10, union), filled (D10 field ->
-    how many culverts took the default), problems [...], rewrite (True when any
-    feature changed, i.e. the upload is not already a D10 culvert layer)}.
-    """
-    features = (collection or {}).get("features") or []
-    mapped, renamed, filled, problems, rewrite = [], {}, {}, [], False
-    for index, feature in enumerate(features):
-        original = (feature or {}).get("properties") or {}
-        properties, feature_renamed, feature_filled = _map_culvert_properties(original)
-        # TASK-3511: the source attribute NAMES are the uploader's text.
-        renamed.update({_data(source): field for source, field in feature_renamed.items()})
-        for field in feature_filled:
-            filled[field] = filled.get(field, 0) + 1
-        problems.extend(_culvert_problems(index, properties, feature.get("geometry")))
-        rewrite = rewrite or _comparable(properties) != _comparable(original)
-        mapped.append({"type": "Feature", "geometry": feature.get("geometry"), "properties": properties})
-    out = {"type": "FeatureCollection", "features": mapped}
-    if (collection or {}).get("crs"):
-        out["crs"] = collection["crs"]
-    report = {"feature_count": len(mapped), "renamed": renamed, "filled": filled,
-              "problems": problems, "rewrite": rewrite}
-    return out, report
-
-
-async def _read_culvert_features(dataset_pk) -> dict:
-    """The uploaded layer's features as GeoJSON, in its native CRS.
-
-    TASK-3797: read through Hydrata's own GET /datasets/<pk>/features/ (gated by
-    the key owner's view permission), never GeoServer's map proxy: an agent key
-    has no scope there (TASK-3728), so that read was refused for every key.
-    """
-    try:
-        collection = await client.get(f"/datasets/{dataset_pk}/features/",
-                                      params={"max_features": CULVERT_MAX_FEATURES + 1})
-    except HydrataAPIError as exc:
-        message = str(exc)
-        if re.search(r"server error \(503\)", message) and "AGENT_PAUSED" not in message:
-            # TASK-3830: the route answers 503 NOT_READY while the datastore or the layer's table is not
-            # there yet (the client drops the 5xx body). Transient: the opposite of a refusal.
-            raise ToolError(
-                f"Hydrata could not read dataset {dataset_pk} back just now (503 NOT_READY: the datastore or the "
-                "layer's table is not ready). This is temporary, not a refusal: nothing was attached. Wait "
-                "about a minute, then call attach_input_layer again with the same arguments."
-            )
-        if re.search(r"returned (401|403|404)\b", message):
-            # A refusal is final: the key's owner cannot read this dataset. Say STOP so the
-            # agent does not retry into the refusal cap.
-            raise ToolError(
-                f"Hydrata refused to let this key read dataset {dataset_pk} ({message}); "
-                "nothing was attached. Do not retry and do not try another route: stop and hand back "
-                "to the person, who must check that they can view the uploaded layer."
-            )
-        raise ToolError(f"could not read the uploaded culverts back from dataset {dataset_pk} ({message}); "
-                        "nothing was attached")
-    except ValueError as exc:
-        raise ToolError(f"the read of dataset {dataset_pk} returned no feature collection ({exc}); "
-                        "nothing was attached")
-    if not isinstance(collection, dict) or not isinstance(collection.get("features"), list):
-        raise ToolError(f"the read of dataset {dataset_pk} returned no feature collection; nothing was attached")
-    if len(collection["features"]) > CULVERT_MAX_FEATURES or collection.get("truncated") is True:
-        raise ToolError(
-            f"dataset {dataset_pk} holds more than {CULVERT_MAX_FEATURES} culverts; split the file — "
-            "nothing was attached"
-        )
-    return collection
-
-
-# ---------------------------------------------------------------------------
 # Tool 15: attach_input_layer
 # ---------------------------------------------------------------------------
 @_tool("attach_input_layer")
@@ -2133,12 +2274,17 @@ async def attach_input_layer(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling the upload before it returns `timed_out` "
-        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
     """Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building, mesh_region or culvert layer.
+
+    Only for a client that has a shell and an agent key. A connector agent
+    with no shell (claude.ai) writes the layer inline with write_input_layer,
+    or, for a file above the inline cap, gives the user the
+    request_input_upload link instead.
 
     The agent moves the bytes: first upload the GeoJSON yourself, with the
     same agent key, to GeoNode's upload endpoint at the site origin:
@@ -2154,31 +2300,18 @@ async def attach_input_layer(
     the tool says so: run finalize_terrain_upload / wait for get_terrain first).
 
     kind `culvert` (Hydraulic Structures; one two-point line per culvert,
-    Inlet first, then Outlet): no culvert row is seeded, so the tool creates
-    'Culvert 01' when the project has none and waits for its layer. It reads
-    your culverts back and maps your attribute names onto the culvert fields
-    — name, shape (box|circular), width_m, height_m, diameter_m,
-    upstream_invert_m, downstream_invert_m, barrels (1-20), wall_thickness_m,
-    entrance_type, material (concrete|corrugated_metal), manning_n,
-    blockage_pct (Reduced-area blockage, percent), length_override_m,
-    description — accepting common alternatives (width, diameter, label,
-    us_invert, ds_invert, num_barrels, manning, blockage, length, shape
-    'pipe' = circular, …) and filling the defaults (barrels 1, wall 0.20 m,
-    square_edge_headwall, concrete, manning_n from the material, blockage
-    0). Other attributes are kept. If anything changed it re-uploads the
-    mapped culverts and attaches THAT layer (`mapped`: renamed, filled,
-    source_dataset_pk). `culvert_problems` lists what the build will still
-    refuse (typically missing inverts) — the user fixes those in the map.
-    `leftover_datasets` lists the datasets the attach left unreferenced (the
-    raw upload when it was re-uploaded; the empty factory layer of a
-    'Culvert 01' created here), each {dataset_pk, name, reason}, with a
-    `leftover_hint`; the tool deletes nothing — the user may delete them.
+    Inlet first, then Outlet): no culvert row is seeded by the terrain import,
+    so a project with none answers `no_default_row`: write the culverts with
+    write_input_layer, which makes the row. Hydrata converts every attached
+    layer into the project's grid and the kind's table shape (single
+    geometries, the_geom, the kind's own columns); attribute names are matched
+    as they are, nothing is renamed for you (see write_input_layer).
     The culvert engine conveys flow through each culvert in a run (GPU
     lanes and localhost; the multi-core CPU lanes refuse a culvert scenario).
 
     `outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk,
     dataset_alternate — the WFS typename — and every row id seen);
-    `timed_out` (still importing or still creating the culvert layer: call
+    `timed_out` (still importing: call
     again with the same arguments, except pass `retry_execution_id` as
     execution_id when the result carries one); `upload_failed` (the
     execution record, incl. its log, is returned verbatim — fix the file and
@@ -2296,66 +2429,21 @@ async def attach_input_layer(
             f"The {label} upload finished but produced no layer, so nothing was attached.",
         )
 
-    culvert_report = None
-    # TASK-3660 (operator AC0 = REPORT): datasets this attach leaves
-    # unreferenced. Reported only, never deleted (accountable agents, epic 3200).
-    leftovers: list = []
-    if kind == "culvert":
-        # TASK-3641 — read back, map onto D10, re-upload when anything changed.
-        source_alternate = await _dataset_alternate(dataset_pk)
-        if not source_alternate:
-            raise ToolError(f"dataset {dataset_pk} has no layer name to read the culverts from; nothing was attached")
-        collection, culvert_report = _map_culvert_collection(await _read_culvert_features(dataset_pk))
-        rewrite = culvert_report.pop("rewrite")
-        result["culvert_problems"] = culvert_report.pop("problems")
-        result["mapped"] = dict(culvert_report, source_dataset_pk=dataset_pk, reuploaded=rewrite)
-        if rewrite:
-            body, _status_code = await client.post_file_to_origin(
-                CULVERT_UPLOAD_PATH, "base_file", f"cul_{project_id}_culverts.geojson",
-                json.dumps(collection).encode("utf-8"), "application/geo+json",
-            )
-            mapped_execution_id = body.get("execution_id") if isinstance(body, dict) else None
-            if not mapped_execution_id:
-                raise ToolError(
-                    f"the mapped culvert re-upload returned no execution_id ({body!r}); nothing was attached"
-                )
-            result["retry_execution_id"] = str(mapped_execution_id)
-            mapped_upload = await _await_upload(str(mapped_execution_id), remaining(), poll_interval_seconds)
-            result["execution_status"] = mapped_upload["execution_status"]
-            if mapped_upload["timed_out"]:
-                result["outcome"] = "timed_out"
-                return await handed_back(
-                    result, {"execution_status": mapped_upload["execution_status"]},
-                    "The culverts were mapped onto the culvert fields and are re-importing; "
-                    "I am still waiting on it.",
-                )
-            if mapped_upload["execution_status"] == "failed" or mapped_upload["dataset_pk"] is None:
-                result["outcome"] = (
-                    "upload_failed" if mapped_upload["execution_status"] == "failed" else "no_dataset"
-                )
-                result.pop("retry_execution_id")  # retrying a failed import cannot help
-                result["execution"] = mapped_upload["execution"]
-                return await handed_back(
-                    result, {"execution_status": mapped_upload["execution_status"]},
-                    "The mapped culverts failed to re-import, so nothing was attached.",
-                )
-            leftovers.append({"dataset_pk": dataset_pk, "name": source_alternate, "reason": "raw_upload"})
-            dataset_pk = mapped_upload["dataset_pk"]
-            result["dataset_pk"] = dataset_pk
-
     listing = await client.get(f"/projects/{project_id}/{route}/")
     # A PLAIN JSON list on the input routes (no count/results wrapper).
     rows = listing if isinstance(listing, list) else listing.get("results", [])
-    if not rows and kind == "culvert":
-        rows = [await _create_default_culvert_row(project_id)]
-        result["created_row"] = True
     result["row_ids"] = [row.get("id") for row in rows if isinstance(row, dict)]
     if not rows:
         result["outcome"] = "no_default_row"
         result["message"] = (
-            f"project {project_id} has no {kind} row to attach to. The default "
-            f"'{INPUT_LAYER_DEFAULT_TITLES[kind]}' row is seeded by the terrain import: run "
-            "finalize_terrain_upload, wait for get_terrain to report ready, then ~30 s more."
+            f"project {project_id} has no {kind} row to attach to. "
+            + (
+                "A culvert row is not seeded by the terrain import: write the culverts with "
+                "write_input_layer (kind='culvert'), which creates the row."
+                if kind == "culvert" else
+                f"The default '{INPUT_LAYER_DEFAULT_TITLES[kind]}' row is seeded by the terrain import: run "
+                "finalize_terrain_upload, wait for get_terrain to report ready, then ~30 s more."
+            )
         )
         return await handed_back(
             result, {"row_ids": []},
@@ -2364,8 +2452,9 @@ async def attach_input_layer(
 
     row = _pick_default_row(rows, kind)
     if kind == "culvert" and row.get("gn_layer") is None:
-        # The layer factory (queued by the POST) re-saves gn_layer when it
-        # finishes; a PATCH before then would be silently overwritten.
+        # A culvert row made in the UI whose layer factory is still running
+        # re-saves gn_layer when it finishes; a PATCH before then would be
+        # silently overwritten.
         row, _polls, _elapsed, factory_timed_out = await _poll_until(
             lambda: client.get(f"/projects/{project_id}/{route}/{row['id']}/"),
             lambda record: isinstance(record, dict) and record.get("gn_layer") is not None,
@@ -2379,10 +2468,6 @@ async def attach_input_layer(
                 result, {"row_id": result["row_id"]},
                 "The project's culvert layer is still being created; I am still waiting on it.",
             )
-    # The layer this tool's own POST had the factory make (empty) and the PATCH
-    # below replaces. A pre-existing row's previous layer is the user's own
-    # data, so it is not reported as leftover.
-    factory_pk = row.get("gn_layer") if result.get("created_row") else None
     body, status_code = await client.patch(
         f"/projects/{project_id}/{route}/{row['id']}/", json={"gn_layer": dataset_pk}
     )
@@ -2404,19 +2489,6 @@ async def attach_input_layer(
         result["dataset_alternate"] = None
         result["dataset_lookup_error"] = str(exc)
     alternate = result["dataset_alternate"]
-    if kind == "culvert":
-        if factory_pk is not None and factory_pk != dataset_pk:
-            try:
-                factory_name = await _dataset_alternate(factory_pk)
-            except HydrataAPIError:
-                factory_name = None  # best effort: the pk alone identifies it
-            leftovers.append({"dataset_pk": factory_pk, "name": factory_name, "reason": "empty_factory_layer"})
-        result["leftover_datasets"] = leftovers
-        if leftovers:
-            result["leftover_hint"] = (
-                f"{len(leftovers)} dataset(s) are no longer used by the project (nothing was deleted); "
-                "the user may delete them from their GeoNode dataset list if they wish."
-            )
     summary = await _layer_summary(alternate)
     summary["row_id"] = row["id"]
     # TASK-3749: whether the layer has features is the API's own answer (every
@@ -2437,14 +2509,6 @@ async def attach_input_layer(
         f"{label.capitalize()} attached ({contents}). Open the link and confirm it is the "
         f"right {label}, in the right place; review it there."
     )
-    if culvert_report is not None:
-        summary["culvert_problems"] = len(result["culvert_problems"])
-        if result["culvert_problems"]:
-            say += (
-                f" {len(result['culvert_problems'])} culvert(s) still need details filled in "
-                "before a run can use them (e.g. the invert levels): open the link and complete "
-                "them in the map."
-            )
     if summary["map_updated"] is False:
         say += (
             f" WARNING: the project map does not show the new layer yet — the scenario will "
@@ -2487,17 +2551,6 @@ async def _dataset_alternate(dataset_pk):
     return (detail.get("dataset") or {}).get("alternate") if isinstance(detail, dict) else None
 
 
-async def _create_default_culvert_row(project_id) -> dict:
-    """POST the default 'Culvert 01' row (TASK-3641); its layer is made asynchronously."""
-    body, _status_code = await client.post(
-        f"/projects/{project_id}/{INPUT_LAYER_ROUTES['culvert']}/",
-        json={"title": INPUT_LAYER_DEFAULT_TITLES["culvert"]},
-    )
-    if not isinstance(body, dict) or body.get("id") is None:
-        raise ToolError(f"creating the project's 'Culvert 01' layer returned no row ({body!r})")
-    return body
-
-
 async def _map_carries_layer(project_id, alternate) -> bool | None:
     """True/False: does the project's base map list `alternate` as a map layer? None = unknown."""
     if not alternate:
@@ -2516,11 +2569,188 @@ async def _map_carries_layer(project_id, alternate) -> bool | None:
 
 
 # ---------------------------------------------------------------------------
+# TASK-4052 (W1.1, epic 4051) — write_input_layer: the features travel in the call.
+#
+# A claude.ai connector agent has no shell and no key, so the curl + hk_ upload
+# path attach_input_layer needs is closed to it. The model writes a tool
+# argument as output tokens (128K tokens ~ 450 KB of GeoJSON), so the practical
+# inline limit is ~150 KB; above it the person uploads in the browser instead.
+# ---------------------------------------------------------------------------
+INLINE_LAYER_MAX_BYTES = 150_000
+INLINE_LAYER_KINDS = tuple(INPUT_LAYER_ROUTES)
+INLINE_WRITE_PATH = "/projects/{project_id}/input-layers/write/"
+
+
+@_tool("write_input_layer")
+async def write_input_layer(
+    project_id: Annotated[int, "The project ID"],
+    kind: Annotated[
+        str,
+        "Which input this is: boundary, friction, inflow, rainfall, building, mesh_region or "
+        "culvert ('structure' is a deprecated alias of building).",
+    ],
+    features: Annotated[
+        dict,
+        "A GeoJSON FeatureCollection with every feature of this kind. Coordinates are read as "
+        "EPSG:4326 (lon/lat) unless the collection declares a `crs` member; Hydrata converts them "
+        "into the project's grid. Multi* geometries are split into single ones.",
+    ],
+    method: Annotated[
+        str,
+        "One short phrase saying how you made these features (e.g. 'traced from the council PDF', "
+        "'digitised from the survey CSV'). Shown to the person who reviews the layer.",
+    ] = "",
+) -> str:
+    """Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.
+
+    No file, no key, no upload: the features go in `features`. Hydrata
+    converts them into the project's grid and puts them in the project's
+    default layer of that kind, replacing what it held (the old layer is kept,
+    unlinked). Unlike attach_input_layer there is nothing to poll.
+
+    Every feature must be the kind's geometry (lines for boundary, inflow and
+    culvert; polygons for friction, rainfall, building and mesh_region); a
+    feature of another geometry refuses the whole write and nothing changes.
+    A culvert is one two-point line per culvert, Inlet first, then Outlet; its
+    attributes are the culvert fields (name, shape, width_m, ... see the
+    culvert guidance), nothing is renamed for you.
+
+    Limit: about 150 KB of GeoJSON (a few thousand vertices). A bigger layer
+    is refused before anything is sent: ask the person to upload it in their
+    browser with a request_input_upload link instead.
+
+    The layer is marked as written by your agent key and is UNREVIEWED until
+    the user reviews it in their browser. INFLOWS: never invent an inflow
+    location; take it from the study's files or give the user the ui_url to
+    draw it.
+    """
+    kind = kind.strip().lower().replace("-", "_")
+    deprecation = None
+    if kind in LEGACY_INPUT_LAYER_KINDS:
+        kind, deprecation = LEGACY_INPUT_LAYER_KINDS[kind], LEGACY_KIND_DEPRECATION
+    if kind in UNSUPPORTED_INPUT_LAYER_KINDS or kind not in INLINE_LAYER_KINDS:
+        raise ToolError(f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)} "
+                        f"(breakline is refused: {UNSUPPORTED_INPUT_LAYER_REASON})")
+    size = len(json.dumps(features, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    if size > INLINE_LAYER_MAX_BYTES:
+        raise ToolError(
+            f"these features are {size // 1000} KB, over the {INLINE_LAYER_MAX_BYTES // 1000} KB limit for "
+            "writing a layer in a tool call. Nothing was sent. Ask the person to upload the layer in their "
+            f"browser: call request_input_upload(project_id={project_id}, kind={kind!r}) for the upload link and give it to them."
+        )
+    body, status_code = await client.post(
+        INLINE_WRITE_PATH.format(project_id=project_id),
+        json={"kind": kind, "features": features, "authored_method": method}, raise_for_status=False,
+    )
+    if status_code >= 400:
+        detail = body.get("detail") if isinstance(body, dict) else None
+        raise ToolError(f"Hydrata refused the {kind} layer ({status_code}): {detail or body}")
+    result = dict(body) if isinstance(body, dict) else {"body": body}
+    result["outcome"] = "written"
+    result["http_status"] = status_code
+    if deprecation:
+        result["deprecation"] = deprecation
+    alternate = result.get("dataset_alternate")
+    label = kind.replace("_", " ")
+    summary = await _layer_summary(alternate)
+    summary.update(kind=kind, row_id=result.get("row_id"), feature_count=result.get("feature_count"))
+    say = (f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
+           f"confirm it is the right {label}, in the right place; review it there.")
+    return json.dumps(
+        await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
+
+
+UPLOAD_PAGE_LIMIT_MB = 100   # the importer's per-file cap (dataset_upload_size)
+
+
+@_tool("request_input_upload")
+async def request_input_upload(
+    project_id: Annotated[int, "The project ID"],
+    kind: Annotated[
+        str,
+        "Which input the file is for: boundary, friction, inflow, rainfall, building, mesh_region or "
+        "culvert ('structure' is a deprecated alias of building).",
+    ],
+) -> str:
+    """Get the link where the PERSON uploads a big input layer in their browser.
+
+    For a layer too big to send with write_input_layer (over about 150 KB):
+    building footprints, land-use friction. You cannot move file bytes, so give
+    the person `ui_url`. It opens the project's upload page for this kind; they
+    drop a GeoJSON, a zipped shapefile or a GeoPackage (up to 100 MB), Hydrata
+    converts it into the project's grid and attaches it to the kind's layer,
+    replacing what it held. Nothing is created until they drop a file.
+
+    A file the person drops is their own input: it is marked 'uploaded by the
+    user' and needs no review step. Afterwards call list_inputs: the layer is
+    there with that `authored_method`. A file of the wrong kind (polygons on an
+    inflow) is refused on the page with a plain message. The person needs Editor
+    access on the project.
+    """
+    kind = kind.strip().lower().replace("-", "_")
+    deprecation = None
+    if kind in LEGACY_INPUT_LAYER_KINDS:
+        kind, deprecation = LEGACY_INPUT_LAYER_KINDS[kind], LEGACY_KIND_DEPRECATION
+    if kind in UNSUPPORTED_INPUT_LAYER_KINDS or kind not in INLINE_LAYER_KINDS:
+        raise ToolError(f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)}")
+    base_map = await _project_base_map(project_id)
+    ui_url = _ui_url(base_map, panel="input-upload", kind=kind)
+    if ui_url is None:
+        raise ToolError(f"project {project_id} has no map yet, so it has no upload page; "
+                        "upload a terrain first (presign_terrain_upload) and ask again.")
+    label = kind.replace("_", " ")
+    result: dict = {
+        "outcome": "link", "project_id": project_id, "kind": kind, "ui_url": ui_url,
+        "limit_mb": UPLOAD_PAGE_LIMIT_MB,
+        "summary": {"kind": kind, "accepts": ["GeoJSON", "zipped shapefile", "GeoPackage"],
+                    "limit_mb": UPLOAD_PAGE_LIMIT_MB},
+        "say_to_user": (
+            f"Open the link and drop your {label} file (GeoJSON, a zipped shapefile or a GeoPackage, up to "
+            f"{UPLOAD_PAGE_LIMIT_MB} MB) on the page. Hydrata converts it into the project's grid and replaces "
+            f"the project's {label} layer; it is your own input, so there is nothing to approve. Tell me when "
+            "it is done and I will check it with list_inputs."),
+    }
+    if deprecation:
+        result["deprecation"] = deprecation
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # TASK-3204 (W1, epic 3200) — the two listing primitives. The 09-21 drive made
 # 17 `file://` probes because nothing listed what a project already holds.
 # ---------------------------------------------------------------------------
 # list_time_series follows the paginated list at most this many pages.
 LIST_TIME_SERIES_MAX_PAGES = 20
+
+
+@_tool("describe_input_kinds")
+async def describe_input_kinds(
+    kind: Annotated[
+        str,
+        "One kind to describe (boundary, friction, inflow, rainfall, building, mesh_region or culvert); "
+        "empty describes all seven",
+    ] = "",
+) -> str:
+    """Say what each input layer kind looks like: geometry, properties, allowed values, a minimal example.
+
+    Read this BEFORE you build GeoJSON for write_input_layer or an upload. Per kind it
+    returns the `geometry` (LineString or Polygon), every property the layer reads with its
+    `type`, whether it is `required` and its `allowed` values or `min`/`max`, the
+    `required_one_of` groups (an inflow needs data_constant or data_timeseries_id), `notes`
+    in plain words and a minimal `example` FeatureCollection. It is generated by Hydrata from
+    the same definitions the build reads, so it is never out of date: do not read source code
+    or guess column names.
+    """
+    wanted = kind.strip().lower().replace("-", "_")
+    body = await client.get("/input-kinds/")
+    if not isinstance(body, dict) or not isinstance(body.get("kinds"), dict):
+        raise ToolError("Hydrata did not return the input kinds. Try again shortly.")
+    kinds = body["kinds"]
+    if wanted:
+        if wanted not in kinds:
+            raise ToolError(f"kind {kind!r} is not one of {', '.join(kinds)}")
+        kinds = {wanted: kinds[wanted]}
+    return json.dumps({"note": body.get("note"), "kinds": kinds}, indent=2)
 
 
 @_tool("list_inputs")
@@ -2531,7 +2761,9 @@ async def list_inputs(
 
     For each of boundary, friction, inflow, rainfall, building, mesh_region and culvert:
     the rows (`row_id`, `title`, `gn_layer` — the dataset pk — and
-    `dataset_alternate`, the `workspace:name` WFS typename) and `has_features`.
+    `dataset_alternate`, the `workspace:name` WFS typename), `authored_method`
+    (the one-line account an agent gave of how it made the layer; null when
+    nobody said) and `has_features`.
     `has_features` is the API's own answer for every kind. It is null only when
     a row's record does not carry it: treat null as unknown, not as empty. A row
     with no `gn_layer` has no layer yet (`has_features` false). Use the row ids with
@@ -2552,6 +2784,8 @@ async def list_inputs(
                 "gn_layer": row.get("gn_layer"),
                 "dataset_alternate": alternate,
             }
+            if "authored_method" in row:   # TASK-4055: how an agent made it (null = nobody said)
+                entry["authored_method"] = row.get("authored_method")
             # TASK-3749: never a /gs/ WFS count (refused for every agent key since
             # TASK-3728). Every wrapper serializer carries has_features (friction
             # and building TASK-3603, inflow TASK-3487); absent = unknown.
@@ -2575,7 +2809,8 @@ async def list_time_series(
     """List a project's time series (rain gauges, hydrographs, tides) — never their rows.
 
     Each series: `id`, `name` (a rainfall polygon binds to its gauge by this
-    exact name), `series_type`, `units`, `timezone`, `row_count`,
+    exact name), `series_type`, `units`, `timezone`, `authored_method` (how an
+    agent made it; null when nobody said), `row_count`,
     `first_timestamp` and `last_timestamp`. The data rows themselves are
     dropped (a project's list is megabytes); fetch one series with the REST API
     (GET /projects/<id>/time-series/<id>/) if you need its values.
@@ -2605,6 +2840,8 @@ async def list_time_series(
                 "first_timestamp": first.get("timestamp"),
                 "last_timestamp": last.get("timestamp"),
             })
+            if "authored_method" in row:   # TASK-4055
+                series[-1]["authored_method"] = row.get("authored_method")
         if not isinstance(page, dict) or not page.get("next"):
             break
         params = dict(params, page=params["page"] + 1)
@@ -2716,7 +2953,7 @@ async def create_observation_layer(
         "Metres ADDED to every stage on the layer to bring it onto the terrain datum. "
         "Required for vertical_datum=local; null means 0 otherwise",
     ] = None,
-    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 280)"] = 120,
+    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 200)"] = 120,
     poll_interval_seconds: Annotated[float, "Seconds between layer polls"] = 2.0,
 ) -> str:
     """Create a flood observation layer in a project and wait for its map layer.
@@ -3674,7 +3911,7 @@ async def build_scenario(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling before it returns `timed_out` "
-        "(default 240, ceiling 280 — the prod /mcp/ proxy cuts a call at 300 s). "
+        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,

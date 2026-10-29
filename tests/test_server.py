@@ -806,6 +806,8 @@ class TestGetTerrainTool:
         presign = tools["presign_terrain_upload"]["description"]
         assert "5°" in presign and "40,000 km²" in presign
         assert "curl" in presign and "--upload-file" in presign
+        # TASK-4064: a shell-less connector agent is sent to the platform source first.
+        assert "create_terrain_from_source" in presign
         assert "moves the bytes" in presign
         for name in ("presign_terrain_upload", "finalize_terrain_upload"):
             props = tools[name]["inputSchema"]["properties"]
@@ -1614,6 +1616,8 @@ class TestAttachInputLayerTool:
         assert "conveys flow through each culvert" in attach
         assert "TASK-3040" in attach
         assert "base_file" in attach  # the curl recipe the agent runs itself
+        # TASK-4064: a shell-less connector agent is sent to the inline / link paths first.
+        assert "write_input_layer" in attach and "request_input_upload" in attach
         for name in ("create_time_series", "attach_input_layer"):
             props = tools[name]["inputSchema"]["properties"]
             for forbidden in ("file", "bytes", "base64", "content", "path", "geojson"):
@@ -2121,7 +2125,7 @@ class TestBuildScenarioTool:
         assert "computed_status" in get_scenario
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
-        assert len(tools) == 28  # the module docstring's count (TASK-3848 added set_comparison_tolerance)
+        assert len(tools) == 35  # +TASK-4059 list_terrain_sources + create_terrain_from_source; +TASK-4058 request_input_upload; the module docstring's count (+ TASK-4052 write_input_layer, TASK-4056 update/delete_time_series, TASK-4057 describe_input_kinds)
 
 
 # ---------------------------------------------------------------------------
@@ -2953,17 +2957,17 @@ class TestClientHeaders:
 # ---------------------------------------------------------------------------
 READ_TOOLS = {"list_projects", "get_project", "get_scenario", "get_run_status", "get_run",
               "list_runs", "get_terrain", "list_inputs", "list_time_series", "list_observations",
-              "get_observation_comparison"}
+              "get_observation_comparison", "describe_input_kinds", "request_input_upload", "list_terrain_sources"}
 # TASK-3812: a deleted observation (and its photos) cannot be brought back.
-DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation"}
+DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation", "delete_time_series"}
 
 
 class TestToolAnnotations:
-    async def test_annotations_on_all_28_tools_read_hints_and_cancel_destructive(self, _server):
+    async def test_annotations_on_all_35_tools_read_hints_and_cancel_destructive(self, _server):
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
-        assert len(tools) == 28
+        assert len(tools) == 35
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name
@@ -3518,3 +3522,31 @@ class TestLaunchKeyDescriptions:
         tools = await self._tools(_server)
         for name in ("get_terrain", "create_scenario", "attach_input_layer", "list_inputs"):
             assert "launch-level agent key" not in tools[name], name
+
+
+class TestGetRunSwwDownload:
+    """TASK-4062 — get_run reports the time series as {state, size_bytes, ui_url}, never a link."""
+
+    @respx.mock
+    async def test_sww_download_state_size_and_ui_url_without_a_link(self, _server):
+        run = _presigned_run(67181, "complete", project=42, scenario=7)
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(return_value=httpx.Response(
+            200, json={"state": "archived", "size_bytes": 7_000_000,
+                       "url": "https://b.s3.amazonaws.com/k.sww?X-Amz-Signature=zz"}))
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
+        result = await _server.get_run(run_id=67181)
+        assert "X-Amz" not in result
+        sww = json.loads(result)["sww"]
+        assert set(sww) == {"state", "size_bytes", "ui_url"}
+        assert sww["state"] == "archived" and sww["size_bytes"] == 7_000_000
+        assert "/catalogue/#/map/1525" in sww["ui_url"] and "panel=results" in sww["ui_url"]
+
+    @respx.mock
+    async def test_sww_download_lookup_failure_does_not_fail_get_run(self, _server):
+        run = _presigned_run(67181, "complete", project=42, scenario=7)
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(return_value=httpx.Response(502, json={"detail": "x"}))
+        data = json.loads(await _server.get_run(run_id=67181))
+        assert data["id"] == 67181
+        assert data["sww"]["state"] is None and "error" in data["sww"]
