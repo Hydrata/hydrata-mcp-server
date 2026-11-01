@@ -238,7 +238,9 @@ mcp = FastMCP(
         "replace, because a replace removes their features from the layer. "
         "KEEP SCENARIO NAMES TRUE: when you change a scenario's resolution or duration (or what its name "
         "describes), rename it in the same step with update_scenario; a copy of a scenario "
-        "(clone_scenario) is for a variant, and neither tool builds or runs anything. "
+        "(clone_scenario) is for a variant, and neither tool builds or runs anything. A copy of a scenario gets "
+        "its own input row: write the changed input with write_input_layer target='<title>' and attach that "
+        "row to the copy, so the original scenario's inputs stay as they ran. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),

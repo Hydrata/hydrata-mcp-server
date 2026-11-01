@@ -1794,7 +1794,7 @@
       "readOnlyHint": false,
       "title": "Write a project input layer from GeoJSON"
     },
-    "description": "Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.\n\nNo file, no key, no upload: the features go in `features`. Hydrata\nconverts them into the project's grid and puts them in the project's\ndefault layer of that kind. Unlike attach_input_layer there is nothing to\npoll.\n\nREAD FIRST with read_input_layer. When the layer holds features a person\ndrew, this tool ADDS yours beside them (mode 'append', the default; their\nfeature ids hold). A replace (mode 'replace') writes a new layer and unlinks\nthe old one, so it is refused unless the person agreed and you pass\nreplace_existing=true; the refusal says how many of their features it would\nremove. Ask them before you replace.\n\nEvery feature must be the kind's geometry (lines for boundary, inflow and\nculvert; polygons for friction, rainfall, building and mesh_region); a\nfeature of another geometry refuses the whole write and nothing changes.\nA culvert is one two-point line per culvert, Inlet first, then Outlet; its\nattributes are the culvert fields (name, shape, width_m, ... see the\nculvert guidance), nothing is renamed for you.\n\nLimit: about 150 KB of GeoJSON (a few thousand vertices). A bigger layer\nis refused before anything is sent: ask the person to upload it in their\nbrowser with a request_input_upload link instead.\n\nThe layer is marked as written by your agent key and is UNREVIEWED until\nthe user reviews it in their browser. INFLOWS: never invent an inflow\nlocation; take it from the study's files or give the user the ui_url to\ndraw it.",
+    "description": "Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.\n\nNo file, no key, no upload: the features go in `features`. Hydrata\nconverts them into the project's grid and puts them in the project's\ndefault layer of that kind. Unlike attach_input_layer there is nothing to\npoll.\n\nVARIANTS: the default row may feed scenarios that already ran, and writing\nit changes what they point at. For a variant (a copy of a scenario with\ndifferent rainfall, say) write a SEPARATE row with `target` set to a\ntitle, then attach it to the copy with update_scenario or clone_scenario.\nA no-target write to a default row that a scenario with a built or\ncomplete run uses is refused, naming those scenarios, unless the person\nagreed and you pass replace_shared=true.\n\nREAD FIRST with read_input_layer. When the layer holds features a person\ndrew, this tool ADDS yours beside them (mode 'append', the default; their\nfeature ids hold). A replace (mode 'replace') writes a new layer and unlinks\nthe old one, so it is refused unless the person agreed and you pass\nreplace_existing=true; the refusal says how many of their features it would\nremove. Ask them before you replace.\n\nEvery feature must be the kind's geometry (lines for boundary, inflow and\nculvert; polygons for friction, rainfall, building and mesh_region); a\nfeature of another geometry refuses the whole write and nothing changes.\nA culvert is one two-point line per culvert, Inlet first, then Outlet; its\nattributes are the culvert fields (name, shape, width_m, ... see the\nculvert guidance), nothing is renamed for you.\n\nLimit: about 150 KB of GeoJSON (a few thousand vertices). A bigger layer\nis refused before anything is sent: ask the person to upload it in their\nbrowser with a request_input_upload link instead.\n\nThe layer is marked as written by your agent key and is UNREVIEWED until\nthe user reviews it in their browser. INFLOWS: never invent an inflow\nlocation; take it from the study's files or give the user the ui_url to\ndraw it.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1825,6 +1825,26 @@
           "default": false,
           "description": "Only true after the person agreed to a replace that removes the features they drew. Without it a replace of a layer holding their features is refused and the refusal says how many.",
           "type": "boolean"
+        },
+        "replace_shared": {
+          "default": false,
+          "description": "Only true after the person agreed to change a default row that scenarios with a built or complete run use. Without it that write is refused and the refusal names those scenarios.",
+          "type": "boolean"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which input row to write: an existing row id of this kind (list_inputs), or a TITLE for a NEW row of this kind (e.g. 'Rainfall - no losses'). Leave empty to write the project's default row. A new row is attached to no scenario until you attach it with update_scenario."
         }
       },
       "required": [

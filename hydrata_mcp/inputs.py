@@ -853,6 +853,17 @@ async def write_input_layer(
         "Only true after the person agreed to a replace that removes the features they drew. Without it a "
         "replace of a layer holding their features is refused and the refusal says how many.",
     ] = False,
+    target: Annotated[
+        int | str | None,
+        "Which input row to write: an existing row id of this kind (list_inputs), or a TITLE for a NEW row of "
+        "this kind (e.g. 'Rainfall - no losses'). Leave empty to write the project's default row. A new row "
+        "is attached to no scenario until you attach it with update_scenario.",
+    ] = None,
+    replace_shared: Annotated[
+        bool,
+        "Only true after the person agreed to change a default row that scenarios with a built or complete "
+        "run use. Without it that write is refused and the refusal names those scenarios.",
+    ] = False,
 ) -> str:
     """Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.
 
@@ -860,6 +871,14 @@ async def write_input_layer(
     converts them into the project's grid and puts them in the project's
     default layer of that kind. Unlike attach_input_layer there is nothing to
     poll.
+
+    VARIANTS: the default row may feed scenarios that already ran, and writing
+    it changes what they point at. For a variant (a copy of a scenario with
+    different rainfall, say) write a SEPARATE row with `target` set to a
+    title, then attach it to the copy with update_scenario or clone_scenario.
+    A no-target write to a default row that a scenario with a built or
+    complete run uses is refused, naming those scenarios, unless the person
+    agreed and you pass replace_shared=true.
 
     READ FIRST with read_input_layer. When the layer holds features a person
     drew, this tool ADDS yours beside them (mode 'append', the default; their
@@ -908,6 +927,10 @@ async def write_input_layer(
         payload["mode"] = mode
     if replace_existing:
         payload["replace_existing"] = True
+    if target is not None and target != "":
+        payload["target"] = target
+    if replace_shared:
+        payload["replace_shared"] = True
     body, status_code = await client.post(
         INLINE_WRITE_PATH.format(project_id=project_id), json=payload, raise_for_status=False
     )
@@ -927,18 +950,30 @@ async def write_input_layer(
     label = kind.replace("_", " ")
     summary = await _layer_summary(alternate)
     summary.update(kind=kind, row_id=result.get("row_id"), feature_count=result.get("feature_count"))
+    sharing = [sc for sc in (result.get("shared_by_scenarios") or []) if isinstance(sc, dict)]
+    share_note = ""
+    if sharing and not result.get("targeted_row"):
+        names = ", ".join(f"#{sc.get('id')} {_data(str(sc.get('name')))}" for sc in sharing)
+        share_note = (
+            f" This row is shared: scenario(s) {names} use it and now point at the new content "
+            "(rebuild them before running)."
+        )
+    elif result.get("created_row") and target not in (None, ""):
+        share_note = (
+            " It is a new row attached to no scenario yet: attach it to the scenario it is for with update_scenario."
+        )
     if result.get("mode") == "append":
         added = len(result.get("appended_fids") or [])
         say = (
             f"Added {added} to the {label} layer beside the {result.get('kept_features')} already there "
             f"({result.get('feature_count')} in all). The layer is unreviewed as a whole until the person "
             "reviews it: open the link and check the new one is in the right place."
-        )
+        ) + share_note
     else:
         say = (
             f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
             f"confirm it is the right {label}, in the right place; review it there."
-        )
+        ) + share_note
     return json.dumps(await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
 
 
