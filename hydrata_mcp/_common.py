@@ -247,6 +247,8 @@ mcp = FastMCP(
         "Above 100,000 triangles build_scenario refuses and gives you the number and the price: relay the number "
         "and the price and get the user's yes before confirm=true (confirm=true is a rule for you, not a click "
         "the user makes). "
+        "FOLLOWING A RUN: get_run_status returns say_to_user (stage, percent, time left); relay it to the "
+        "person after every poll, never poll silently. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),

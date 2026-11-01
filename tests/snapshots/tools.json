@@ -923,7 +923,7 @@
       "readOnlyHint": true,
       "title": "Poll a run's status"
     },
-    "description": "Lightweight status check for a simulation run (fast, <50ms).\n\nUse this for polling instead of get_run. Returns only: id, status,\n`phase`, progress_pct (0-100), eta_seconds, error_message, and\ncompute_backend.\n\n`phase` is never empty: it is `status`, except `preparing_inputs` while a\n`computing` run has no progress yet (it is downloading its input package\nand building the domain — minutes on a big model; this is NOT a stall).\nPoll every 5-10 seconds. Terminal states: complete, error, cancelled.",
+    "description": "Lightweight status check for a simulation run (fast, <50ms).\n\nUse this for polling instead of get_run. Returns only: id, status,\n`phase`, status_detail, progress_pct (0-100), eta_seconds, error_message,\ncompute_backend, and `say_to_user`.\n\n`say_to_user` is a ready-to-relay line (stage, percent done, time left).\nRELAY IT TO THE PERSON AFTER EVERY POLL; do not poll silently.\n\n`phase` is never empty: it is `status`, except `preparing_inputs` while a\n`computing` run has no progress yet (it is downloading its input package\nand building the domain — minutes on a big model; this is NOT a stall).\nTerminal states: complete, error, cancelled.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

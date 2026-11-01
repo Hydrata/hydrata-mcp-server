@@ -241,18 +241,62 @@ async def get_run_status(
     """Lightweight status check for a simulation run (fast, <50ms).
 
     Use this for polling instead of get_run. Returns only: id, status,
-    `phase`, progress_pct (0-100), eta_seconds, error_message, and
-    compute_backend.
+    `phase`, status_detail, progress_pct (0-100), eta_seconds, error_message,
+    compute_backend, and `say_to_user`.
+
+    `say_to_user` is a ready-to-relay line (stage, percent done, time left).
+    RELAY IT TO THE PERSON AFTER EVERY POLL; do not poll silently.
 
     `phase` is never empty: it is `status`, except `preparing_inputs` while a
     `computing` run has no progress yet (it is downloading its input package
     and building the domain — minutes on a big model; this is NOT a stall).
-    Poll every 5-10 seconds. Terminal states: complete, error, cancelled.
+    Terminal states: complete, error, cancelled.
     """
     data = await client.get(f"/runs/{run_id}/status/")
     if isinstance(data, dict):
         data = dict(data, phase=_run_phase(data))
+        data["say_to_user"] = _run_status_line(data)
     return json.dumps(_elide_presigned(data), indent=2)
+
+
+def _eta_words(eta_seconds) -> str | None:
+    """'about 12 min' / 'under a minute' / 'about 2 h 5 min' from a seconds count, or None."""
+    if not isinstance(eta_seconds, (int, float)) or isinstance(eta_seconds, bool) or eta_seconds < 0:
+        return None
+    minutes = round(eta_seconds / 60)
+    if minutes < 1:
+        return "under a minute"
+    if minutes < 60:
+        return f"about {minutes} min"
+    hours, rest = divmod(minutes, 60)
+    return f"about {hours} h {rest} min" if rest else f"about {hours} h"
+
+
+def _run_status_line(record: dict) -> str:
+    """TASK-4098 — the one-liner the agent relays after every poll: stage, percent, time left."""
+    run_id = record.get("id")
+    label = f"Run {run_id}" if run_id is not None else "The run"
+    phase = record.get("phase") or _run_phase(record)
+    detail = record.get("status_detail")
+    suffix = f" ({detail})" if detail else ""
+    if phase == "complete":
+        return f"{label} is complete. Ask me for the results, or open it in the map."
+    if phase == "error":
+        message = record.get("error_message")
+        return f"{label} failed" + (f": {message}" if message else ".") + " Ask me before retrying."
+    if phase == "cancelled":
+        return f"{label} was cancelled."
+    if phase == "preparing_inputs":
+        return (
+            f"{label} is preparing its inputs (downloading the input package and building the "
+            f"domain; this takes a few minutes and is not a stall){suffix}."
+        )
+    pct = record.get("progress_pct")
+    if phase == "computing" and isinstance(pct, (int, float)):
+        eta = _eta_words(record.get("eta_seconds"))
+        tail = f", {eta} left" if eta else ", time left not yet estimated"
+        return f"{label} is computing: {pct:.0f}% done{tail}{suffix}."
+    return f"{label} is {phase.replace('_', ' ')}{suffix}."
 
 
 def _run_phase(status_record: dict) -> str:
