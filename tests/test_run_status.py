@@ -75,3 +75,81 @@ class TestProgressLine:
         assert data["status_detail"] == "Writing frames"
         assert "(Writing frames)" in data["say_to_user"]
         assert "under a minute" in data["say_to_user"]
+
+
+class _Clock:
+    """A fake clock: sleeping advances time, so no test sleeps for real."""
+
+    def __init__(self, server):
+        self.t = 0.0
+        self.server = server
+
+    async def sleep(self, seconds):
+        self.t += seconds
+
+    def __enter__(self):
+        h = __import__("hydrata_mcp._helpers", fromlist=["x"])
+        self._h = h
+        self._orig = (h.time.monotonic, h.asyncio.sleep)
+        h.time.monotonic = lambda: self.t
+        h.asyncio.sleep = self.sleep
+        return self
+
+    def __exit__(self, *exc):
+        self._h.time.monotonic, self._h.asyncio.sleep = self._orig
+
+
+def _sequence(*bodies):
+    return [httpx.Response(200, json={"id": 9, "compute_backend": "batch", **b}) for b in bodies]
+
+
+class TestWaitSeconds:
+    @respx.mock
+    async def test_wait_seconds_zero_reads_once(self, _server):
+        route = respx.get(f"{BASE}/runs/9/status/").mock(return_value=_status(progress_pct=10))
+        data = json.loads(await _server.get_run_status(run_id=9))
+        assert route.call_count == 1 and "waited_seconds" not in data
+
+    @respx.mock
+    async def test_wait_seconds_returns_early_on_five_point_progress(self, _server):
+        route = respx.get(f"{BASE}/runs/9/status/").mock(
+            side_effect=_sequence(
+                {"status": "computing", "progress_pct": 10},
+                {"status": "computing", "progress_pct": 13},
+                {"status": "computing", "progress_pct": 16},
+                {"status": "computing", "progress_pct": 17},
+            )
+        )
+        with _Clock(_server) as clock:
+            data = json.loads(await _server.get_run_status(run_id=9, wait_seconds=180))
+        assert route.call_count == 3
+        assert data["progress_pct"] == 16 and data["waited_seconds"] == 10.0 and data["timed_out"] is False
+        assert clock.t == 10.0
+
+    @respx.mock
+    async def test_wait_seconds_returns_early_on_phase_change(self, _server):
+        respx.get(f"{BASE}/runs/9/status/").mock(
+            side_effect=_sequence(
+                {"status": "computing", "progress_pct": None},
+                {"status": "computing", "progress_pct": 1},
+            )
+        )
+        with _Clock(_server):
+            data = json.loads(await _server.get_run_status(run_id=9, wait_seconds=60))
+        assert data["phase"] == "computing" and data["waited_seconds"] == 5.0
+
+    @respx.mock
+    async def test_wait_seconds_returns_at_once_when_terminal(self, _server):
+        route = respx.get(f"{BASE}/runs/9/status/").mock(return_value=_status(status="complete", progress_pct=100))
+        with _Clock(_server):
+            data = json.loads(await _server.get_run_status(run_id=9, wait_seconds=180))
+        assert route.call_count == 1 and data["waited_seconds"] == 0.0 and "next_step" not in data
+
+    @respx.mock
+    async def test_wait_seconds_times_out_at_the_ceiling_with_next_step(self, _server):
+        respx.get(f"{BASE}/runs/9/status/").mock(return_value=_status(progress_pct=20, eta_seconds=600))
+        with _Clock(_server) as clock:
+            data = json.loads(await _server.get_run_status(run_id=9, wait_seconds=9999))
+        assert data["timed_out"] is True and data["waited_seconds"] == 180.0 and clock.t == 180.0
+        assert "wait_seconds=180" in data["next_step"] and "10 minutes" in data["next_step"]
+        assert "20%" in data["say_to_user"]

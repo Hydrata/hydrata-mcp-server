@@ -248,7 +248,11 @@ mcp = FastMCP(
         "and the price and get the user's yes before confirm=true (confirm=true is a rule for you, not a click "
         "the user makes). "
         "FOLLOWING A RUN: get_run_status returns say_to_user (stage, percent, time left); relay it to the "
-        "person after every poll, never poll silently. "
+        "person after every poll, never poll silently. To follow a run from chat call get_run_status with "
+        "wait_seconds=180: the wait happens inside the call (it returns early when the status, phase or "
+        "progress moves), so never sleep between calls; post one line after each call; after about 10 "
+        "minutes in one turn stop and tell the person to ask you for status. You cannot watch a run "
+        "between turns (the agent cannot watch after its reply). "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),

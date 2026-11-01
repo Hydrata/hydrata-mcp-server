@@ -234,28 +234,82 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
 # ---------------------------------------------------------------------------
 # Tool 5: get_run_status
 # ---------------------------------------------------------------------------
+RUN_WAIT_MAX_SECONDS = 180  # TASK-4063's proven ceiling (nginx /mcp/ 300 s; a 180 s call survived claude.ai)
+RUN_TERMINAL_STATUSES = ("complete", "error", "cancelled")
+RUN_WAIT_PROGRESS_POINTS = 5.0  # a long-poll returns early when progress moves this far
+RUN_WAIT_POLL_INTERVAL_SECONDS = 5.0
+
+
+def _run_moved(first: dict, now: dict) -> bool:
+    """True when status, phase or progress (by >= 5 points) differs from the first read."""
+    if now.get("status") != first.get("status") or now.get("phase") != first.get("phase"):
+        return True
+    a, b = first.get("progress_pct"), now.get("progress_pct")
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(b - a) >= RUN_WAIT_PROGRESS_POINTS
+    return False
+
+
 @_tool("get_run_status")
 async def get_run_status(
     run_id: Annotated[int, "The run ID"],
+    wait_seconds: Annotated[
+        int,
+        "Wait up to this many seconds for the run to move before answering (max 180, "
+        "the proven ceiling; larger values are clamped). Returns early when the status, "
+        "the phase or the progress (by 5 points) changes. Default 0: answer at once.",
+    ] = 0,
 ) -> str:
-    """Lightweight status check for a simulation run (fast, <50ms).
+    """Status of a simulation run, optionally waiting for it to move.
 
-    Use this for polling instead of get_run. Returns only: id, status,
-    `phase`, status_detail, progress_pct (0-100), eta_seconds, error_message,
-    compute_backend, and `say_to_user`.
+    Use this instead of get_run. Returns: id, status, `phase`, status_detail,
+    progress_pct (0-100), eta_seconds, error_message, compute_backend, and
+    `say_to_user`.
 
-    `say_to_user` is a ready-to-relay line (stage, percent done, time left).
-    RELAY IT TO THE PERSON AFTER EVERY POLL; do not poll silently.
+    FOLLOWING A RUN FROM CHAT: call with wait_seconds=180. The call returns as soon
+    as the status, phase or progress (5 points) changes, or after 180 s, whichever is
+    first. Then RELAY `say_to_user` to the person (one short line after every call) and call
+    again. Do not sleep or wait yourself between calls: the wait happens inside this
+    call. After about 10 minutes of this in one turn, stop and tell the person to ask
+    you for the status: you cannot watch the run between their messages, and Hydrata
+    emails them when it finishes.
 
     `phase` is never empty: it is `status`, except `preparing_inputs` while a
     `computing` run has no progress yet (it is downloading its input package
     and building the domain — minutes on a big model; this is NOT a stall).
-    Terminal states: complete, error, cancelled.
+    Terminal states: complete, error, cancelled. A waiting call returns at once
+    on a terminal state.
     """
-    data = await client.get(f"/runs/{run_id}/status/")
+
+    async def fetch():
+        record = await client.get(f"/runs/{run_id}/status/")
+        if isinstance(record, dict):
+            record = dict(record, phase=_run_phase(record))
+        return record
+
+    wait = max(0, min(int(wait_seconds), RUN_WAIT_MAX_SECONDS))
+    first: dict = {}
+
+    def settled(record) -> bool:
+        if not isinstance(record, dict):
+            return True
+        if not first:
+            first.update(record)
+        if record.get("status") in RUN_TERMINAL_STATUSES:
+            return True
+        return _run_moved(first, record)
+
+    data, polls, elapsed, timed_out = await _poll_until(fetch, settled, wait, RUN_WAIT_POLL_INTERVAL_SECONDS)
     if isinstance(data, dict):
-        data = dict(data, phase=_run_phase(data))
         data["say_to_user"] = _run_status_line(data)
+        if wait:
+            data["waited_seconds"] = elapsed
+            data["timed_out"] = timed_out
+            if data.get("status") not in RUN_TERMINAL_STATUSES:
+                data["next_step"] = (
+                    "Relay say_to_user now, then call get_run_status again with wait_seconds=180. "
+                    "After about 10 minutes in this turn, stop and tell the person to ask you for the status."
+                )
     return json.dumps(_elide_presigned(data), indent=2)
 
 

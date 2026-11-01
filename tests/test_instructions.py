@@ -45,7 +45,18 @@ REQUIRED = [
     "relay the number and the price and get the user's yes before confirm=true",
     # TASK-4098 (W4): relay the progress line after every poll
     "relay it to the person after every poll",
+    # TASK-4114 (W4)
+    "wait_seconds=180",
+    "never sleep between calls",
+    "ask you for status",
 ]
+
+
+def test_instructions_agent_cannot_watch_between_turns(instructions):
+    """TASK-4114/4105: the instructions say the agent cannot watch a run between turns."""
+    low = instructions.lower()
+    assert "cannot watch" in low
+    assert "180" in instructions and "240" not in instructions
 
 
 @pytest.mark.parametrize("phrase", REQUIRED)
