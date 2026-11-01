@@ -171,7 +171,8 @@ async def create_time_series(
     series_type: Annotated[
         str,
         "One of hyetograph (rainfall depth/intensity — the default), hydrograph "
-        "(flow, read by the Hydrographs panel and inflow boundaries), stage (water "
+        "(flow that DRIVES an inflow boundary: an input, not a result; the flow out of a run "
+        "comes from get_flow_hydrograph), stage (water "
         "level, e.g. a tide) or generic. Sent as a top-level field.",
     ] = "hyetograph",
     units: Annotated[

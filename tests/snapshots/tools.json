@@ -658,7 +658,7 @@
         },
         "series_type": {
           "default": "hyetograph",
-          "description": "One of hyetograph (rainfall depth/intensity — the default), hydrograph (flow, read by the Hydrographs panel and inflow boundaries), stage (water level, e.g. a tide) or generic. Sent as a top-level field.",
+          "description": "One of hyetograph (rainfall depth/intensity — the default), hydrograph (flow that DRIVES an inflow boundary: an input, not a result; the flow out of a run comes from get_flow_hydrograph), stage (water level, e.g. a tide) or generic. Sent as a top-level field.",
           "type": "string"
         },
         "source": {
