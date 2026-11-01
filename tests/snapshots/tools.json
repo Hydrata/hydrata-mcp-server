@@ -551,6 +551,10 @@
           },
           "type": "array"
         },
+        "levels_datum": {
+          "description": "REQUIRED. The datum the PERSON'S levels (study, survey, tailwater) are on: `AHD`, `NAVD88`, `Ordnance Datum Newlyn`, or an EPSG vertical code such as `EPSG:5711`. Ask the user; never guess. Recorded on the project, NOT as the terrain's own datum.",
+          "type": "string"
+        },
         "poll_interval_seconds": {
           "default": 5.0,
           "description": "Seconds between polls (default 5)",
@@ -578,7 +582,8 @@
       "required": [
         "project_id",
         "bbox",
-        "source"
+        "source",
+        "levels_datum"
       ],
       "type": "object"
     },
@@ -766,6 +771,11 @@
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "levels_datum": {
+          "default": "",
+          "description": "TASK-4118: the datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, `NAVD88`, `Ordnance Datum Newlyn` or an EPSG vertical code (`EPSG:5711`). A project fact, separate from the terrain's own datum. Pass it when the user told you; if they did not, ask them, do not guess.",
+          "type": "string"
+        },
         "process_id": {
           "default": "",
           "description": "`process_id` returned by presign_terrain_upload (pass it so the upload's progress record is reused; the API tolerates its absence)",

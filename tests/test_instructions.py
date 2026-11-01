@@ -25,6 +25,7 @@ REQUIRED = [
     "create_terrain_from_source",
     "vertical_datum_declared",
     "Never relay the datum Hydrata inferred",
+    "levels_datum",
     "describe_input_kinds",
     "update_time_series",
     "delete_time_series",

@@ -158,6 +158,13 @@ async def finalize_terrain_upload(
         "if they did not, ask them, do not guess. Stored as the terrain's declared datum, "
         "which beats Hydrata's own inference. Omit when unknown.",
     ] = "",
+    levels_datum: Annotated[
+        str,
+        "TASK-4118: the datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, "
+        "`NAVD88`, `Ordnance Datum Newlyn` or an EPSG vertical code (`EPSG:5711`). A project fact, "
+        "separate from the terrain's own datum. Pass it when the user told you; if they did not, "
+        "ask them, do not guess.",
+    ] = "",
 ) -> str:
     """Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.
 
@@ -183,6 +190,9 @@ async def finalize_terrain_upload(
                 "heights are on, ask them and leave this out."
             )
         payload["vertical_datum_declared"] = declared
+    levels = (levels_datum or "").strip()
+    if levels:
+        payload["levels_datum"] = levels
     body, status_code = await client.post(
         f"/projects/{project_id}/terrain/upload/finalize/",
         json=payload,
@@ -258,6 +268,28 @@ def _terrain_datum(record: dict) -> dict:
         "effective": effective,
         "effective_source": source,
     }
+
+
+def _basis_declared(record: dict) -> bool:
+    raw = record.get("vertical_datum")
+    return isinstance(raw, dict) and raw.get("basis") == "declared"
+
+
+def _without_inferred_guess(record: dict) -> dict:
+    """The terrain record without `inferred_datum_guess` / `inferred_confidence` (TASK-4118), top level and
+    inside `vertical_datum`/`metadata.vertical_datum`."""
+    drop = ("inferred_datum_guess", "inferred_confidence")
+    cleaned = {k: v for k, v in record.items() if k not in drop}
+    for holder in (cleaned,):
+        if isinstance(holder.get("vertical_datum"), dict):
+            holder["vertical_datum"] = {k: v for k, v in holder["vertical_datum"].items() if k not in drop}
+    metadata = cleaned.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("vertical_datum"), dict):
+        cleaned["metadata"] = {
+            **metadata,
+            "vertical_datum": {k: v for k, v in metadata["vertical_datum"].items() if k not in drop},
+        }
+    return cleaned
 
 
 @_tool("get_terrain")
@@ -338,6 +370,11 @@ async def get_terrain(
     if terrain_id is None:
         result["terrain_count"] = terrain_count
     record = terrain if isinstance(terrain, dict) else {}
+    datum = _terrain_datum(record)
+    if record and (datum["effective_source"] in ("declared", "recorded") or _basis_declared(record)):
+        # TASK-4118: the datum is a fact someone declared; Hydrata's own measured guess beside it is noise.
+        record = _without_inferred_guess(record)
+        result["terrain"] = record
     summary = {
         key: record.get(key)
         for key in (
@@ -350,9 +387,14 @@ async def get_terrain(
             "native_resolution_m",
         )
     }
-    datum = _terrain_datum(record)
     result["vertical_datum"] = datum
     summary["vertical_datum"] = datum
+    levels = record.get("levels_datum") if isinstance(record.get("levels_datum"), dict) else None
+    mismatch = record.get("levels_datum_mismatch") if isinstance(record.get("levels_datum_mismatch"), str) else None
+    result["levels_datum"] = levels
+    summary["levels_datum"] = levels
+    if mismatch:
+        summary["levels_datum_mismatch"] = mismatch
     if outcome == "ready":
         nodata = record.get("nodata_fraction")
         nodata = f"{nodata:.1%}" if isinstance(nodata, (int, float)) else "an unknown share"
@@ -372,6 +414,10 @@ async def get_terrain(
             say += f" Heights are on {datum['effective']} ({datum['effective_source']})."
         else:
             say += " No vertical datum is recorded: ask the user which datum their levels are in."
+        if mismatch:
+            say += f" WARNING: {_data(mismatch)} Tell the user, and do not mix the two sets of heights."
+        elif levels is None:
+            say += " The project has no levels datum yet: put the question of which datum their levels are on to the user, and pass levels_datum to create_terrain_from_source."
     elif outcome == "error":
         say = "The terrain import failed; the GeoTIFF needs fixing and uploading again."
     elif outcome == "not_found":
@@ -498,6 +544,12 @@ async def create_terrain_from_source(
     ],
     bbox: Annotated[list[float], "The site as [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees"],
     source: Annotated[str, "A source `key` from list_terrain_sources, e.g. `ga_lidar_5m` or `copernicus_glo30`"],
+    levels_datum: Annotated[
+        str,
+        "REQUIRED. The datum the PERSON'S levels (study, survey, tailwater) are on: `AHD`, `NAVD88`, "
+        "`Ordnance Datum Newlyn`, or an EPSG vertical code such as `EPSG:5711`. Ask the user; "
+        "never guess. Recorded on the project, NOT as the terrain's own datum.",
+    ],
     title: Annotated[str, "Terrain title (default: the source name and box)"] = "",
     timeout_seconds: Annotated[
         int,
@@ -517,10 +569,17 @@ async def create_terrain_from_source(
     the source has no data there, an unknown source) comes back as `outcome: refused`
     with the reason in `say_to_user` and nothing is created.
     """
+    levels = (levels_datum or "").strip() if isinstance(levels_datum, str) else ""
+    if not levels:
+        raise ToolError(
+            "levels_datum is required: the datum the user's levels are on (for example AHD, NAVD88, "
+            "Ordnance Datum Newlyn or EPSG:5711). If the user has not said which datum their levels "
+            "are in, ask them, do not guess."
+        )
     box = _bbox_args(bbox)
     if box is None:
         raise HydrataAPIError(_BBOX_REFUSAL)
-    payload: dict = {"source": source, "bbox": box}
+    payload: dict = {"source": source, "bbox": box, "levels_datum": levels}
     if title:
         payload["title"] = title
     body, status_code = await client.post(

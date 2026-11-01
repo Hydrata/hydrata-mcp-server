@@ -142,3 +142,68 @@ async def test_an_unknown_inference_is_no_inference_and_asks_the_user(_server):
     datum = data["vertical_datum"]
     assert datum["inferred"] is None and datum["effective"] is None
     assert "guesses" not in data["say_to_user"] and "ask the user" in data["say_to_user"].lower()
+
+
+@respx.mock
+async def test_finalize_levels_datum_is_sent_beside_not_as_the_terrain_datum(_server):
+    """TASK-4118 (D32): the person's levels datum is its own field; vertical_datum_declared is untouched."""
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    await _call_as_caller(
+        _server, "finalize_terrain_upload", {"project_id": 42, "staging_key": "k", "levels_datum": " NAVD88 "}
+    )
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["levels_datum"] == "NAVD88" and "vertical_datum_declared" not in sent
+
+
+@respx.mock
+async def test_finalize_without_levels_datum_sends_no_levels_datum_key(_server):
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    await _call_as_caller(_server, "finalize_terrain_upload", {"project_id": 42, "staging_key": "k"})
+    assert "levels_datum" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+async def test_get_terrain_levels_datum_and_mismatch_are_relayed(_server):
+    levels = {"datum": "NAVD88", "label": "NAVD88", "declared_by": "dave", "declared_at": None}
+    sentence = "Your levels are on NAVD88 but this terrain is on AHD height (EPSG:5711)."
+    data = await _get(
+        _server,
+        _ready(metadata={"vertical_datum_declared": "ahd"}, levels_datum=levels, levels_datum_mismatch=sentence),
+    )
+    assert data["levels_datum"] == levels
+    assert sentence in data["say_to_user"] and data["vertical_datum"]["effective"] == "ahd"
+
+
+@respx.mock
+async def test_get_terrain_without_a_levels_datum_asks_the_user_for_it(_server):
+    data = await _get(_server, _ready(metadata={"vertical_datum_declared": "ahd"}, levels_datum=None))
+    assert data["levels_datum"] is None and "no levels datum" in data["say_to_user"].lower()
+
+
+@respx.mock
+async def test_get_terrain_levels_datum_drops_the_inferred_guess_when_the_basis_is_declared(_server):
+    declared = {
+        "datum_guess": "orthometric_ahd",
+        "basis": "declared",
+        "confidence": None,
+        "inferred_datum_guess": "orthometric_egm2008",
+        "inferred_confidence": 0.559,
+    }
+    data = await _get(_server, _ready(metadata={"vertical_datum_declared": "ahd"}, vertical_datum=declared))
+    relayed = data["terrain"]["vertical_datum"]
+    assert "inferred_datum_guess" not in relayed and "inferred_confidence" not in relayed
+    assert relayed["datum_guess"] == "orthometric_ahd"
+
+
+@respx.mock
+async def test_get_terrain_levels_datum_keeps_the_inferred_guess_when_nothing_is_declared(_server):
+    only_guess = {
+        "datum_guess": "orthometric_egm2008",
+        "basis": "dod",
+        "confidence": 0.7,
+        "inferred_datum_guess": "orthometric_egm2008",
+    }
+    data = await _get(_server, _ready(vertical_datum=only_guess))
+    assert data["terrain"]["vertical_datum"]["inferred_datum_guess"] == "orthometric_egm2008"

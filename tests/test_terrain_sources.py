@@ -136,12 +136,17 @@ async def test_create_posts_source_and_bbox_then_polls_and_carries_source_facts(
                 "project_id": 1114,
                 "bbox": SULLIVANS,
                 "source": "ga_lidar_5m",
+                "levels_datum": "AHD",
                 "poll_interval_seconds": 0,
                 "timeout_seconds": 5,
             },
         )
     )
-    assert json.loads(post.calls[0].request.content) == {"source": "ga_lidar_5m", "bbox": SULLIVANS}
+    assert json.loads(post.calls[0].request.content) == {
+        "source": "ga_lidar_5m",
+        "bbox": SULLIVANS,
+        "levels_datum": "AHD",
+    }
     assert data["outcome"] == "ready" and data["polls"] == 2 and data["terrain_id"] == 55
     ts = data["terrain_source"]
     assert (ts["key"], ts["resolution_m"], ts["licence"], ts["vertical_datum"]) == (
@@ -161,7 +166,9 @@ async def test_create_refusal_over_cap_is_plain_and_creates_nothing(_server):
     _project()
     data = _tool_json(
         await _call_as_caller(
-            _server, "create_terrain_from_source", {"project_id": 1114, "bbox": SULLIVANS, "source": "ga_lidar_5m"}
+            _server,
+            "create_terrain_from_source",
+            {"project_id": 1114, "bbox": SULLIVANS, "source": "ga_lidar_5m", "levels_datum": "AHD"},
         )
     )
     assert (
@@ -186,7 +193,7 @@ async def test_create_refusal_no_coverage_is_plain(_server):
         await _call_as_caller(
             _server,
             "create_terrain_from_source",
-            {"project_id": 1114, "bbox": [10, 10, 10.1, 10.1], "source": "ga_lidar_5m"},
+            {"project_id": 1114, "bbox": [10, 10, 10.1, 10.1], "source": "ga_lidar_5m", "levels_datum": "AHD"},
         )
     )
     assert data["outcome"] == "refused" and "has no data" in data["say_to_user"]
@@ -202,7 +209,56 @@ async def test_create_timeout_zero_returns_creating_without_waiting(_server):
         await _call_as_caller(
             _server,
             "create_terrain_from_source",
-            {"project_id": 1114, "bbox": SULLIVANS, "source": "ga_lidar_5m", "timeout_seconds": 0},
+            {
+                "project_id": 1114,
+                "bbox": SULLIVANS,
+                "source": "ga_lidar_5m",
+                "levels_datum": "AHD",
+                "timeout_seconds": 0,
+            },
         )
     )
     assert data["outcome"] == "timed_out" and data["terrain_id"] == 55
+
+
+@respx.mock
+@pytest.mark.parametrize("missing", [None, "", "   "])
+async def test_create_refuses_without_levels_datum_before_any_request(_server, missing):
+    """TASK-4118 (D32): a required slot for the person's answer; nothing is sent or created without it."""
+    post = respx.post(CREATE).mock(return_value=httpx.Response(202, json=_terrain("creating")))
+    args = {"project_id": 1114, "bbox": SULLIVANS, "source": "ga_lidar_5m"}
+    if missing is not None:
+        args["levels_datum"] = missing
+    text = _tool_error_text(await _call_as_caller(_server, "create_terrain_from_source", args))
+    assert "levels_datum" in text
+    if missing is not None:  # an absent argument is refused by the tool schema itself, before the function runs
+        assert "ask them, do not guess" in text
+    assert not post.called
+
+
+@respx.mock
+async def test_create_levels_datum_mismatch_reaches_say_to_user(_server):
+    """TASK-4118: the API's mismatch sentence is relayed, and levels_datum rides beside the terrain datum."""
+    sentence = "Your levels are on NAVD88 but this terrain is on AHD (EPSG:5711)."
+    levels = {"datum": "NAVD88", "label": "NAVD88", "declared_by": "dave", "declared_at": "2026-11-02T00:00:00"}
+    ready = _terrain("ready")
+    ready.update(levels_datum=levels, levels_datum_mismatch=sentence)
+    respx.post(CREATE).mock(return_value=httpx.Response(202, json=_terrain("creating")))
+    respx.get(f"{BASE}/projects/1114/terrain/55/").mock(return_value=httpx.Response(200, json=ready))
+    respx.get(SOURCES).mock(return_value=httpx.Response(200, json={"sources": [GA]}))
+    _project()
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "create_terrain_from_source",
+            {
+                "project_id": 1114,
+                "bbox": SULLIVANS,
+                "source": "ga_lidar_5m",
+                "levels_datum": "NAVD88",
+                "poll_interval_seconds": 0,
+                "timeout_seconds": 5,
+            },
+        )
+    )
+    assert sentence in data["say_to_user"] and data["levels_datum"] == levels
