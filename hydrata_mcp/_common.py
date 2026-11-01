@@ -264,6 +264,8 @@ mcp = FastMCP(
         "FLOW ACROSS A LINE: get_flow_hydrograph(run_id, line) integrates depth times velocity normal to a "
         "drawn line from the run's playback store: relay the peak, its time, the volume, the sign convention "
         "and the mass-balance line; it is not a gauge reading. "
+        "PERMISSIONS: say once, at the start, that claude.ai will ask to allow each Hydrata tool the first time it "
+        "is used, and that Always allow saves the interruptions. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),

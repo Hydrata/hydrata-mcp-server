@@ -26,6 +26,8 @@ REQUIRED = [
     "vertical_datum_declared",
     "Never relay the datum Hydrata inferred",
     "levels_datum",
+    "PERMISSIONS: say once, at the start, that claude.ai will ask to allow each Hydrata tool",
+    "Always allow saves the interruptions",
     "describe_input_kinds",
     "update_time_series",
     "delete_time_series",
