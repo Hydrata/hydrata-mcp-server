@@ -190,3 +190,48 @@ class TestInflowRuleAndInstructions:
         text = _server.mcp.instructions
         assert "UNREVIEWED_INPUTS" in text and "reviews them" in text
         assert "get_scenario" in text and "unreviewed_inputs" in text
+
+
+class TestReviewPanelLink:
+    """TASK-4093 (epic 4117 W2): the scenario link opens the Review panel while an agent input is unreviewed.
+
+    Epic 3200 D47: no new panel value; the machine name stays `input-review` (the one the
+    UNREVIEWED_INPUTS refusal already emits).
+    """
+
+    @staticmethod
+    def _create(srv, detail):
+        _mock_project()
+        respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 5}))
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=detail))
+        return srv.create_scenario(project_id=42, name="s", resolution=36.0, duration=3600)
+
+    @respx.mock
+    async def test_review_panel_link_create_scenario_with_unreviewed_inputs_opens_input_review(self, _server):
+        data = json.loads(await self._create(_server, _scenario(unreviewed_inputs=UNREVIEWED)))
+        assert data["ui_url"] == "https://hydrata.example.com/catalogue/#/map/7?panel=input-review&scenario=5"
+        assert "panel=scenarios" not in data["ui_url"]
+
+    @respx.mock
+    async def test_review_panel_link_create_scenario_with_everything_reviewed_opens_scenarios(self, _server):
+        """NEGATIVE CONTROL: an empty list (or no list) is the Scenarios link, as before."""
+        for detail in (_scenario(unreviewed_inputs=[]), _scenario()):
+            data = json.loads(await self._create(_server, detail))
+            assert data["ui_url"] == "https://hydrata.example.com/catalogue/#/map/7?panel=scenarios&scenario=5"
+
+    @respx.mock
+    async def test_review_panel_link_update_scenario_goes_through_the_same_helper(self, _server):
+        from hydrata_mcp.scenarios import _scenario_panel
+
+        assert _scenario_panel({"unreviewed_inputs": UNREVIEWED}) == "input-review"
+        assert _scenario_panel({"unreviewed_inputs": []}) == "scenarios"
+        assert _scenario_panel({}) == "scenarios"
+
+    @respx.mock
+    async def test_review_panel_link_adds_no_new_panel_value(self, _server):
+        import pathlib
+
+        import hydrata_mcp
+
+        sources = "".join(p.read_text() for p in pathlib.Path(hydrata_mcp.__file__).parent.glob("*.py"))
+        assert 'panel="review"' not in sources and "panel=review" not in sources

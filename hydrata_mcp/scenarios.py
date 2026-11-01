@@ -310,6 +310,18 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
 # ---------------------------------------------------------------------------
 # Tool 16: create_scenario
 # ---------------------------------------------------------------------------
+def _scenario_panel(record: dict) -> str:
+    """TASK-4093: the map panel a scenario's ui_url opens (the one place that decides).
+
+    The one thing the person must do next, with an agent-written input unreviewed, is review it, so the
+    link lands on the Review panel: the existing `panel=input-review` that the UNREVIEWED_INPUTS refusal
+    already uses (epic 3200 D47: no new 'review' value, the machine name stays 'input-review'). With
+    everything reviewed (or no agent input at all) it opens Scenarios, as before. create_scenario,
+    update_scenario and clone_scenario all build their link through here, so they behave alike.
+    """
+    return "input-review" if record.get("unreviewed_inputs") else "scenarios"
+
+
 @_tool("create_scenario")
 async def create_scenario(
     project_id: Annotated[int, "The project ID"],
@@ -416,7 +428,7 @@ async def create_scenario(
         f"Draft scenario {_data(result.get('name', name))} is set up: about "
         f"{_fmt_count(estimate)} triangles at {result.get('resolution')} m, estimated "
         f"{_fmt_usd(cost)} to run. Open the link to review its inputs before I build it.",
-        panel="scenarios",
+        panel=_scenario_panel(result),
         scenario=scenario_id,
     )
     return json.dumps(result, indent=2)
@@ -437,7 +449,7 @@ async def _edit_hand_back(project_id, scenario_id, detail, say) -> str:
             "duration": result.get("duration"),
         },
         say,
-        panel="scenarios",
+        panel=_scenario_panel(result),
         scenario=scenario_id,
     )
     return json.dumps(result, indent=2)
