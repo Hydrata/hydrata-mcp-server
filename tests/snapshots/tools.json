@@ -630,6 +630,11 @@
           "description": "The project ID",
           "type": "integer"
         },
+        "rainfall_basis": {
+          "default": "",
+          "description": "REQUIRED for a hyetograph (rainfall): `excess` = rain AFTER losses (what you write; the simulation applies no losses) or `gross` = rain before losses (a design storm). Ignored for other series types.",
+          "type": "string"
+        },
         "series_type": {
           "default": "hyetograph",
           "description": "One of hyetograph (rainfall depth/intensity — the default), hydrograph (flow, read by the Hydrographs panel and inflow boundaries), stage (water level, e.g. a tide) or generic. Sent as a top-level field.",
@@ -1761,6 +1766,11 @@
         "project_id": {
           "description": "The project ID",
           "type": "integer"
+        },
+        "rainfall_basis": {
+          "default": "",
+          "description": "State what a rainfall series' numbers are: `excess` (rain after losses) or `gross` (before losses). Use it to correct a series that was saved without a basis.",
+          "type": "string"
         },
         "series_id": {
           "description": "The time series id (from list_time_series or create_time_series)",

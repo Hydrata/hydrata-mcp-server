@@ -173,6 +173,7 @@ def _series_args(**overrides):
         "series_type": "hyetograph",
         "units": "mm/hr",
         "timezone": "Australia/Sydney",
+        "rainfall_basis": "excess",  # TASK-4091: a hyetograph states its basis (ignored for other series types)
     }
     args.update(overrides)
     return args

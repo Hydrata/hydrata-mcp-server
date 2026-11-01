@@ -41,6 +41,10 @@ from .client import HydrataAPIError
 # would leave an inflow series invisible. Validated here so an unknown value
 # is refused without an upstream call.
 SERIES_TYPES = ("hyetograph", "hydrograph", "stage", "generic")
+# TASK-4091 (epic 4117 W2, D38/D39): the engine applies NO losses to rainfall, so a rainfall series states what its
+# numbers are -- `excess` (after losses, what an agent writes) or `gross` (before losses, a design storm). Hydrata
+# also stores `unspecified` for a series nobody described; an agent may not choose it for a new rainfall series.
+RAINFALL_BASES = ("excess", "gross")
 # TASK-3213 (epic 3200 W3): the SAME units rule hydrata enforces on POST (TASK-3211,
 # hydrology.serializers_v2.UNITS_BY_SERIES_TYPE): the engine reads a rainfall series as mm/hr and a flow series
 # as m^3/s whatever the label says, so the label must agree with the type. Refused here first, before any POST.
@@ -188,6 +192,11 @@ async def create_time_series(
         "One short phrase saying how you got these numbers (e.g. 'read off the council hydrograph PDF', "
         "'scaled the 1% AEP peak'). Shown to the person who reviews the inputs.",
     ] = "",
+    rainfall_basis: Annotated[
+        str,
+        "REQUIRED for a hyetograph (rainfall): `excess` = rain AFTER losses (what you write; the simulation "
+        "applies no losses) or `gross` = rain before losses (a design storm). Ignored for other series types.",
+    ] = "",
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
 
@@ -209,6 +218,12 @@ async def create_time_series(
     """
     if series_type not in SERIES_TYPES:
         raise ToolError(f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}")
+    if series_type == "hyetograph" and rainfall_basis not in RAINFALL_BASES:
+        raise ToolError(
+            "A rainfall series must state its basis, because the simulation applies no losses: "
+            "rainfall_basis='excess' (rain after losses, what you write) or 'gross' (before losses, a design storm). "
+            "Nothing was sent; call again with rainfall_basis set."
+        )
     row_count = _validate_row_data(data)
     allowed = SERIES_UNITS.get(series_type)
     if allowed and units not in allowed:
@@ -228,6 +243,8 @@ async def create_time_series(
         "hold_last_value": hold_last_value,
         "data": data,
     }
+    if series_type == "hyetograph":
+        payload["rainfall_basis"] = rainfall_basis  # TASK-4091
     if method.strip():
         payload["authored_method"] = method.strip()  # TASK-4055: shown on the review screen
     body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
@@ -251,6 +268,8 @@ async def create_time_series(
     last = rows[-1].get("timestamp") if rows and isinstance(rows[-1], dict) else None
     server_summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
     result["hold_last_value"] = body.get("hold_last_value", hold_last_value)
+    if series_type == "hyetograph":
+        result["rainfall_basis"] = body.get("rainfall_basis", rainfall_basis)
     say = (
         f"Time series '{result['name']}' ({result['series_type']}, {row_count} rows, "
         f"{first} to {last}, {result['units'] or 'no units'}) is saved. Open the link to "
@@ -297,6 +316,11 @@ async def update_time_series(
     series_type: Annotated[str, "New series_type: hyetograph, hydrograph, stage or generic"] = "",
     hold_last_value: Annotated[bool | None, "Set true only when the last value is meant to be held"] = None,
     method: Annotated[str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
+    rainfall_basis: Annotated[
+        str,
+        "State what a rainfall series' numbers are: `excess` (rain after losses) or `gross` (before losses). "
+        "Use it to correct a series that was saved without a basis.",
+    ] = "",
 ) -> str:
     """Correct a time series you created (PATCH; only the fields you pass change).
 
@@ -321,6 +345,10 @@ async def update_time_series(
         changes["series_type"] = series_type
     if hold_last_value is not None:
         changes["hold_last_value"] = hold_last_value
+    if rainfall_basis:
+        if rainfall_basis not in RAINFALL_BASES:
+            raise ToolError(f"rainfall_basis {rainfall_basis!r} is not one of {', '.join(RAINFALL_BASES)}")
+        changes["rainfall_basis"] = rainfall_basis
     if data is not None:
         _validate_row_data(data)
         changes["data"] = data
@@ -328,7 +356,8 @@ async def update_time_series(
         changes["authored_method"] = method.strip()
     if not changes or set(changes) == {"authored_method"}:
         raise ToolError(
-            "Nothing to change: pass at least one of name, data, description, units, series_type, hold_last_value."
+            "Nothing to change: pass at least one of name, data, description, units, series_type, hold_last_value, "
+            "rainfall_basis."
         )
     body, status_code = await client.patch(f"/projects/{project_id}/time-series/{series_id}/", json=changes)
     if not isinstance(body, dict):
@@ -343,6 +372,7 @@ async def update_time_series(
         "timezone": body.get("timezone"),
         "row_count": len(rows),
         "authored_method": body.get("authored_method"),
+        "rainfall_basis": body.get("rainfall_basis"),
         "http_status": status_code,
     }
     summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
