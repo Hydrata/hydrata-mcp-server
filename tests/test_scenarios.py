@@ -573,8 +573,8 @@ class TestBuildScenarioTool:
         props = tools["build_scenario"]["inputSchema"]["properties"]
         assert "confirm" in props and "rebuild" in props and "timeout_seconds" in props
         assert (
-            len(tools) == 39
-        )  # +TASK-4104 update_scenario + clone_scenario; +TASK-4107 read_input_layer; +TASK-3964 suggest_capability; +TASK-4059 list_terrain_sources + create_terrain_from_source; +TASK-4058 request_input_upload; the module docstring's count (+ TASK-4052 write_input_layer, TASK-4056 update/delete_time_series, TASK-4057 describe_input_kinds)
+            len(tools) == 40
+        )  # +TASK-4032 get_flow_hydrograph; +TASK-4104 update_scenario + clone_scenario; +TASK-4107 read_input_layer; +TASK-3964 suggest_capability; +TASK-4059 list_terrain_sources + create_terrain_from_source; +TASK-4058 request_input_upload; the module docstring's count (+ TASK-4052 write_input_layer, TASK-4056 update/delete_time_series, TASK-4057 describe_input_kinds)
 
 
 class TestGetScenarioCompactState:

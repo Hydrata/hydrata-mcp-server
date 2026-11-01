@@ -52,6 +52,9 @@ REQUIRED = [
     # TASK-4105 (W4)
     "Hydrata emails them when it completes or fails",
     "report completion in the same turn",
+    # TASK-4032 (W5): flow across a drawn line, and that it is not a gauge reading
+    "get_flow_hydrograph(run_id, line)",
+    "it is not a gauge reading",
 ]
 
 

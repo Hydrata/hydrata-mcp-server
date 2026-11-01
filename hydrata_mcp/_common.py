@@ -255,6 +255,9 @@ mcp = FastMCP(
         "between turns (the agent cannot watch after its reply). When you start a run, say up front how the person will hear: "
         "Hydrata emails them when it completes or fails, or they can ask you to check. If the run's estimate "
         "is under about 10 minutes, keep polling and report completion in the same turn. "
+        "FLOW ACROSS A LINE: get_flow_hydrograph(run_id, line) integrates depth times velocity normal to a "
+        "drawn line from the run's playback store: relay the peak, its time, the volume, the sign convention "
+        "and the mass-balance line; it is not a gauge reading. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),
@@ -277,6 +280,8 @@ TOOL_ANNOTATIONS = {
     "get_scenario": ("Get a scenario's state, inputs and price", True, False, True),
     "get_run_status": ("Poll a run's status", True, False, True),
     "get_run": ("Get a run's full record", True, False, True),
+    # TASK-4032: a POST that only reads the playback store.
+    "get_flow_hydrograph": ("Flow across a line for a run", True, False, True),
     "list_runs": ("List a project's runs", True, False, True),
     "get_terrain": ("Wait for a terrain import", True, False, True),
     # TASK-4059: Hydrata's own terrain sources (GA 5 m, Copernicus), listed then fetched.

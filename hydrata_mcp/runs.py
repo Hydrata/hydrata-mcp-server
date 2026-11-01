@@ -427,6 +427,83 @@ async def get_run(
 
 
 # ---------------------------------------------------------------------------
+# TASK-4032: get_flow_hydrograph
+# ---------------------------------------------------------------------------
+def _flow_say(data: dict) -> str:
+    """One or two sentences for the person: peak, time, volume, sign, mass balance."""
+    peak_s = float(data.get("peak_time_s") or 0.0)
+    hours, rest = divmod(int(round(peak_s)), 3600)
+    clock = f"{hours}:{rest // 60:02d}"
+    first = (
+        f"Across that line the flow peaks at {data.get('peak_m3s', 0.0):.2f} m3/s at {clock} into the run "
+        f"(to the nearest {data.get('frame_spacing_s') or 0:.0f} s frame), and {data.get('volume_m3', 0.0):,.0f} m3 "
+        f"crosses in total. {data.get('sign_convention', '')}"
+    )
+    mb = data.get("mass_balance") or {}
+    if mb.get("rain_in_m3") is None:
+        second = f"Mass balance: {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model; rain and inflow could not be read."
+    else:
+        second = (
+            f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
+            f"went in, {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about "
+            f"{mb.get('out_by_difference_m3') or 0:,.0f} m3 left by the open boundaries (by difference; "
+            "boundary flux is not integrated)."
+        )
+    return f"{first} {second}"
+
+
+@_tool("get_flow_hydrograph")
+async def get_flow_hydrograph(
+    run_id: Annotated[int, "The run ID"],
+    line: Annotated[
+        list[list[float]],
+        "The line to measure across, as [[lon, lat], [lon, lat], ...] in WGS84 (at least 2 points), "
+        "in the order drawn. Positive flow crosses from the line's left bank to its right bank.",
+    ],
+) -> str:
+    """Flow (Q) across a drawn line, at every frame of a completed run.
+
+    Integrates depth times velocity normal to the line from the run's playback store:
+    returns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`, `volume_m3`,
+    `sign_convention`, `frame_spacing_s`, `warnings` (the peak is resolved to the nearest
+    frame, so the true peak may fall between frames) and a `mass_balance` (rain and inflow
+    in, left in the model; outflow is by difference, open-boundary flux is not integrated).
+    Relay `say_to_user`. This is the model's flow, not a gauge reading.
+
+    A run with no playback store answers outcome `no_playback_store`; a bad line answers
+    `bad_line` with the reason.
+    """
+    body, status_code = await client.post(
+        f"/runs/{run_id}/flow-hydrograph/", json={"line": line}, raise_for_status=False
+    )
+    if status_code == HTTPStatus.NOT_FOUND:
+        return json.dumps(
+            {
+                "outcome": "no_playback_store",
+                "run_id": run_id,
+                "say_to_user": f"Run {run_id} has no playback store, so the flow across a line cannot be read "
+                "(it may not have finished, or it predates playback stores).",
+            },
+            indent=2,
+        )
+    if status_code == HTTPStatus.BAD_REQUEST:
+        reason = body.get("error") if isinstance(body, dict) else None
+        return json.dumps(
+            {
+                "outcome": "bad_line",
+                "run_id": run_id,
+                "error": reason,
+                "say_to_user": f"That line cannot be used: {reason or 'it is not a [[lon, lat], ...] line'}.",
+            },
+            indent=2,
+        )
+    if status_code >= 400 or not isinstance(body, dict):
+        raise HydrataAPIError(str(body)[:300], status=status_code)
+    body["say_to_user"] = _flow_say(body)
+    return json.dumps(body, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Tool 7: cancel_run
 # ---------------------------------------------------------------------------
 @_tool("cancel_run")

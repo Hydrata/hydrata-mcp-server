@@ -805,6 +805,42 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "Flow across a line for a run"
+    },
+    "description": "Flow (Q) across a drawn line, at every frame of a completed run.\n\nIntegrates depth times velocity normal to the line from the run's playback store:\nreturns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`, `volume_m3`,\n`sign_convention`, `frame_spacing_s`, `warnings` (the peak is resolved to the nearest\nframe, so the true peak may fall between frames) and a `mass_balance` (rain and inflow\nin, left in the model; outflow is by difference, open-boundary flux is not integrated).\nRelay `say_to_user`. This is the model's flow, not a gauge reading.\n\nA run with no playback store answers outcome `no_playback_store`; a bad line answers\n`bad_line` with the reason.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "The line to measure across, as [[lon, lat], [lon, lat], ...] in WGS84 (at least 2 points), in the order drawn. Positive flow crosses from the line's left bank to its right bank.",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "run_id": {
+          "description": "The run ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "line"
+      ],
+      "type": "object"
+    },
+    "name": "get_flow_hydrograph",
+    "title": "Flow across a line for a run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "Compare a run with flood observations"
     },
     "description": "Compare a run with the project's flood observations: how well does it match them?\n\nReturns `headline` (the figures to tell the user, e.g. \"47 observations · 31\nwithin ±0.30 m (66%) · bias -0.12 m · RMSE 0.35 m · 1 excluded\"),\n`headline_numbers` (the same as numbers), `tolerance_m` (used) and\n`default_tolerance_m` (the project's saved one), `statistics`\n(the API's summary: n, within, within_pct, bias_m, rmse_m, weighted_rmse_m, mae_m, max_abs_m,\nexcluded, not_scored by reason, gauges), `gauges` (Gauge records: peak error,\ntiming error, NSE), `datum_checks` (warn the user only when `warning` is true:\nboth datums known and different; `not_recorded` = the terrain has no\nrecorded datum, stated in `note`, not a warning)\nand one row per observation: observed_m / modelled_m / residual_m (modelled -\nobserved, + = model high), within, scored / not_scored_reason, match\n(`outside_run_window` = not this flood), excluded + exclusion {reason, by, at}.\n`sampling` counts how the modelled values were read: `centroid` (the peak\nof the mesh triangle the observation sits in), `nearest_node_fallback` (an\nolder run without that peak: the nearest mesh node's value, tell the user)\nand `nearest_node` (just outside the mesh); each row's `sample.method` says\nwhich.\nThere is no pass or fail: report the figures. A run that is not historic has\nnone (`has_comparison` false) — do not retry it.",
