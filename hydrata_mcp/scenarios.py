@@ -3,6 +3,8 @@
 import json
 from typing import Annotated
 
+from fastmcp.exceptions import ToolError
+
 from ._common import _data, _tool, client
 from ._helpers import (
     INPUT_REVIEW_REFUSALS,
@@ -418,6 +420,139 @@ async def create_scenario(
         scenario=scenario_id,
     )
     return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4104 (epic 4117 W1, D31): update_scenario and clone_scenario. Neither builds.
+# ---------------------------------------------------------------------------
+async def _edit_hand_back(project_id, scenario_id, detail, say) -> str:
+    result = _scenario_record(detail)
+    await _hand_back(
+        result,
+        project_id,
+        {
+            "scenario_id": scenario_id,
+            "name": result.get("name"),
+            "resolution": result.get("resolution"),
+            "duration": result.get("duration"),
+        },
+        say,
+        panel="scenarios",
+        scenario=scenario_id,
+    )
+    return json.dumps(result, indent=2)
+
+
+@_tool("update_scenario")
+async def update_scenario(
+    project_id: Annotated[int, "The project ID"],
+    scenario_id: Annotated[int, "The scenario ID"],
+    name: Annotated[str | None, "New name. Keep it true: if it states a resolution or duration, change it too."] = None,
+    description: Annotated[str | None, "New description"] = None,
+    resolution: Annotated[
+        float | None, "Mesh resolution as a LENGTH in metres (smaller = finer, more triangles)"
+    ] = None,
+    duration: Annotated[int | None, "Simulation duration in seconds"] = None,
+    terrain: Annotated[int | None, "Terrain id to attach"] = None,
+    boundary: Annotated[int | None, "Boundary row id to attach"] = None,
+    friction: Annotated[int | None, "Friction row id to attach"] = None,
+    inflow: Annotated[int | None, "Inflow row id to attach"] = None,
+    rainfall: Annotated[int | None, "Rainfall row id to attach (write_input_layer with a target returns one)"] = None,
+    building: Annotated[int | None, "Building row id to attach"] = None,
+    mesh_region: Annotated[int | None, "MeshRegion row id to attach"] = None,
+    culvert: Annotated[int | None, "Culvert row id to attach"] = None,
+) -> str:
+    """Edit a scenario: its name, description, resolution, duration, or which input rows it points at.
+
+    A thin PATCH of scenarios/{id}/ with only the fields you pass. It NEVER
+    builds or runs anything: a changed scenario is marked stale and you call
+    build_scenario when the person agrees. Keep the name true: a scenario
+    named '... - 10m' whose resolution you set to 30 must be renamed in the
+    same call. Attaching an input row changes only THIS scenario; to vary an
+    input for a variant, clone_scenario first, then attach the new row to the
+    clone.
+    """
+    fields = {
+        "name": name,
+        "description": description,
+        "resolution": resolution,
+        "duration": duration,
+        "terrain": terrain,
+        "boundary": boundary,
+        "friction": friction,
+        "inflow": inflow,
+        "rainfall": rainfall,
+        "building": building,
+        "mesh_region": mesh_region,
+        "culvert": culvert,
+    }
+    payload = {key: value for key, value in fields.items() if value is not None}
+    if not payload:
+        raise ToolError("nothing to change: pass at least one of " + ", ".join(fields))
+    base = f"/projects/{project_id}/scenarios/{scenario_id}/"
+    await client.patch(base, json=payload)
+    detail = await client.get(base)
+    changed = ", ".join(sorted(payload))
+    say = (
+        f"Scenario {_data(str((detail or {}).get('name', scenario_id)) if isinstance(detail, dict) else scenario_id)} "
+        f"updated ({changed}). Nothing was built or run; its earlier results no longer match it until it is "
+        "built again."
+    )
+    return await _edit_hand_back(project_id, scenario_id, detail, say)
+
+
+@_tool("clone_scenario")
+async def clone_scenario(
+    project_id: Annotated[int, "The project ID"],
+    scenario_id: Annotated[int, "The scenario to copy"],
+    name: Annotated[str | None, "Name for the copy (default: '<name>-copy'). Name it for what differs."] = None,
+    overrides: Annotated[
+        dict | None,
+        "Fields of the copy to set at once, the same as update_scenario: description, resolution, duration, "
+        "terrain, boundary, friction, inflow, rainfall, building, mesh_region, culvert.",
+    ] = None,
+) -> str:
+    """Copy a scenario into a new sibling, for a variant. No run is copied and nothing is built.
+
+    The copy points at the SAME input rows as the original. Give the variant
+    its own input row by writing one with write_input_layer (target = a title)
+    and passing the new row id in `overrides`; the original scenario's inputs
+    stay as they were.
+    """
+    overrides = dict(overrides or {})
+    allowed = {
+        "description",
+        "resolution",
+        "duration",
+        "terrain",
+        "boundary",
+        "friction",
+        "inflow",
+        "rainfall",
+        "building",
+        "mesh_region",
+        "culvert",
+    }
+    unknown = sorted(set(overrides) - allowed)
+    if unknown:
+        raise ToolError(f"overrides can set only: {', '.join(sorted(allowed))} (not {', '.join(unknown)})")
+    body, _status = await client.post(f"/projects/{project_id}/scenarios/{scenario_id}/duplicate/")
+    new_id = body.get("id") if isinstance(body, dict) else None
+    if new_id is None:
+        return _post_result(body, _status)
+    payload = {key: value for key, value in overrides.items() if value is not None}
+    if name:
+        payload["name"] = name
+    base = f"/projects/{project_id}/scenarios/{new_id}/"
+    if payload:
+        await client.patch(base, json=payload)
+    detail = await client.get(base)
+    say = (
+        f"Copied scenario {scenario_id} to {new_id}. No run was copied and nothing was built. "
+        "Open the link, check its inputs, then build it when the person agrees."
+    )
+    result_text = await _edit_hand_back(project_id, new_id, detail, say)
+    return result_text
 
 
 def _fmt_count(value) -> str:

@@ -236,6 +236,9 @@ mcp = FastMCP(
         "WORKING BESIDE THE PERSON: read the layer first (read_input_layer) and add to what the person "
         "drew (write_input_layer appends by default when the layer holds their features); ask before any "
         "replace, because a replace removes their features from the layer. "
+        "KEEP SCENARIO NAMES TRUE: when you change a scenario's resolution or duration (or what its name "
+        "describes), rename it in the same step with update_scenario; a copy of a scenario "
+        "(clone_scenario) is for a variant, and neither tool builds or runs anything. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),
@@ -280,6 +283,8 @@ TOOL_ANNOTATIONS = {
     "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, False),
     # TASK-4052: writes the layer's features straight into the project (replaces the kind's layer).
     "read_input_layer": ("Read the features of a project input layer", True, False, True),
+    "update_scenario": ("Edit a scenario's name, size or attached inputs", False, False, True),
+    "clone_scenario": ("Copy a scenario (no run, no build)", False, False, False),
     "write_input_layer": ("Write a project input layer from GeoJSON", False, False, False),
     "request_input_upload": ("Get a browser upload link for a big input layer", True, False, True),
     "create_scenario": ("Create a draft scenario", False, False, False),

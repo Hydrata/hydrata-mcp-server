@@ -243,6 +243,61 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Copy a scenario (no run, no build)"
+    },
+    "description": "Copy a scenario into a new sibling, for a variant. No run is copied and nothing is built.\n\nThe copy points at the SAME input rows as the original. Give the variant\nits own input row by writing one with write_input_layer (target = a title)\nand passing the new row id in `overrides`; the original scenario's inputs\nstay as they were.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Name for the copy (default: '<name>-copy'). Name it for what differs."
+        },
+        "overrides": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fields of the copy to set at once, the same as update_scenario: description, resolution, duration, terrain, boundary, friction, inflow, rainfall, building, mesh_region, culvert."
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "scenario_id": {
+          "description": "The scenario to copy",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "scenario_id"
+      ],
+      "type": "object"
+    },
+    "name": "clone_scenario",
+    "title": "Copy a scenario (no run, no build)"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Create a flood observation layer"
     },
     "description": "Create a flood observation layer in a project and wait for its map layer.\n\nA flood observation layer holds real flood evidence (Flood marks, Timed\nlevels, Gauge records, Dry points) that every historic run is compared\nwith (Compare with observations). It is project-level: it is never a scenario input.\nPOSTs /projects/<id>/flood-observations/, then polls the layer until its\nGeoServer layer exists (`ready`), usually a few seconds; until then\nadd_observations refuses. On `timed_out`, call list_observations later.",
@@ -1476,6 +1531,180 @@
     },
     "name": "update_observation",
     "title": "Edit one flood observation"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Edit a scenario's name, size or attached inputs"
+    },
+    "description": "Edit a scenario: its name, description, resolution, duration, or which input rows it points at.\n\nA thin PATCH of scenarios/{id}/ with only the fields you pass. It NEVER\nbuilds or runs anything: a changed scenario is marked stale and you call\nbuild_scenario when the person agrees. Keep the name true: a scenario\nnamed '... - 10m' whose resolution you set to 30 must be renamed in the\nsame call. Attaching an input row changes only THIS scenario; to vary an\ninput for a variant, clone_scenario first, then attach the new row to the\nclone.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "boundary": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Boundary row id to attach"
+        },
+        "building": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Building row id to attach"
+        },
+        "culvert": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Culvert row id to attach"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New description"
+        },
+        "duration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Simulation duration in seconds"
+        },
+        "friction": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Friction row id to attach"
+        },
+        "inflow": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Inflow row id to attach"
+        },
+        "mesh_region": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MeshRegion row id to attach"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New name. Keep it true: if it states a resolution or duration, change it too."
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "rainfall": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Rainfall row id to attach (write_input_layer with a target returns one)"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mesh resolution as a LENGTH in metres (smaller = finer, more triangles)"
+        },
+        "scenario_id": {
+          "description": "The scenario ID",
+          "type": "integer"
+        },
+        "terrain": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Terrain id to attach"
+        }
+      },
+      "required": [
+        "project_id",
+        "scenario_id"
+      ],
+      "type": "object"
+    },
+    "name": "update_scenario",
+    "title": "Edit a scenario's name, size or attached inputs"
   },
   {
     "annotations": {
