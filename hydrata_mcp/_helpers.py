@@ -262,14 +262,23 @@ async def _input_review_hand_back(result: dict, project_id, scenario_id) -> dict
         params = {"panel": "input-review", "scenario": scenario_id}
     else:
         changed = result.get("changed_inputs") or []
+        settings = result.get("changed_settings") or []  # TASK-4095: resolution / duration ... changed
         result["outcome"] = "run_invalidated"
         result["next_step"] = (
             f"Call build_scenario(project_id, scenario_id={scenario_id}, rebuild=true), then start_simulation."
         )
-        say = (
-            f"The built model is out of date: {', '.join(changed) or 'its inputs'} changed and were reviewed "
-            "after it was built, so I need to build it again before it can run. Nothing was started."
-        )
+        if settings and not changed:
+            say = (
+                f"The built model is out of date: its settings ({', '.join(settings)}) changed after it was built, "
+                "so I need to build it again at the new settings before it can run. Nothing was started."
+            )
+        else:
+            say = (
+                f"The built model is out of date: {', '.join(changed) or 'its inputs'} changed and were reviewed "
+                "after it was built, so I need to build it again before it can run. Nothing was started."
+            )
         summary = {"scenario_id": scenario_id, "outcome": "run_invalidated", "changed_inputs": changed}
+        if settings:
+            summary["changed_settings"] = settings
         params = {"panel": "scenarios", "scenario": scenario_id}
     return await _hand_back(result, project_id, summary, say, **params)

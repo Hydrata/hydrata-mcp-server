@@ -235,3 +235,61 @@ class TestReviewPanelLink:
 
         sources = "".join(p.read_text() for p in pathlib.Path(hydrata_mcp.__file__).parent.glob("*.py"))
         assert 'panel="review"' not in sources and "panel=review" not in sources
+
+
+class TestRunSettingsInvalidated:
+    """TASK-4095 (epic 4117 W2): a run setting changed after the build."""
+
+    SETTINGS_409 = {
+        "error_code": "RUN_INVALIDATED",
+        "detail": "The settings of this scenario changed after it was built.",
+        "scenario_id": 5,
+        "project_id": 42,
+        "run_id": 501,
+        "changed_inputs": [],
+        "changed_settings": ["duration", "resolution"],
+    }
+
+    @respx.mock
+    async def test_run_invalidated_409_by_settings_says_which_settings_and_to_rebuild(self, _server):
+        _mock_project()
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=self.SETTINGS_409))
+        data = _tool_json(await _call_as_caller(_server, "start_simulation", {"scenario_id": 5}))
+        assert data["outcome"] == "run_invalidated" and data["changed_settings"] == ["duration", "resolution"]
+        assert "duration, resolution" in data["say_to_user"] and "settings" in data["say_to_user"]
+        assert "rebuild=true" in data["next_step"]
+
+    @respx.mock
+    async def test_run_invalidated_409_by_inputs_keeps_its_own_wording(self, _server):
+        """NEGATIVE CONTROL: no changed_settings, the input sentence."""
+        _mock_project()
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=INVALIDATED_409))
+        data = _tool_json(await _call_as_caller(_server, "start_simulation", {"scenario_id": 5}))
+        assert "boundary changed and were reviewed" in data["say_to_user"] and "changed_settings" not in data["summary"]
+
+    @respx.mock
+    async def test_run_invalidated_409_build_scenario_rebuilds_a_built_scenario_whose_settings_changed(self, _server):
+        _mock_project()
+        built = _scenario(
+            "built",
+            latest_run={"id": 501, "status": "built"},
+            latest_run_is_valid=True,
+            run_settings_changed=["resolution"],
+        )
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=built))
+        _mock_boundary(True)
+        build = respx.post(BUILD_URL).mock(return_value=httpx.Response(409, json=UNREVIEWED_409))
+        await _build(_server)
+        assert build.call_count == 1  # it dispatched a NEW build instead of answering "package is current"
+
+    @respx.mock
+    async def test_run_invalidated_409_build_scenario_still_skips_a_current_package(self, _server):
+        """NEGATIVE CONTROL."""
+        _mock_project()
+        built = _scenario(
+            "built", latest_run={"id": 501, "status": "built"}, latest_run_is_valid=True, run_settings_changed=[]
+        )
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=built))
+        build = respx.post(BUILD_URL).mock(return_value=httpx.Response(202, json={"run_id": 502}))
+        data = _tool_json(await _build(_server))
+        assert build.call_count == 0 and "package is current" in data["note"]

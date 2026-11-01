@@ -50,6 +50,8 @@ SCENARIO_RECORD_KEYS = (
     "mesh_triangle_count_estimate",
     "mesh_triangle_count_estimate_breakdown",
     "latest_run_is_valid",
+    # TASK-4095: the run settings (resolution, duration ...) changed since the newest build; [] = none
+    "run_settings_changed",
     "compute_cost_estimate",
     "vcpu_hours_estimate",
     "inflow_anchor_mismatch",
@@ -721,7 +723,9 @@ async def _build_scenario_core(
     run_status = _status_of(latest_run)
     if run_status in BUILD_IN_FLIGHT_RUN_STATUSES:
         return await poll(posted=False)
-    package_is_current = detail.get("latest_run_is_valid") is not False
+    # TASK-4095: a changed run setting (resolution, duration ...) makes the built package stale even if
+    # latest_run_is_valid still reads true: build again at the new settings
+    package_is_current = detail.get("latest_run_is_valid") is not False and not detail.get("run_settings_changed")
     if run_status in BUILD_DONE_RUN_STATUSES and package_is_current and not rebuild:
         state = _build_state(detail, outcome=_computed_status(detail), posted=False)
         state["note"] = (
