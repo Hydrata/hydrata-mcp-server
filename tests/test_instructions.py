@@ -41,6 +41,8 @@ REQUIRED = [
     "untrusted-data",
     "suggest_capability",
     "no tool can do it",
+    # TASK-4119 (D35, W3): the confirm courtesy gate is a conduct rule, the person says yes first
+    "relay the number and the price and get the user's yes before confirm=true",
 ]
 
 

@@ -15,6 +15,8 @@ from ._helpers import (
     _input_review_hand_back,
     _poll_until,
     _post_result,
+    _quote_estimate_words,
+    _run_quote_words,
     _status_of,
 )
 from .inputs import _unbound_series
@@ -25,7 +27,7 @@ from .inputs import _unbound_series
 # among the 17 and no other read path to a scenario record, so a session that
 # did not create the scenario would otherwise be blind to what it is about to
 # build (`resolution`, `duration`, the input FKs, the terrain) and what it
-# will cost (`compute_cost_estimate`, `vcpu_hours_estimate`) — the inverse of
+# will cost (`quote_estimate`, TASK-4101: the ONE pre-build price) — the inverse of
 # "show your work before build and spend". `inflow_anchor_mismatch` is the
 # record's only pre-build correctness warning (a timeseries inflow starting
 # after model_start gets zero flow over the lead-in gap before its first
@@ -52,8 +54,9 @@ SCENARIO_RECORD_KEYS = (
     "latest_run_is_valid",
     # TASK-4095: the run settings (resolution, duration ...) changed since the newest build; [] = none
     "run_settings_changed",
-    "compute_cost_estimate",
-    "vcpu_hours_estimate",
+    # TASK-4101 (D34): the ONE pre-build price {price, list_price, label: "estimate"}. The CPU vCPU-hour
+    # figures (compute_cost_estimate, vcpu_hours_estimate) are NOT relayed: a customer never sees two prices.
+    "quote_estimate",
     "inflow_anchor_mismatch",
     # TASK-3208: the inputs you wrote that the user has not reviewed yet (members only)
     "unreviewed_inputs",
@@ -95,7 +98,9 @@ async def get_scenario(
     — plus what the scenario IS and what it will cost: `name`, `description`,
     `project`, `resolution`, `duration`, the input row ids (`terrain`,
     `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),
-    `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
+    `quote_estimate` (the ONE pre-build price in USD, GPU formula, labelled an
+    estimate: `price` is what the person pays, `0.00` inside the daily free band, and
+    `list_price` is the real figure), and
     `inflow_anchor_mismatch` (null unless an inflow series starts after the
     model does: the model gets zero flow from that series over the lead-in
     gap before its first sample), and
@@ -229,8 +234,8 @@ def _build_state(detail, **extra) -> dict:
     return _elide_presigned(state)
 
 
-def _build_refusal(detail, reason: str) -> str:
-    return json.dumps(_build_state(detail, outcome="refused", posted=False, reason=reason), indent=2)
+def _build_refusal(detail, reason: str, **extra) -> str:
+    return json.dumps(_build_state(detail, outcome="refused", posted=False, reason=reason, **extra), indent=2)
 
 
 # The server's pre-build admission refusals (api_v2 _pre_build_admission_refusal):
@@ -257,20 +262,24 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
     """ui_url / summary / say_to_user for every build_scenario answer (TASK-3203)."""
     if result.get("error_code") in INPUT_REVIEW_REFUSALS:
         return await _input_review_hand_back(result, project_id, scenario_id)
-    run_cost = None
-    try:  # the actual-$ re-price lives only on the run record; best effort
+    run_quote = run_list_price = None
+    try:  # the built run's quote (the figure the ledger debits) lives only on the run record; best effort
         if result.get("run_id") is not None and result.get("outcome") == "built":
             run = await client.get(f"/runs/{result['run_id']}/")
-            run_cost = run.get("mesh_actual_cost_estimate") if isinstance(run, dict) else None
+            if isinstance(run, dict):
+                run_quote, run_list_price = run.get("quote"), run.get("quote_list_price")
     except Exception:
-        run_cost = None
+        run_quote = run_list_price = None
     summary = {
         "scenario_id": scenario_id,
         "outcome": result.get("outcome"),
         "mesh_triangle_count_estimate": result.get("mesh_triangle_count_estimate"),
         "mesh_triangle_count": result.get("mesh_triangle_count"),
-        "mesh_actual_cost_estimate": run_cost,
+        "quote": run_quote,
+        "quote_list_price": run_list_price,
     }
+    if "quote_estimate" in result:
+        summary["quote_estimate"] = result["quote_estimate"]
     error_code = result.get("error_code")
     boundary_layer = seen.get("boundary_layer")
     params: dict = {"panel": "scenarios", "scenario": scenario_id}
@@ -288,9 +297,16 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
     elif result.get("outcome") == "built":
         say = (
             f"The scenario is built: {_fmt_count(result.get('mesh_triangle_count'))} triangles "
-            f"(estimated {_fmt_count(result.get('mesh_triangle_count_estimate'))}), about "
-            f"{_fmt_usd(run_cost)} to run. Open the link, check the mesh and inputs, and tell "
+            f"(estimated {_fmt_count(result.get('mesh_triangle_count_estimate'))}); the run's price is "
+            f"{_run_quote_words(run_quote, run_list_price)}. Open the link, check the mesh and inputs, and tell "
             "me when you are happy for me to start the simulation."
+        )
+    elif result.get("outcome") == "refused" and refusal == "confirm_needed":
+        say = (
+            f"This scenario would build about {_fmt_count(result.get('mesh_triangle_count_estimate'))} triangles "
+            f"(the mesh estimate), and its price is estimated at {_quote_estimate_words(result.get('quote_estimate'))}. "
+            "I have not built it. Do you want me to build at this size? Say yes and I will, or give me a coarser "
+            "resolution or a smaller boundary."
         )
     elif result.get("outcome") == "refused":
         say = f"I did not build: {result.get('reason')}."
@@ -364,8 +380,8 @@ async def create_scenario(
     `mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact
     record (the same fields get_scenario answers with): id, name, the FK ids
     as stored, resolution, duration, `computed_status` (`created` = no run
-    yet), the estimate and its breakdown, the price (`compute_cost_estimate`
-    in USD, `vcpu_hours_estimate`), `inflow_anchor_mismatch`, and
+    yet), the estimate and its breakdown, the price (`quote_estimate`:
+    the ONE pre-build price in USD, labelled an estimate), `inflow_anchor_mismatch`, and
     http_status. Next step: build_scenario (which asks for
     confirm=true above 100,000 triangles). Nothing is meshed or queued here.
 
@@ -415,7 +431,7 @@ async def create_scenario(
     result = _scenario_record(detail)
     result["http_status"] = status_code
     estimate = result.get("mesh_triangle_count_estimate")
-    cost = result.get("compute_cost_estimate")
+    quote_estimate = result.get("quote_estimate")
     await _hand_back(
         result,
         project_id,
@@ -424,12 +440,11 @@ async def create_scenario(
             "resolution": result.get("resolution"),
             "duration": result.get("duration"),
             "mesh_triangle_count_estimate": estimate,
-            "compute_cost_estimate": cost,
-            "vcpu_hours_estimate": result.get("vcpu_hours_estimate"),
+            "quote_estimate": quote_estimate,
         },
         f"Draft scenario {_data(result.get('name', name))} is set up: about "
-        f"{_fmt_count(estimate)} triangles at {result.get('resolution')} m, estimated "
-        f"{_fmt_usd(cost)} to run. Open the link to review its inputs before I build it.",
+        f"{_fmt_count(estimate)} triangles at {result.get('resolution')} m, and its price is estimated at "
+        f"{_quote_estimate_words(quote_estimate)}. Open the link to review its inputs before I build it.",
         panel=_scenario_panel(result),
         scenario=scenario_id,
     )
@@ -573,10 +588,6 @@ def _fmt_count(value) -> str:
     return f"{value:,}" if isinstance(value, (int, float)) else "an unknown number of"
 
 
-def _fmt_usd(value) -> str:
-    return f"US${value:,.2f}" if isinstance(value, (int, float)) else "an unknown cost"
-
-
 # ---------------------------------------------------------------------------
 # Tool 17: build_scenario
 # ---------------------------------------------------------------------------
@@ -625,8 +636,11 @@ async def build_scenario(
        scenario has no boundary or its boundary row has no features (the
        server would admit the build and fail it in make_package); the
        estimate is None (resolution is 0/unset); the estimate is above
-       100,000 triangles and confirm is not true — the refusal states the
-       number; re-call with confirm=true to proceed. An estimate of 0 over a
+       100,000 triangles and confirm is not true — the refusal carries
+       `mesh_triangle_count_estimate` and `quote_estimate` (the ONE pre-build price,
+       labelled an estimate) and a `say_to_user` asking the person's yes: relay the
+       number and the price and get the user's yes before confirm=true. confirm=true
+       is a rule for you, not something the user does; never pass it on your own say-so. An estimate of 0 over a
        boundary WITH features is buildable and is reported, not refused.
     4. POST /projects/<id>/scenarios/<pk>/build/. Every 4xx comes back
        verbatim as a normal result with `http_status`: 422 MESH_TOO_LARGE
@@ -759,12 +773,20 @@ async def _build_scenario_core(
     if estimate is None:
         return _build_refusal(detail, "resolution is 0/unset: the mesh estimate is None")
     if estimate > BUILD_CONFIRM_ABOVE_TRIANGLES and not confirm:
+        # TASK-4119 (D35): the refusal carries the triangle estimate AND the pre-build price (quote_estimate,
+        # labelled estimate) and asks the PERSON's yes. confirm=true is a conduct rule for the agent, never a
+        # human act: the agent relays the number and the price, gets the yes, and only then passes it.
+        hand_back["refusal"] = "confirm_needed"
+        quote_estimate = detail.get("quote_estimate")
         return _build_refusal(
             detail,
             f"estimate is {estimate:,} triangles, above {BUILD_CONFIRM_ABOVE_TRIANGLES:,}: "
             "building costs minutes on the web box and the run will need compute — "
             "coarsen `resolution` (a length in metres; triangles scale ~1/resolution²) "
-            "or call again with confirm=true to build at this size",
+            "or, once the user has said yes to the number and the price, call again with confirm=true "
+            "to build at this size",
+            quote_estimate=quote_estimate,
+            needs_user_yes=True,
         )
 
     # (4) POST; every 4xx comes back as a result the agent can read.

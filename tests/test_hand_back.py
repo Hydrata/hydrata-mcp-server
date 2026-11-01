@@ -216,29 +216,33 @@ class TestHandBackUiUrl:
         _mock_project()
         respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 5}))
         respx.get(SCENARIO_URL).mock(
-            return_value=httpx.Response(200, json=_scenario(compute_cost_estimate=1.23, vcpu_hours_estimate=0.4))
+            return_value=httpx.Response(
+                200, json=_scenario(quote_estimate={"price": "1.23", "list_price": "1.23", "label": "estimate"})
+            )
         )
         data = json.loads(await _server.create_scenario(project_id=42, name="s", resolution=36.0, duration=3600))
         _assert_hand_back(data, panel="scenarios", scenario=5)
         assert data["summary"]["mesh_triangle_count_estimate"] == 19_729
-        assert data["summary"]["compute_cost_estimate"] == 1.23
-        assert "19,729" in data["say_to_user"] and "US$1.23" in data["say_to_user"]
+        assert data["summary"]["quote_estimate"]["price"] == "1.23"
+        assert (
+            "19,729" in data["say_to_user"] and "US$1.23" in data["say_to_user"] and "estimate" in data["say_to_user"]
+        )
 
     @respx.mock
-    async def test_ui_url_build_scenario_built_reports_mesh_and_actual_cost(self, _server):
+    async def test_ui_url_build_scenario_built_reports_mesh_and_the_runs_quote(self, _server):
         _mock_project()
         _detail_to_built(_scenario())
         _mock_boundary(True)
         _mock_build()
         respx.get(f"{BASE}/runs/501/").mock(
             return_value=httpx.Response(
-                200, json=_run(501, "built", mesh_triangle_count=20_480, mesh_actual_cost_estimate=2.5)
+                200, json=_run(501, "built", mesh_triangle_count=20_480, quote="2.50", quote_list_price="2.50")
             )
         )
         data = _tool_json(await _build(_server))
         assert data["outcome"] == "built"
         _assert_hand_back(data, panel="scenarios", scenario=5)
-        assert data["summary"]["mesh_actual_cost_estimate"] == 2.5
+        assert data["summary"]["quote"] == "2.50" and "US$2.50" in data["say_to_user"]
         assert "start the simulation" in data["say_to_user"]
 
     @respx.mock

@@ -10,9 +10,11 @@ from ._helpers import (
     _elide_presigned,
     _hand_back,
     _input_review_hand_back,
+    _money,
     _poll_until,
     _post_result,
     _project_base_map,
+    _run_quote_words,
     _status_of,
     _ui_origin,
     _ui_url,
@@ -55,6 +57,13 @@ async def start_simulation(
     `outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with
     rebuild=true, then start it again.
 
+    HOW THE RUN IS PAID (TASK-4101): a started run's answer carries `quote` (what the
+    user is charged; `0.00` inside the daily free band), `quote_list_price` (the run's
+    real price, the same figure the map and billing show) and `paid_by` (`free_band` or
+    `credit`), and `say_to_user` states them. Say that figure, never another: the only
+    price you can quote is `quote` / `quote_list_price` (built run) or `quote_estimate`
+    (before a build, always called an estimate).
+
     SPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not
     fit your agent key's monthly spend limit (default $0), or that Hydrata
     cannot price, is NOT started. The result is then a normal (non-error)
@@ -89,6 +98,17 @@ async def start_simulation(
     # `_post_result` (presign_terrain_upload shares it and must keep its URL).
     result = json.loads(_post_result(_elide_presigned(body), status_code))
     run_id = result.get("id")
+    # TASK-4101 (D24/D34): say how the run is paid and the quote, the SAME figure as the pane chip and the
+    # billing record. Hydrata starts a run (202) only when it fits the free band (quote 0.00, the real price
+    # is quote_list_price) or is charged to the person's credit (quote > 0); a run it cannot start is a
+    # refusal above, never this answer.
+    quote, list_price = result.get("quote"), result.get("quote_list_price")
+    paid_by = "unknown" if _money(quote) is None else ("free_band" if _money(quote) == 0 else "credit")
+    paid_words = {
+        "free_band": "it is free, inside the daily free band",
+        "credit": "it is charged to the user's compute credit",
+        "unknown": "its price is not available",
+    }[paid_by]
     await _hand_back(
         result,
         result.get("project"),
@@ -97,9 +117,12 @@ async def start_simulation(
             "scenario_id": scenario_id,
             "status": result.get("status"),
             "compute_backend": result.get("compute_backend"),
-            "vcpu_hours_estimate": result.get("vcpu_hours_estimate"),
+            "quote": quote,
+            "quote_list_price": list_price,
+            "paid_by": paid_by,
         },
-        f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}). "
+        f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}): {paid_words}; "
+        f"the run's price is {_run_quote_words(quote, list_price)}. "
         "Open the link to watch it; the results appear on the map when it completes.",
         run=run_id,
     )

@@ -331,3 +331,39 @@ class TestGetRunSwwDownload:
         data = json.loads(await _server.get_run(run_id=67181))
         assert data["id"] == 67181
         assert data["sww"]["state"] is None and "error" in data["sww"]
+
+
+class TestStartSimulationPaidBy:
+    """TASK-4101 (D24/D34): the start answer says how the run is paid and the quote."""
+
+    @respx.mock
+    async def test_start_simulation_free_band_run_states_the_real_price_and_drops_cpu_dollars(self, _server):
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1777}))
+        respx.post(f"{BASE}/scenarios/5/run/").mock(
+            return_value=httpx.Response(
+                202,
+                json=_run(
+                    10,
+                    "queued",
+                    quote="0.00",
+                    quote_list_price="0.57",
+                    mesh_actual_cost_estimate=5.01,
+                    vcpu_hours_estimate=2.0,
+                ),
+            )
+        )
+        text = await _server.start_simulation(scenario_id=5)
+        data = json.loads(text)
+        assert data["summary"]["paid_by"] == "free_band" and data["summary"]["quote_list_price"] == "0.57"
+        assert "free band" in data["say_to_user"] and "US$0.57" in data["say_to_user"]
+        assert "mesh_actual_cost_estimate" not in text and "vcpu_hours_estimate" not in text
+
+    @respx.mock
+    async def test_start_simulation_priced_run_says_it_is_charged_to_credit(self, _server):
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1777}))
+        respx.post(f"{BASE}/scenarios/5/run/").mock(
+            return_value=httpx.Response(202, json=_run(10, "queued", quote="8.40", quote_list_price="8.40"))
+        )
+        data = json.loads(await _server.start_simulation(scenario_id=5))
+        assert data["summary"]["paid_by"] == "credit"
+        assert "credit" in data["say_to_user"] and "US$8.40" in data["say_to_user"]

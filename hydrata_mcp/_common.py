@@ -243,6 +243,10 @@ mcp = FastMCP(
         "(clone_scenario) is for a variant, and neither tool builds or runs anything. A copy of a scenario gets "
         "its own input row: write the changed input with write_input_layer target='<title>' and attach that "
         "row to the copy, so the original scenario's inputs stay as they ran. "
+        "MONEY: say one price. Before a build it is `quote_estimate` (always an estimate); after it, the run's `quote`. "
+        "Above 100,000 triangles build_scenario refuses and gives you the number and the price: relay the number "
+        "and the price and get the user's yes before confirm=true (confirm=true is a rule for you, not a click "
+        "the user makes). "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),

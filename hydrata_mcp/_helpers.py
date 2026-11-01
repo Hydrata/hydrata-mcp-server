@@ -65,6 +65,44 @@ def _is_s3_url_key(key) -> bool:
     return isinstance(key, str) and key.startswith("s3_") and key.endswith("_url")
 
 
+# TASK-4101 (epic 4117 W3, D34): the CPU vCPU-hour re-pricing is NOT what a customer pays; a customer never sees
+# two disagreeing dollar figures. Hydrata drops these from a member's payloads; this server drops them from every
+# result it relays (staff keys included), so the ONE price an agent can say is the quote / quote_estimate.
+CPU_DOLLAR_KEYS = frozenset({"compute_cost_estimate", "mesh_actual_cost_estimate", "vcpu_hours_estimate"})
+
+
+def _money(value) -> float | None:
+    """A price string or number as a float, else None."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quote_estimate_words(quote_estimate) -> str:
+    """The PRE-BUILD price (Hydrata's `quote_estimate`: {price, list_price, label: 'estimate'}) in words,
+    always labelled an estimate. D24: inside the daily free band it says so and keeps the real figure."""
+    if not isinstance(quote_estimate, dict):
+        return "an unknown price (no estimate available)"
+    price, list_price = _money(quote_estimate.get("price")), _money(quote_estimate.get("list_price"))
+    if price is None and list_price is None:
+        return "an unknown price (no estimate available)"
+    if price == 0 and list_price:
+        return f"free (estimated price US${list_price:,.2f}, inside the daily free band)"
+    shown = price if price is not None else list_price
+    return f"about US${shown:,.2f} (an estimate)"
+
+
+def _run_quote_words(quote, list_price=None) -> str:
+    """A BUILT run's quote (the figure the ledger debits) in words. D24 wording for the free band."""
+    price, listed = _money(quote), _money(list_price)
+    if price is None:
+        return "an unknown price"
+    if price == 0:
+        return f"free (quoted US${listed:,.2f}, inside the daily free band)" if listed else "free"
+    return f"US${price:,.2f}"
+
+
 def _elide_presigned(value):
     """Recursively return `value` with every presigned S3 URL elided.
 
@@ -78,6 +116,7 @@ def _elide_presigned(value):
                 ELIDED_PRESIGNED if _is_s3_url_key(key) and isinstance(item, str) and item else _elide_presigned(item)
             )
             for key, item in value.items()
+            if key not in CPU_DOLLAR_KEYS
         }
     if isinstance(value, list):
         return [_elide_presigned(item) for item in value]

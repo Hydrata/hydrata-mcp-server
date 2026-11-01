@@ -590,8 +590,7 @@ class TestGetScenarioCompactState:
             resolution=35.0,
             terrain=110535,
             boundary=27499,
-            compute_cost_estimate=0.52,
-            vcpu_hours_estimate=3.071667015,
+            quote_estimate={"price": "0.00", "list_price": "0.52", "label": "estimate"},
             inflow_anchor_mismatch=None,
         )
 
@@ -638,8 +637,7 @@ class TestGetScenarioCompactState:
         assert data["building"] == 124558
         assert data["mesh_region"] is None
         assert data["description"] == ""
-        assert data["compute_cost_estimate"] == 0.52
-        assert data["vcpu_hours_estimate"] == 3.071667015
+        assert data["quote_estimate"] == {"price": "0.00", "list_price": "0.52", "label": "estimate"}
         # The scenario's only pre-build correctness warning: present even when None.
         assert "inflow_anchor_mismatch" in data
 
@@ -661,7 +659,7 @@ class TestGetScenarioCompactState:
     async def test_get_scenario_does_not_fabricate_nulls_for_a_non_member_record(self, _server):
         """STRANGER_SCENARIO_FIELDS (hydrata serializers_v2.py:381-400) DROPS the
         FKs, the estimates and the perms from a non-member's read. `.get(key)`
-        would turn "withheld" into "terrain: null, compute_cost_estimate: null" —
+        would turn "withheld" into "terrain: null, quote_estimate: null" —
         i.e. "no terrain, no cost". Absent stays absent."""
         stranger = {"id": 5, "name": "mcp-w1-3172-t", "project": 42, "description": ""}
         respx.get(f"{BASE}/projects/42/scenarios/5/").mock(return_value=httpx.Response(200, json=stranger))
@@ -670,8 +668,7 @@ class TestGetScenarioCompactState:
         for withheld in (
             "terrain",
             "boundary",
-            "compute_cost_estimate",
-            "vcpu_hours_estimate",
+            "quote_estimate",
             "resolution",
             "duration",
             "inflow_anchor_mismatch",
@@ -746,3 +743,116 @@ class TestBuildScenarioElidesPresignedUrls:
         assert "X-Amz" not in json.dumps(data)
         assert data["outcome"] == "refused"
         assert data["status_detail"] == f"gate: {ELIDED}"
+
+
+# ---------------------------------------------------------------------------
+# TASK-4101 (epic 4117 W3, D34): ONE price. The CPU vCPU-hour figures never reach the agent.
+# ---------------------------------------------------------------------------
+CPU_FIELDS = ("compute_cost_estimate", "vcpu_hours_estimate", "mesh_actual_cost_estimate")
+QUOTE_ESTIMATE = {"price": "0.00", "list_price": "0.57", "label": "estimate"}
+
+
+def _assert_no_cpu_dollars(text):
+    for field in CPU_FIELDS:
+        assert field not in text, field
+
+
+class TestNoCpuDollars:
+    @respx.mock
+    async def test_no_cpu_dollars_get_scenario_drops_them_even_if_the_server_sends_them(self, _server):
+        detail = _scenario(
+            "built", compute_cost_estimate=3.25, vcpu_hours_estimate=19.24, quote_estimate=QUOTE_ESTIMATE
+        )
+        respx.get(f"{BASE}/projects/42/scenarios/5/").mock(return_value=httpx.Response(200, json=detail))
+        text = await _server.get_scenario(project_id=42, scenario_id=5)
+        _assert_no_cpu_dollars(text)
+        assert json.loads(text)["quote_estimate"] == QUOTE_ESTIMATE
+
+    @respx.mock
+    async def test_no_cpu_dollars_create_scenario_quotes_quote_estimate_labelled_estimate(self, _server):
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1777}))
+        respx.post(f"{BASE}/projects/42/scenarios/").mock(return_value=httpx.Response(201, json={"id": 5}))
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=_scenario(compute_cost_estimate=3.25, vcpu_hours_estimate=19.24, quote_estimate=QUOTE_ESTIMATE),
+            )
+        )
+        text = await _server.create_scenario(project_id=42, name="s", resolution=36.0, duration=3600)
+        _assert_no_cpu_dollars(text)
+        data = json.loads(text)
+        assert data["summary"]["quote_estimate"] == QUOTE_ESTIMATE
+        assert "estimate" in data["say_to_user"] and "free" in data["say_to_user"].lower()
+        assert "US$0.57" in data["say_to_user"] and "3.25" not in data["say_to_user"]
+
+    @respx.mock
+    async def test_no_cpu_dollars_build_result_relays_the_runs_quote_not_the_cpu_figure(self, _server):
+        _detail_to_built(_scenario())
+        _mock_boundary(True)
+        _mock_build()
+        respx.get(f"{BASE}/runs/501/").mock(
+            return_value=httpx.Response(
+                200,
+                json=_run(
+                    501,
+                    "built",
+                    mesh_triangle_count=402_915,
+                    mesh_actual_cost_estimate=5.01,
+                    quote="0.00",
+                    quote_list_price="0.57",
+                ),
+            )
+        )
+        text = await _build(_server)
+        _assert_no_cpu_dollars(text if isinstance(text, str) else json.dumps(_tool_json(text)))
+        data = _tool_json(text)
+        assert data["summary"]["quote"] == "0.00" and data["summary"]["quote_list_price"] == "0.57"
+        assert "5.01" not in data["say_to_user"] and "US$0.57" in data["say_to_user"]
+
+    @respx.mock
+    async def test_no_cpu_dollars_get_run_and_start_simulation(self, _server):
+        run = _run(
+            501,
+            "queued",
+            mesh_actual_cost_estimate=5.01,
+            vcpu_hours_estimate=2.0,
+            quote="0.00",
+            quote_list_price="0.57",
+        )
+        respx.get(f"{BASE}/runs/501/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/501/sww/").mock(return_value=httpx.Response(200, json={"state": "absent"}))
+        _assert_no_cpu_dollars(await _server.get_run(run_id=501))
+
+
+class TestBuildConfirmPrice:
+    @respx.mock
+    async def test_build_confirm_price_refusal_carries_the_estimate_and_the_price_and_asks_the_yes(self, _server):
+        respx.get(SCENARIO_URL).mock(
+            return_value=httpx.Response(200, json=_scenario(estimate=3_623_725, quote_estimate=QUOTE_ESTIMATE))
+        )
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server))
+        assert not build_route.called
+        assert data["outcome"] == "refused" and data["posted"] is False
+        assert data["mesh_triangle_count_estimate"] == 3_623_725
+        assert data["quote_estimate"] == QUOTE_ESTIMATE
+        assert data["needs_user_yes"] is True
+        say = data["say_to_user"]
+        assert "3,623,725" in say and "US$0.57" in say and "estimate" in say and "yes" in say.lower()
+        assert "confirm=true" in data["reason"]
+
+    @respx.mock
+    async def test_build_confirm_price_with_the_yes_passed_builds_as_before(self, _server):
+        _detail_to_built(_scenario(estimate=3_623_725, quote_estimate=QUOTE_ESTIMATE))
+        _mock_boundary(True)
+        build_route = _mock_build()
+        data = _tool_json(await _build(_server, confirm=True))
+        assert build_route.call_count == 1 and data["outcome"] == "built"
+
+    @respx.mock
+    async def test_build_confirm_price_without_a_price_still_asks(self, _server):
+        respx.get(SCENARIO_URL).mock(return_value=httpx.Response(200, json=_scenario(estimate=255_412)))
+        _mock_boundary(True)
+        data = _tool_json(await _build(_server))
+        assert data["outcome"] == "refused" and "unknown price" in data["say_to_user"]
