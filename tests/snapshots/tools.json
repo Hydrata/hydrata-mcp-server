@@ -496,6 +496,22 @@
           "description": "Mesh resolution as a LENGTH in metres (ANUGA maximum_triangle_area = resolution²/2). Coarser (larger) = fewer triangles: on a ~13 km² boundary 36-40 m gives ~16-20k triangles, 10 m ~255k, 1 m ~25M (refused by the API).",
           "type": "number"
         },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document."
+        },
         "structure": {
           "anyOf": [
             {
@@ -649,6 +665,22 @@
           "default": "",
           "description": "Where the data came from, e.g. a gauge id or agency (optional)",
           "type": "string"
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document."
         },
         "timezone": {
           "default": "UTC",
@@ -1832,6 +1864,22 @@
           "description": "New series_type: hyetograph, hydrograph, stage or generic",
           "type": "string"
         },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document. Replaces the earlier list."
+        },
         "units": {
           "default": "",
           "description": "New units (must match the series_type, as in create_time_series)",
@@ -1891,6 +1939,22 @@
           "default": false,
           "description": "Only true after the person agreed to change a default row that scenarios with a built or complete run use. Without it that write is refused and the refusal names those scenarios.",
           "type": "boolean"
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document."
         },
         "target": {
           "anyOf": [

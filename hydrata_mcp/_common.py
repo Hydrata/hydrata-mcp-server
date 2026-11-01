@@ -103,7 +103,8 @@ DATA_TEXT_KEYS = frozenset(
     }
 )
 # Keys holding a VERBATIM third-party record: every string inside is data.
-DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config"})
+# TASK-4088: `sources` is the agent's own citation list (title, url, locator): every string in it is data.
+DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config", "sources"})
 
 
 def _is_wrapped(text: str) -> bool:
@@ -199,6 +200,8 @@ mcp = FastMCP(
         "give the user the link, so they drop the file in their browser. "
         "The design storm, the catchment and the mesh region are supplied by you or the user. "
         "Say how you made them with authored_method. "
+        "SOURCES: when an input comes from a document (a flood study, a gauge record, a BoM page), pass "
+        "sources=[{title, url, locator}] beside authored_method so the engineer can click through to it. "
         "TIME SERIES: create_time_series for each rain gauge or hydrograph; fix mistakes with "
         "update_time_series or delete_time_series. Rainfall must be rainfall AFTER losses "
         "(rainfall excess), because the simulation applies no losses: state the basis of every "

@@ -9,7 +9,9 @@ from ._common import _data, _tool, client
 from ._helpers import (
     INPUT_REVIEW_REFUSALS,
     POLL_DEFAULT_TIMEOUT_SECONDS,
+    SOURCES_ARGUMENT_HELP,
     _alternate,
+    _clean_sources,
     _elide_presigned,
     _hand_back,
     _input_review_hand_back,
@@ -372,6 +374,7 @@ async def create_scenario(
         int | None,
         "Deprecated alias of `building` (TASK-3586); ignored when `building` is given.",
     ] = None,
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
     """Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.
 
@@ -417,6 +420,9 @@ async def create_scenario(
     }
     if culvert is not None:
         payload["culvert"] = culvert  # TASK-3641: sent only when given (older APIs lack the field)
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        payload["sources"] = cited
     body, status_code = await client.post(f"/projects/{project_id}/scenarios/", json=payload)
     scenario_id = body.get("id") if isinstance(body, dict) else None
     if scenario_id is None:
@@ -430,6 +436,8 @@ async def create_scenario(
     # rather than being fabricated as null.
     result = _scenario_record(detail)
     result["http_status"] = status_code
+    if cited:
+        result["sources"] = cited  # TASK-4088: echoed; Hydrata stores it beside who wrote the scenario
     estimate = result.get("mesh_triangle_count_estimate")
     quote_estimate = result.get("quote_estimate")
     await _hand_back(

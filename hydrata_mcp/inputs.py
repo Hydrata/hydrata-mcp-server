@@ -12,7 +12,9 @@ from ._common import _data, _tool, client
 from ._helpers import (
     POLL_DEFAULT_TIMEOUT_SECONDS,
     POLL_MAX_TIMEOUT_SECONDS,
+    SOURCES_ARGUMENT_HELP,
     _alternate,
+    _clean_sources,
     _hand_back,
     _layer_summary,
     _poll_until,
@@ -197,6 +199,7 @@ async def create_time_series(
         "REQUIRED for a hyetograph (rainfall): `excess` = rain AFTER losses (what you write; the simulation "
         "applies no losses) or `gross` = rain before losses (a design storm). Ignored for other series types.",
     ] = "",
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
 
@@ -247,6 +250,9 @@ async def create_time_series(
         payload["rainfall_basis"] = rainfall_basis  # TASK-4091
     if method.strip():
         payload["authored_method"] = method.strip()  # TASK-4055: shown on the review screen
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        payload["sources"] = cited
     body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
     if not isinstance(body, dict):
         return _post_result(body, status_code)
@@ -270,6 +276,8 @@ async def create_time_series(
     result["hold_last_value"] = body.get("hold_last_value", hold_last_value)
     if series_type == "hyetograph":
         result["rainfall_basis"] = body.get("rainfall_basis", rainfall_basis)
+    if cited:
+        result["sources"] = body.get("sources", cited)  # TASK-4088
     say = (
         f"Time series '{result['name']}' ({result['series_type']}, {row_count} rows, "
         f"{first} to {last}, {result['units'] or 'no units'}) is saved. Open the link to "
@@ -321,6 +329,7 @@ async def update_time_series(
         "State what a rainfall series' numbers are: `excess` (rain after losses) or `gross` (before losses). "
         "Use it to correct a series that was saved without a basis.",
     ] = "",
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP + " Replaces the earlier list."] = None,
 ) -> str:
     """Correct a time series you created (PATCH; only the fields you pass change).
 
@@ -354,7 +363,10 @@ async def update_time_series(
         changes["data"] = data
     if method.strip():
         changes["authored_method"] = method.strip()
-    if not changes or set(changes) == {"authored_method"}:
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        changes["sources"] = cited
+    if not changes or set(changes) <= {"authored_method", "sources"}:
         raise ToolError(
             "Nothing to change: pass at least one of name, data, description, units, series_type, hold_last_value, "
             "rainfall_basis."
@@ -372,6 +384,7 @@ async def update_time_series(
         "timezone": body.get("timezone"),
         "row_count": len(rows),
         "authored_method": body.get("authored_method"),
+        "sources": body.get("sources"),  # TASK-4088
         "rainfall_basis": body.get("rainfall_basis"),
         "http_status": status_code,
     }
@@ -382,7 +395,7 @@ async def update_time_series(
         {
             "series_id": result["id"],
             "name": result["name"],
-            "changed_fields": sorted(k for k in changes if k != "authored_method"),
+            "changed_fields": sorted(k for k in changes if k not in ("authored_method", "sources")),
         },
         f"Time series '{_data(result['name'])}' is updated ({', '.join(sorted(changes))}). Open the link to "
         "check its shape in the Hydrology panel; scenarios that use it need a rebuild.",
@@ -872,6 +885,7 @@ async def write_input_layer(
         "One short phrase saying how you made these features (e.g. 'traced from the council PDF', "
         "'digitised from the survey CSV'). Shown to the person who reviews the layer.",
     ] = "",
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
     mode: Annotated[
         str,
         "'append' adds `features` to the layer's existing features (the person's keep their ids); "
@@ -950,6 +964,9 @@ async def write_input_layer(
             f"browser: call request_input_upload(project_id={project_id}, kind={kind!r}) for the upload link and give it to them."
         )
     payload: dict = {"kind": kind, "features": features, "authored_method": method}
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        payload["sources"] = cited
     mode = (mode or "").strip().lower()
     if mode:
         if mode not in ("append", "replace"):
@@ -974,6 +991,8 @@ async def write_input_layer(
     result = dict(body) if isinstance(body, dict) else {"body": body}
     result["outcome"] = "written"
     result["http_status"] = status_code
+    if cited:
+        result["sources"] = cited  # TASK-4088
     if deprecation:
         result["deprecation"] = deprecation
     alternate = result.get("dataset_alternate")
@@ -1178,6 +1197,8 @@ async def list_inputs(
             }
             if "authored_method" in row:  # TASK-4055: how an agent made it (null = nobody said)
                 entry["authored_method"] = row.get("authored_method")
+            if "sources" in row:  # TASK-4088: the documents it cites (null = none)
+                entry["sources"] = row.get("sources")
             # TASK-3749: never a /gs/ WFS count (refused for every agent key since
             # TASK-3728). Every wrapper serializer carries has_features (friction
             # and building TASK-3603, inflow TASK-3487); absent = unknown.
@@ -1236,6 +1257,8 @@ async def list_time_series(
             )
             if "authored_method" in row:  # TASK-4055
                 series[-1]["authored_method"] = row.get("authored_method")
+            if "sources" in row:  # TASK-4088
+                series[-1]["sources"] = row.get("sources")
         if not isinstance(page, dict) or not page.get("next"):
             break
         params = dict(params, page=params["page"] + 1)

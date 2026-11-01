@@ -6,6 +6,8 @@ import re
 import time
 from urllib.parse import quote, urlencode
 
+from fastmcp.exceptions import ToolError
+
 from ._common import _data, client, config
 
 
@@ -321,3 +323,43 @@ async def _input_review_hand_back(result: dict, project_id, scenario_id) -> dict
             summary["changed_settings"] = settings
         params = {"panel": "scenarios", "scenario": scenario_id}
     return await _hand_back(result, project_id, summary, say, **params)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4088 (epic 4117 W6) - sources: the documents an input comes from.
+# ---------------------------------------------------------------------------
+SOURCES_ARGUMENT_HELP = (
+    "TASK-4088: the documents this came from, so the engineer can click through to them: a list of "
+    "{title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: "
+    "'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) "
+    "is optional. At most 20. Pass it beside the method whenever you cite a document."
+)
+SOURCES_MAX = 20
+
+
+def _clean_sources(sources) -> list[dict] | None:
+    """The `sources` argument checked and trimmed, or None when none were given. Raises ToolError before any request."""
+    if sources is None or sources == []:
+        return None
+    if not isinstance(sources, list):
+        raise ToolError("sources must be a list of {title, url, locator} objects. Nothing was sent.")
+    if len(sources) > SOURCES_MAX:
+        raise ToolError(f"sources holds at most {SOURCES_MAX} entries (got {len(sources)}). Nothing was sent.")
+    clean: list[dict] = []
+    for position, entry in enumerate(sources, start=1):
+        label = f"sources[{position}]"
+        if not isinstance(entry, dict):
+            raise ToolError(f"{label} must be an object with title and url. Nothing was sent.")
+        title, url, locator = entry.get("title"), entry.get("url"), entry.get("locator")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200:
+            raise ToolError(f"{label}.title is required (1-200 characters). Nothing was sent.")
+        if not isinstance(url, str) or not re.match(r"^https?://[^\s/]+", url.strip()):
+            raise ToolError(f"{label}.url must be an http or https link. Nothing was sent.")
+        item = {"title": title.strip(), "url": url.strip()}
+        if locator is not None:
+            if not isinstance(locator, str) or len(locator.strip()) > 100:
+                raise ToolError(f"{label}.locator must be text of at most 100 characters. Nothing was sent.")
+            if locator.strip():
+                item["locator"] = locator.strip()
+        clean.append(item)
+    return clean
