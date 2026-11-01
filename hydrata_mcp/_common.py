@@ -252,7 +252,9 @@ mcp = FastMCP(
         "wait_seconds=180: the wait happens inside the call (it returns early when the status, phase or "
         "progress moves), so never sleep between calls; post one line after each call; after about 10 "
         "minutes in one turn stop and tell the person to ask you for status. You cannot watch a run "
-        "between turns (the agent cannot watch after its reply). "
+        "between turns (the agent cannot watch after its reply). When you start a run, say up front how the person will hear: "
+        "Hydrata emails them when it completes or fails, or they can ask you to check. If the run's estimate "
+        "is under about 10 minutes, keep polling and report completion in the same turn. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),

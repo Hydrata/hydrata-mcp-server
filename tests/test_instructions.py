@@ -49,6 +49,9 @@ REQUIRED = [
     "wait_seconds=180",
     "never sleep between calls",
     "ask you for status",
+    # TASK-4105 (W4)
+    "Hydrata emails them when it completes or fails",
+    "report completion in the same turn",
 ]
 
 

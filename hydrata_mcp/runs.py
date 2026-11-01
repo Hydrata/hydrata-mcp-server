@@ -46,7 +46,11 @@ async def start_simulation(
     The scenario must be in 'built' status. Returns 202 with the new run.
     The run transitions through: built → queued → computing → processing → complete.
 
-    After starting, poll get_run_status to track progress. Returns 409
+    After starting, tell the person how they will hear about the end (`say_to_user` says it:
+    you cannot watch the run after your reply; Hydrata emails them when it completes or
+    fails). If the run is estimated at under about 10 minutes, keep following it with
+    get_run_status(wait_seconds=180) and report the completion yourself in the same turn.
+    Poll get_run_status to track progress. Returns 409
     if the scenario is not in the correct state. The returned run record has
     its presigned `s3_*_url` links elided (6-hour capabilities).
 
@@ -123,11 +127,16 @@ async def start_simulation(
         },
         f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}): {paid_words}; "
         f"the run's price is {_run_quote_words(quote, list_price)}. "
-        "Open the link to watch it; the results appear on the map when it completes.",
+        f"{CANNOT_WATCH_WORDS} Open the link to watch it live; the results appear on the map when it completes.",
         run=run_id,
     )
     return json.dumps(result, indent=2)
 
+
+# TASK-4105 (D36): a connector agent cannot act after its reply, so the start message says how the person hears.
+CANNOT_WATCH_WORDS = (
+    "I can't watch it after this reply: Hydrata will email you when it is done, or ask me to check on it."
+)
 
 # TASK-3214 (W2a, epic 3200, D27) — run consent. Hydrata (not this server)
 # decides whether an agent may spend: over the key's monthly limit, or for a
@@ -188,8 +197,8 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
             result,
             project_id,
             {"run_id": run_id, "scenario_id": scenario_id, "status": run_status, "quoted_cost_usd": cost},
-            f"The user gave consent{price}: run {run_id} has started ({run_status}). Open the link to watch "
-            "it; the results appear on the map when it completes.",
+            f"The user gave consent{price}: run {run_id} has started ({run_status}). {CANNOT_WATCH_WORDS} "
+            "Open the link to watch it live; the results appear on the map when it completes.",
             run=run_id,
         )
         return result

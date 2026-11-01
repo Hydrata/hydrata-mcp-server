@@ -153,3 +153,19 @@ class TestWaitSeconds:
         assert data["timed_out"] is True and data["waited_seconds"] == 180.0 and clock.t == 180.0
         assert "wait_seconds=180" in data["next_step"] and "10 minutes" in data["next_step"]
         assert "20%" in data["say_to_user"]
+
+
+class TestStartTellsHowToHear:
+    @respx.mock
+    async def test_start_simulation_say_to_user_says_the_agent_cannot_watch_and_how_they_hear(self, _server):
+        from tests.helpers import _mock_project
+
+        respx.post(f"{BASE}/scenarios/5/run/").mock(
+            return_value=httpx.Response(
+                202, json={"id": 10, "status": "queued", "project": 42, "quote": "0.00", "quote_list_price": "1.20"}
+            )
+        )
+        _mock_project(42)
+        data = json.loads(await _server.start_simulation(scenario_id=5))
+        say = data["say_to_user"]
+        assert "can't watch it after this reply" in say and "Hydrata will email you" in say
