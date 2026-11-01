@@ -820,6 +820,7 @@ async def _map_carries_layer(project_id, alternate) -> bool | None:
 INLINE_LAYER_MAX_BYTES = 150_000
 INLINE_LAYER_KINDS = tuple(INPUT_LAYER_ROUTES)
 INLINE_WRITE_PATH = "/projects/{project_id}/input-layers/write/"
+READ_FEATURES_PATH = "/projects/{project_id}/input-layers/{kind}/{tail}features/"
 
 
 @_tool("write_input_layer")
@@ -841,13 +842,31 @@ async def write_input_layer(
         "One short phrase saying how you made these features (e.g. 'traced from the council PDF', "
         "'digitised from the survey CSV'). Shown to the person who reviews the layer.",
     ] = "",
+    mode: Annotated[
+        str,
+        "'append' adds `features` to the layer's existing features (the person's keep their ids); "
+        "'replace' writes a new layer. Leave empty: Hydrata appends when the layer holds features a "
+        "person drew, and replaces otherwise.",
+    ] = "",
+    replace_existing: Annotated[
+        bool,
+        "Only true after the person agreed to a replace that removes the features they drew. Without it a "
+        "replace of a layer holding their features is refused and the refusal says how many.",
+    ] = False,
 ) -> str:
     """Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.
 
     No file, no key, no upload: the features go in `features`. Hydrata
     converts them into the project's grid and puts them in the project's
-    default layer of that kind, replacing what it held (the old layer is kept,
-    unlinked). Unlike attach_input_layer there is nothing to poll.
+    default layer of that kind. Unlike attach_input_layer there is nothing to
+    poll.
+
+    READ FIRST with read_input_layer. When the layer holds features a person
+    drew, this tool ADDS yours beside them (mode 'append', the default; their
+    feature ids hold). A replace (mode 'replace') writes a new layer and unlinks
+    the old one, so it is refused unless the person agreed and you pass
+    replace_existing=true; the refusal says how many of their features it would
+    remove. Ask them before you replace.
 
     Every feature must be the kind's geometry (lines for boundary, inflow and
     culvert; polygons for friction, rainfall, building and mesh_region); a
@@ -881,10 +900,16 @@ async def write_input_layer(
             "writing a layer in a tool call. Nothing was sent. Ask the person to upload the layer in their "
             f"browser: call request_input_upload(project_id={project_id}, kind={kind!r}) for the upload link and give it to them."
         )
+    payload: dict = {"kind": kind, "features": features, "authored_method": method}
+    mode = (mode or "").strip().lower()
+    if mode:
+        if mode not in ("append", "replace"):
+            raise ToolError("mode must be 'append' or 'replace' (or empty: Hydrata chooses)")
+        payload["mode"] = mode
+    if replace_existing:
+        payload["replace_existing"] = True
     body, status_code = await client.post(
-        INLINE_WRITE_PATH.format(project_id=project_id),
-        json={"kind": kind, "features": features, "authored_method": method},
-        raise_for_status=False,
+        INLINE_WRITE_PATH.format(project_id=project_id), json=payload, raise_for_status=False
     )
     if status_code >= 400:
         detail = body.get("detail") if isinstance(body, dict) else None
@@ -902,11 +927,52 @@ async def write_input_layer(
     label = kind.replace("_", " ")
     summary = await _layer_summary(alternate)
     summary.update(kind=kind, row_id=result.get("row_id"), feature_count=result.get("feature_count"))
-    say = (
-        f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
-        f"confirm it is the right {label}, in the right place; review it there."
-    )
+    if result.get("mode") == "append":
+        added = len(result.get("appended_fids") or [])
+        say = (
+            f"Added {added} to the {label} layer beside the {result.get('kept_features')} already there "
+            f"({result.get('feature_count')} in all). The layer is unreviewed as a whole until the person "
+            "reviews it: open the link and check the new one is in the right place."
+        )
+    else:
+        say = (
+            f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
+            f"confirm it is the right {label}, in the right place; review it there."
+        )
     return json.dumps(await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
+
+
+@_tool("read_input_layer")
+async def read_input_layer(
+    project_id: Annotated[int, "The project ID"],
+    kind: Annotated[
+        str,
+        "Which input: boundary, friction, inflow, rainfall, building, mesh_region or culvert.",
+    ],
+    row_id: Annotated[
+        int | None,
+        "The input row's id (from list_inputs). Leave empty for the project's default row of that kind.",
+    ] = None,
+) -> str:
+    """Read the features of a project input layer: GeoJSON in EPSG:4326 with each feature's `id` (fid),
+    its attributes and its `author` (`person`, or the agent grant and client that wrote it).
+
+    Read a layer before you write to it. A person may have drawn features in
+    the map that you cannot otherwise see; write_input_layer then ADDS to the
+    layer rather than replacing it. Read-only.
+    """
+    kind = kind.strip().lower().replace("-", "_")
+    if kind in LEGACY_INPUT_LAYER_KINDS:
+        kind = LEGACY_INPUT_LAYER_KINDS[kind]
+    if kind in UNSUPPORTED_INPUT_LAYER_KINDS or kind not in INLINE_LAYER_KINDS:
+        raise ToolError(f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)}")
+    tail = f"{row_id}/" if row_id is not None else ""
+    body = await client.get(READ_FEATURES_PATH.format(project_id=project_id, kind=kind, tail=tail))
+    result = dict(body) if isinstance(body, dict) else {"body": body}
+    features = result.get("features") or []
+    result["feature_count"] = len(features)
+    result["person_features"] = sum(1 for f in features if (f.get("author") or {}).get("type") == "person")
+    return json.dumps(result, indent=2)
 
 
 UPLOAD_PAGE_LIMIT_MB = 100  # the importer's per-file cap (dataset_upload_size)

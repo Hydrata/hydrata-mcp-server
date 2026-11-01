@@ -300,6 +300,7 @@ class TestClientHeaders:
 # Stored proof: -k "annotations or list_inputs or list_time_series or phase".
 # ---------------------------------------------------------------------------
 READ_TOOLS = {
+    "read_input_layer",
     "list_projects",
     "suggest_capability",
     "get_project",
@@ -321,11 +322,11 @@ DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation", "delete_time_series"}
 
 
 class TestToolAnnotations:
-    async def test_annotations_on_all_36_tools_read_hints_and_cancel_destructive(self, _server):
+    async def test_annotations_on_all_37_tools_read_hints_and_cancel_destructive(self, _server):
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
-        assert len(tools) == 36
+        assert len(tools) == 37
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name

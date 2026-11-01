@@ -27,7 +27,7 @@ def _rows(capsys):
 
 async def test_suggest_capability_is_tool_36_with_read_only_annotations(_server):
     tools = await _server.mcp.list_tools()
-    assert len(tools) == 36
+    assert len(tools) == 37
     (tool,) = [t for t in tools if t.name == "suggest_capability"]
     annotations = tool.to_mcp_tool().annotations
     assert annotations.readOnlyHint is True and annotations.destructiveHint is False
