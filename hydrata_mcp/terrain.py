@@ -280,9 +280,8 @@ def _without_inferred_guess(record: dict) -> dict:
     inside `vertical_datum`/`metadata.vertical_datum`."""
     drop = ("inferred_datum_guess", "inferred_confidence")
     cleaned = {k: v for k, v in record.items() if k not in drop}
-    for holder in (cleaned,):
-        if isinstance(holder.get("vertical_datum"), dict):
-            holder["vertical_datum"] = {k: v for k, v in holder["vertical_datum"].items() if k not in drop}
+    if isinstance(cleaned.get("vertical_datum"), dict):
+        cleaned["vertical_datum"] = {k: v for k, v in cleaned["vertical_datum"].items() if k not in drop}
     metadata = cleaned.get("metadata")
     if isinstance(metadata, dict) and isinstance(metadata.get("vertical_datum"), dict):
         cleaned["metadata"] = {
