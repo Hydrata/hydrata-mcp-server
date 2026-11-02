@@ -25,6 +25,8 @@ REQUIRED = [
     "never fetch your own terrain",
     "list_terrain_sources",
     "create_terrain_from_source",
+    "sample_terrain the points or terrain_profile the line first",
+    "the lowest point on a profile across a channel is the invert candidate",
     "vertical_datum_declared",
     "Never relay the datum Hydrata inferred",
     "levels_datum",

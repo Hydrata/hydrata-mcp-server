@@ -1444,6 +1444,47 @@
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Read ground levels at points"
+    },
+    "description": "Read the ground level of a terrain at points, to place a culvert, inflow or boundary on the ground.\n\nReturns `samples`: for each point you gave, in order, `lon`, `lat` and `level`\n(the terrain's own height in metres, on the terrain's vertical datum: see\nget_terrain `vertical_datum`). `level` is null where the terrain has no\ndata or the point lies outside it: say so, never treat it as zero. These\nare the same values the browser's Profile panel reads. Read-only; changes nothing.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "points": {
+          "description": "Up to 500 [longitude, latitude] pairs in WGS84 degrees (longitude FIRST), e.g. [[149.1, -35.28]]",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "terrain_id": {
+          "description": "The terrain ID (get_terrain, or the `terrain` on get_scenario)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "points"
+      ],
+      "type": "object"
+    },
+    "name": "sample_terrain",
+    "title": "Read ground levels at points"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
       "readOnlyHint": false,
       "title": "Save a project's default comparison tolerance"
     },
@@ -1578,6 +1619,52 @@
     },
     "name": "suggest_capability",
     "title": "Tell the Hydrata team about a capability that is missing"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Read the ground along a line"
+    },
+    "description": "Read the ground along a line (a cross-section) to find where a channel runs and snap a structure to it.\n\nReturns `profile`: samples ordered along the line, each with `distance_m`\nfrom the start, `lon`, `lat` and `level` (the terrain's height in metres,\non its vertical datum: see get_terrain). `lowest` is the sample with the\nminimum level: across a channel it is the invert candidate, and its\nlon/lat is where the channel is. `level` is null where there is no data\nor the line leaves the terrain: those samples are never `lowest`. The same\nvalues the browser's Profile panel draws for the same line. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "The line to read along: at least two [longitude, latitude] pairs in WGS84 degrees (longitude FIRST)",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "step_m": {
+          "default": 5.0,
+          "description": "Metres between samples (default 5). At most 2000 samples are returned.",
+          "type": "number"
+        },
+        "terrain_id": {
+          "description": "The terrain ID (get_terrain, or the `terrain` on get_scenario)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "line"
+      ],
+      "type": "object"
+    },
+    "name": "terrain_profile",
+    "title": "Read the ground along a line"
   },
   {
     "annotations": {

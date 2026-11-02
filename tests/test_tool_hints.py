@@ -27,6 +27,8 @@ READ_ONLY = {
     "get_run_status",
     "get_scenario",
     "get_terrain",
+    "sample_terrain",
+    "terrain_profile",
     "list_inputs",
     "list_observations",
     "list_projects",
@@ -83,12 +85,12 @@ def test_tool_hints_the_three_groups_are_disjoint():
     assert not set(WRITES) & SPENDS_COMPUTE
 
 
-async def test_tool_hints_the_table_names_every_one_of_the_40_tools(_server):
+async def test_tool_hints_the_table_names_every_one_of_the_42_tools(_server):
     tools = await _tools(_server)
-    assert len(tools) == 40
+    assert len(tools) == 42
     grouped = READ_ONLY | set(WRITES) | SPENDS_COMPUTE
     assert grouped == set(tools), {"unlisted": sorted(set(tools) - grouped), "stale": sorted(grouped - set(tools))}
-    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 40
+    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 42
 
 
 async def test_tool_hints_read_only_tools_say_read_only_and_not_destructive(_server):

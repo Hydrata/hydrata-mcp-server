@@ -642,3 +642,149 @@ async def create_terrain_from_source(
     polled["summary"] = summary
     polled["say_to_user"] = say
     return json.dumps(_elide_presigned(polled), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4108 (W7e, epic 4117) - read the ground before placing anything on it.
+#
+# Two read-only wrappers over the SAME raster reads the Profile panel makes:
+# GET terrain/<id>/profile/ (the panel's own route) and GET terrain/<id>/sample/. Hydrata answers `null`
+# for nodata and for a point outside the raster; the tools keep that null (never 0).
+# ---------------------------------------------------------------------------
+SAMPLE_MAX_POINTS = 500
+
+
+def _lon_lat_pairs(value, label: str, minimum: int) -> list[list[float]]:
+    """`value` as a list of [lon, lat] pairs (WGS84), or a ToolError before any request."""
+    if not isinstance(value, list) or len(value) < minimum:
+        raise ToolError(f"{label} must be a list of at least {minimum} [lon, lat] pairs. Nothing was sent.")
+    pairs = []
+    for position, pair in enumerate(value, start=1):
+        if (
+            not isinstance(pair, (list, tuple))
+            or len(pair) != 2
+            or any(isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) for n in pair)
+        ):
+            raise ToolError(f"{label}[{position}] must be [lon, lat] numbers. Nothing was sent.")
+        lon, lat = float(pair[0]), float(pair[1])
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+            raise ToolError(
+                f"{label}[{position}] is not WGS84: give [longitude, latitude] in degrees "
+                "(longitude first). Nothing was sent."
+            )
+        pairs.append([lon, lat])
+    return pairs
+
+
+def _round_level(value):
+    return round(value, 3) if isinstance(value, (int, float)) else None
+
+
+@_tool("sample_terrain")
+async def sample_terrain(
+    project_id: Annotated[int, "The project ID"],
+    terrain_id: Annotated[int, "The terrain ID (get_terrain, or the `terrain` on get_scenario)"],
+    points: Annotated[
+        list[list[float]],
+        "Up to 500 [longitude, latitude] pairs in WGS84 degrees (longitude FIRST), e.g. [[149.1, -35.28]]",
+    ],
+) -> str:
+    """Read the ground level of a terrain at points, to place a culvert, inflow or boundary on the ground.
+
+    Returns `samples`: for each point you gave, in order, `lon`, `lat` and `level`
+    (the terrain's own height in metres, on the terrain's vertical datum: see
+    get_terrain `vertical_datum`). `level` is null where the terrain has no
+    data or the point lies outside it: say so, never treat it as zero. These
+    are the same values the browser's Profile panel reads. Read-only; changes nothing.
+    """
+    pairs = _lon_lat_pairs(points, "points", 1)
+    if len(pairs) > SAMPLE_MAX_POINTS:
+        raise ToolError(f"points holds at most {SAMPLE_MAX_POINTS} points (got {len(pairs)}). Nothing was sent.")
+    wkt = "MULTIPOINT(" + ", ".join(f"({lon!r} {lat!r})" for lon, lat in pairs) + ")"
+    body = await client.get(f"/projects/{project_id}/terrain/{terrain_id}/sample/", params={"points": wkt})
+    rows = body.get("samples", []) if isinstance(body, dict) else []
+    samples = [
+        {"lon": row.get("lon"), "lat": row.get("lat"), "level": _round_level(row.get("terrain"))}
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    levels = [row["level"] for row in samples if row["level"] is not None]
+    missing = len(samples) - len(levels)
+    summary = {
+        "terrain_id": terrain_id,
+        "points": len(samples),
+        "with_level": len(levels),
+        "without_level": missing,
+        "level_min": min(levels) if levels else None,
+        "level_max": max(levels) if levels else None,
+    }
+    say = f"Read the terrain at {len(samples)} point(s)."
+    if levels:
+        say += f" Ground levels run from {min(levels)} to {max(levels)} m."
+    if missing:
+        say += f" {missing} point(s) have no ground level (outside the terrain or no data): do not use them."
+    return json.dumps({"samples": samples, "summary": summary, "say_to_user": say}, indent=2)
+
+
+@_tool("terrain_profile")
+async def terrain_profile(
+    project_id: Annotated[int, "The project ID"],
+    terrain_id: Annotated[int, "The terrain ID (get_terrain, or the `terrain` on get_scenario)"],
+    line: Annotated[
+        list[list[float]],
+        "The line to read along: at least two [longitude, latitude] pairs in WGS84 degrees (longitude FIRST)",
+    ],
+    step_m: Annotated[float, "Metres between samples (default 5). At most 2000 samples are returned."] = 5.0,
+) -> str:
+    """Read the ground along a line (a cross-section) to find where a channel runs and snap a structure to it.
+
+    Returns `profile`: samples ordered along the line, each with `distance_m`
+    from the start, `lon`, `lat` and `level` (the terrain's height in metres,
+    on its vertical datum: see get_terrain). `lowest` is the sample with the
+    minimum level: across a channel it is the invert candidate, and its
+    lon/lat is where the channel is. `level` is null where there is no data
+    or the line leaves the terrain: those samples are never `lowest`. The same
+    values the browser's Profile panel draws for the same line. Read-only.
+    """
+    pairs = _lon_lat_pairs(line, "line", 2)
+    if isinstance(step_m, bool) or not isinstance(step_m, (int, float)) or not math.isfinite(step_m) or step_m <= 0:
+        raise ToolError("step_m must be a number of metres greater than 0. Nothing was sent.")
+    wkt = "LINESTRING(" + ", ".join(f"{lon!r} {lat!r}" for lon, lat in pairs) + ")"
+    body = await client.get(
+        f"/projects/{project_id}/terrain/{terrain_id}/profile/", params={"line": wkt, "spacing_m": step_m}
+    )
+    rows = body.get("samples", []) if isinstance(body, dict) else []
+    profile = [
+        {
+            "distance_m": round(row["distance_m"], 2) if isinstance(row.get("distance_m"), (int, float)) else None,
+            "lon": row.get("lon"),
+            "lat": row.get("lat"),
+            "level": _round_level(row.get("dem")),
+        }
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    with_level = [row for row in profile if row["level"] is not None]
+    lowest = min(with_level, key=lambda row: row["level"]) if with_level else None
+    highest = max(row["level"] for row in with_level) if with_level else None
+    length = profile[-1]["distance_m"] if profile else None
+    summary = {
+        "terrain_id": terrain_id,
+        "samples": len(profile),
+        "length_m": length,
+        "step_m": step_m,
+        "without_level": len(profile) - len(with_level),
+        "level_min": lowest["level"] if lowest else None,
+        "level_max": highest,
+    }
+    if lowest:
+        say = (
+            f"Read {len(profile)} ground levels along {length} m. The lowest is {lowest['level']} m at "
+            f"{lowest['distance_m']} m along the line (lon {lowest['lon']}, lat {lowest['lat']}): that is the "
+            "channel invert candidate if the line crosses a channel. Check it with the person."
+        )
+    else:
+        say = "The line has no ground level anywhere: it lies outside the terrain or on no-data cells."
+    if profile and len(with_level) < len(profile):
+        say += f" {len(profile) - len(with_level)} sample(s) have no ground level."
+    return json.dumps({"profile": profile, "lowest": lowest, "summary": summary, "say_to_user": say}, indent=2)

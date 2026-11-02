@@ -194,6 +194,8 @@ mcp = FastMCP(
         "datum (an uploaded DEM's, on finalize_terrain_upload); never put the person's levels there. "
         "Never relay the datum Hydrata inferred as fact. When get_terrain or get_project reports a "
         "levels datum mismatch, relay it. "
+        "To place a culvert, inflow or boundary on the ground, sample_terrain the points or terrain_profile "
+        "the line first; the lowest point on a profile across a channel is the invert candidate. "
         "ASK BEFORE YOU BUILD: before you write any input or build, ask the user which approach they want, "
         "rain-on-grid (rain falls on the whole model domain) or an inflow hydrograph at a place they name, and "
         "if they say 'hydrograph' ask whether they mean an inflow hydrograph that drives the model or the flow "
@@ -301,6 +303,9 @@ TOOL_ANNOTATIONS = {
     "get_flow_hydrograph": ("Flow across a line for a run", True, False, True),
     "list_runs": ("List a project's runs", True, False, True),
     "get_terrain": ("Wait for a terrain import", True, False, True),
+    # TASK-4108: read the ground (point heights; a profile along a line) before placing a structure on it.
+    "sample_terrain": ("Read ground levels at points", True, False, True),
+    "terrain_profile": ("Read the ground along a line", True, False, True),
     # TASK-4059: Hydrata's own terrain sources (GA 5 m, Copernicus), listed then fetched.
     "list_terrain_sources": ("List the terrain Hydrata can fetch for a site", True, False, True),
     "create_terrain_from_source": ("Fetch terrain from a Hydrata source", False, False, False),
