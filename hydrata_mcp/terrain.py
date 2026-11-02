@@ -652,6 +652,23 @@ async def create_terrain_from_source(
 # for nodata and for a point outside the raster; the tools keep that null (never 0).
 # ---------------------------------------------------------------------------
 SAMPLE_MAX_POINTS = 500
+# W7e review F1: the sample route is a GET and nginx holds an 8 KB request line, which carries about 180
+# full-precision points; the points go to Hydrata in chunks of this size, in order, so the 500 promise holds.
+SAMPLE_CHUNK_POINTS = 100
+# W7e review F8: a profile answer is one row per step; more than this in one reply floods the agent's context.
+PROFILE_MAX_ROWS = 500
+_EARTH_RADIUS_M = 6_371_000.0
+
+
+def _line_length_m(pairs: list[list[float]]) -> float:
+    """Great-circle length of a WGS84 polyline in metres (close enough to size the sample count)."""
+    total = 0.0
+    for (lon1, lat1), (lon2, lat2) in zip(pairs, pairs[1:]):
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dlat, dlon = p2 - p1, math.radians(lon2 - lon1)
+        a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
+        total += 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(a))
+    return total
 
 
 def _lon_lat_pairs(value, label: str, minimum: int) -> list[list[float]]:
@@ -700,9 +717,12 @@ async def sample_terrain(
     pairs = _lon_lat_pairs(points, "points", 1)
     if len(pairs) > SAMPLE_MAX_POINTS:
         raise ToolError(f"points holds at most {SAMPLE_MAX_POINTS} points (got {len(pairs)}). Nothing was sent.")
-    wkt = "MULTIPOINT(" + ", ".join(f"({lon!r} {lat!r})" for lon, lat in pairs) + ")"
-    body = await client.get(f"/projects/{project_id}/terrain/{terrain_id}/sample/", params={"points": wkt})
-    rows = body.get("samples", []) if isinstance(body, dict) else []
+    rows = []
+    for start in range(0, len(pairs), SAMPLE_CHUNK_POINTS):
+        chunk = pairs[start : start + SAMPLE_CHUNK_POINTS]
+        wkt = "MULTIPOINT(" + ", ".join(f"({lon!r} {lat!r})" for lon, lat in chunk) + ")"
+        body = await client.get(f"/projects/{project_id}/terrain/{terrain_id}/sample/", params={"points": wkt})
+        rows.extend(body.get("samples", []) if isinstance(body, dict) else [])
     samples = [
         {"lon": row.get("lon"), "lat": row.get("lat"), "level": _round_level(row.get("terrain"))}
         for row in rows
@@ -734,7 +754,10 @@ async def terrain_profile(
         list[list[float]],
         "The line to read along: at least two [longitude, latitude] pairs in WGS84 degrees (longitude FIRST)",
     ],
-    step_m: Annotated[float, "Metres between samples (default 5). At most 2000 samples are returned."] = 5.0,
+    step_m: Annotated[
+        float,
+        "Metres between samples (default 5). One call returns at most 500 samples: use a larger step for a long line.",
+    ] = 5.0,
 ) -> str:
     """Read the ground along a line (a cross-section) to find where a channel runs and snap a structure to it.
 
@@ -749,6 +772,15 @@ async def terrain_profile(
     pairs = _lon_lat_pairs(line, "line", 2)
     if isinstance(step_m, bool) or not isinstance(step_m, (int, float)) or not math.isfinite(step_m) or step_m <= 0:
         raise ToolError("step_m must be a number of metres greater than 0. Nothing was sent.")
+    length_m = _line_length_m(pairs)
+    expected = int(length_m / step_m) + 1
+    if expected > PROFILE_MAX_ROWS:
+        least = math.ceil(length_m / (PROFILE_MAX_ROWS - 1))
+        raise ToolError(
+            f"That line is about {round(length_m)} m long: at step_m {step_m} it would return {expected} samples, "
+            f"more than the {PROFILE_MAX_ROWS} one call returns. Use step_m of at least {least} m, or a shorter "
+            "line. Nothing was sent."
+        )
     wkt = "LINESTRING(" + ", ".join(f"{lon!r} {lat!r}" for lon, lat in pairs) + ")"
     body = await client.get(
         f"/projects/{project_id}/terrain/{terrain_id}/profile/", params={"line": wkt, "spacing_m": step_m}
@@ -768,11 +800,14 @@ async def terrain_profile(
     lowest = min(with_level, key=lambda row: row["level"]) if with_level else None
     highest = max(row["level"] for row in with_level) if with_level else None
     length = profile[-1]["distance_m"] if profile else None
+    # The spacing Hydrata used (it fits whole steps to the line), not only the one asked for.
+    used = profile[1]["distance_m"] - profile[0]["distance_m"] if len(profile) > 1 else None
     summary = {
         "terrain_id": terrain_id,
         "samples": len(profile),
         "length_m": length,
-        "step_m": step_m,
+        "step_m": round(used, 2) if isinstance(used, (int, float)) else step_m,
+        "step_m_requested": step_m,
         "without_level": len(profile) - len(with_level),
         "level_min": lowest["level"] if lowest else None,
         "level_max": highest,

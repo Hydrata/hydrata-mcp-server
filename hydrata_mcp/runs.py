@@ -372,6 +372,12 @@ def _run_phase(status_record: dict) -> str:
     return status
 
 
+SWW_UNREADABLE_WORDS = (
+    "The time series storage refused the read, so Hydrata cannot tell whether it is kept. "
+    "This is a fault on Hydrata's side: ask the operator."
+)
+
+
 async def _sww_summary(run_id, run) -> dict:
     """`{state, size_bytes, ui_url}` for a run's full time series (TASK-4062).
 
@@ -388,7 +394,8 @@ async def _sww_summary(run_id, run) -> dict:
             summary["size_bytes"] = body.get("size_bytes")
             if body.get("state") == "unreadable":
                 summary["error_code"] = body.get("error_code")
-                summary["detail"] = body.get("detail")
+                # The status route carries error_code only; the words are composed here when it sends none.
+                summary["detail"] = body.get("detail") or SWW_UNREADABLE_WORDS
     except Exception as exc:
         summary["error"] = f"could not check the time series: {exc}"
         return summary

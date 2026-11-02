@@ -328,12 +328,13 @@ class TestGetRunSwwDownload:
         run = _presigned_run(67181, "complete", project=42, scenario=7)
         respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
         respx.get(f"{BASE}/runs/67181/sww/").mock(
+            # The REAL status answer (api_v2 sww_status): state, size_bytes and error_code, no detail (W7e review F2)
             return_value=httpx.Response(
                 200,
                 json={
                     "state": "unreadable",
+                    "size_bytes": None,
                     "error_code": "SWW_STORAGE_UNREADABLE",
-                    "detail": "The storage refused the read; ask the operator.",
                     "url": "https://b.s3.amazonaws.com/k.sww?X-Amz-Signature=zz",
                 },
             )
@@ -343,7 +344,21 @@ class TestGetRunSwwDownload:
         assert "X-Amz" not in result
         sww = json.loads(result)["sww"]
         assert sww["state"] == "unreadable" and sww["error_code"] == "SWW_STORAGE_UNREADABLE"
-        assert sww["detail"] and "url" not in sww and "link" not in sww
+        assert "refused the read" in sww["detail"] and "operator" in sww["detail"]
+        assert "url" not in sww and "link" not in sww
+
+    @respx.mock
+    async def test_sww_unreadable_relays_the_servers_own_detail_when_it_sends_one(self, _server):
+        run = _presigned_run(67181, "complete", project=42, scenario=7)
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(
+            return_value=httpx.Response(
+                200, json={"state": "unreadable", "error_code": "SWW_STORAGE_UNREADABLE", "detail": "Server words."}
+            )
+        )
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
+        sww = json.loads(await _server.get_run(run_id=67181))["sww"]
+        assert sww["detail"] == "Server words."
 
     @respx.mock
     async def test_sww_summary_available_relays_neither_error_code_nor_detail(self, _server):

@@ -1,6 +1,7 @@
 """Scenario tools: read, create and build scenarios."""
 
 import json
+import math
 from typing import Annotated
 
 from fastmcp.exceptions import ToolError
@@ -593,26 +594,46 @@ async def clone_scenario(
     if new_id is None:
         return _post_result(body, _status)
     base = f"/projects/{project_id}/scenarios/{new_id}/"
-    unapplied = {key: value for key, value in payload.items() if body.get(key) != value}
+    unapplied = {key: value for key, value in payload.items() if not _applied(value, body.get(key))}
     if unapplied:
         # An older Hydrata ignores the body and answers '<name>-copy': apply them with the PATCH it does have.
+        copy_name = _data(str(body.get("name") or f"{scenario_id}-copy"))
+        exists = f"The copy exists as scenario {new_id} named '{copy_name}'; fix it with update_scenario or delete it."
         try:
             await client.patch(base, json=unapplied)
         except HydrataAPIError as exc:
-            copy_name = body.get("name") or f"{scenario_id}-copy"
-            raise HydrataAPIError(
-                f"{exc} The copy exists as scenario {new_id} named '{copy_name}'; "
-                "fix it with update_scenario or delete it.",
-                status=exc.status,
-                code=exc.code,
-            ) from exc
-    detail = await client.get(base)
+            raise HydrataAPIError(f"{exc} {exists}", status=exc.status, code=exc.code) from exc
+        except Exception as exc:  # a transport failure must still name the copy (W7e review F5)
+            raise HydrataAPIError(f"{exc} {exists}", status=502) from exc
+    try:
+        detail = await client.get(base)
+    except Exception as exc:  # the copy is made; a failed read-back must still name it (W7e review F5)
+        return json.dumps(
+            {
+                "id": new_id,
+                "summary": {"scenario_id": new_id},
+                "say_to_user": (
+                    f"Copied scenario {scenario_id} to {new_id}, but its detail could not be read back ({exc}): "
+                    f"call get_scenario {new_id}. No run was copied and nothing was built."
+                ),
+            },
+            indent=2,
+        )
     say = (
         f"Copied scenario {scenario_id} to {new_id}. No run was copied and nothing was built. "
         "Open the link, check its inputs, then build it when the person agrees."
     )
     result_text = await _edit_hand_back(project_id, new_id, detail, say)
     return result_text
+
+
+def _applied(sent, got) -> bool:
+    """True when the copy carries the value sent: Hydrata trims strings and answers 15 as 15.0 (W7e review F4)."""
+    if isinstance(sent, str) and isinstance(got, str):
+        return sent.strip() == got.strip()
+    if isinstance(sent, (int, float)) and isinstance(got, (int, float)) and not isinstance(sent, bool):
+        return math.isclose(float(sent), float(got), rel_tol=1e-9, abs_tol=1e-9)
+    return sent == got
 
 
 def _fmt_count(value) -> str:

@@ -900,13 +900,45 @@ class TestCloneScenarioOneCall:
         assert json.loads(patch.calls[0].request.content) == {"resolution": 10, "name": "fine"}
 
     @respx.mock
+    async def test_clone_trimmed_name_or_float_resolution_is_not_patched_again(self, _server):
+        """W7e review F4: Hydrata trims 'fine ' to 'fine' and answers 15 as 15.0; that is applied, not a fallback."""
+        respx.post(self.DUP).mock(
+            return_value=httpx.Response(201, json={"id": 6, "name": "fine", "resolution": 15.0, "description": "a"})
+        )
+        patch = respx.patch(self.NEW).mock(return_value=httpx.Response(403, json={"error_code": "FORBIDDEN"}))
+        respx.get(self.NEW).mock(return_value=httpx.Response(200, json=_scenario(id=6)))
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "clone_scenario",
+                {
+                    "project_id": 42,
+                    "scenario_id": 5,
+                    "name": "fine ",
+                    "overrides": {"resolution": 15, "description": "a\n"},
+                },
+            )
+        )
+        assert patch.call_count == 0 and data["id"] == 6
+
+    @respx.mock
+    async def test_clone_detail_read_failure_still_names_the_copy(self, _server):
+        """W7e review F5: the copy exists; a failed read-back after it names the id instead of a bare error."""
+        respx.post(self.DUP).mock(return_value=httpx.Response(201, json={"id": 6, "name": "fine"}))
+        respx.get(self.NEW).mock(return_value=httpx.Response(500, text="boom"))
+        data = _tool_json(
+            await _call_as_caller(_server, "clone_scenario", {"project_id": 42, "scenario_id": 5, "name": "fine"})
+        )
+        assert data["id"] == 6 and "get_scenario 6" in data["say_to_user"]
+
+    @respx.mock
     async def test_clone_refused_patch_names_the_copy_that_exists(self, _server):
         respx.post(self.DUP).mock(return_value=httpx.Response(201, json={"id": 6, "name": "x-copy"}))
         respx.patch(self.NEW).mock(return_value=httpx.Response(400, json={"error_code": "VALIDATION_ERROR"}))
         text = _tool_error_text(
             await _call_as_caller(_server, "clone_scenario", {"project_id": 42, "scenario_id": 5, "name": "fine"})
         )
-        assert "scenario 6" in text and "'x-copy'" in text and "update_scenario" in text
+        assert "scenario 6" in text and "x-copy" in text and "update_scenario" in text  # the name rides in _data()
 
     @respx.mock
     async def test_clone_refused_by_the_one_call_creates_nothing_and_never_patches(self, _server):

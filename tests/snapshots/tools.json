@@ -1648,7 +1648,7 @@
         },
         "step_m": {
           "default": 5.0,
-          "description": "Metres between samples (default 5). At most 2000 samples are returned.",
+          "description": "Metres between samples (default 5). One call returns at most 500 samples: use a larger step for a long line.",
           "type": "number"
         },
         "terrain_id": {

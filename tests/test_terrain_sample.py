@@ -101,7 +101,7 @@ async def test_terrain_profile_off_the_terrain_has_no_lowest_and_says_so(_server
     )
     data = _tool_json(
         await _call_as_caller(
-            _server, "terrain_profile", {"project_id": 42, "terrain_id": 7, "line": [[1, 1], [1.1, 1]]}
+            _server, "terrain_profile", {"project_id": 42, "terrain_id": 7, "line": [[1, 1], [1.001, 1]]}
         )
     )
     assert data["lowest"] is None and "no ground level" in data["say_to_user"]
@@ -125,3 +125,57 @@ async def test_sample_terrain_and_terrain_profile_are_read_only_tools_with_a_sna
     snapshot = json.load(open("tests/snapshots/tools.json"))
     names = {t["name"] for t in (snapshot if isinstance(snapshot, list) else snapshot["tools"])}
     assert {"sample_terrain", "terrain_profile"} <= names
+
+
+@respx.mock
+async def test_sample_terrain_sends_more_than_100_points_in_chunks_and_keeps_the_order(_server):
+    """W7e review F1: nginx holds an 8 KB request line (about 180 points), so the tool sends chunks of 100."""
+    seen = []
+
+    def answer(request):
+        wkt = parse_qs(urlparse(str(request.url)).query)["points"][0]
+        pts = wkt[len("MULTIPOINT(") : -1].split(", ")
+        seen.append(len(pts))
+        return httpx.Response(
+            200,
+            json={"samples": [{"lon": float(p.strip("()").split()[0]), "lat": 0.0, "terrain": 1.0} for p in pts]},
+        )
+
+    route = respx.get(SAMPLE).mock(side_effect=answer)
+    points = [[i / 10, 0.0] for i in range(1, 251)]
+    data = _tool_json(
+        await _call_as_caller(_server, "sample_terrain", {"project_id": 42, "terrain_id": 7, "points": points})
+    )
+    assert route.call_count == 3 and seen == [100, 100, 50]
+    assert [row["lon"] for row in data["samples"]] == [i / 10 for i in range(1, 251)]
+    assert data["summary"]["points"] == 250 and data["summary"]["with_level"] == 250
+
+
+@respx.mock
+async def test_terrain_profile_refuses_a_line_that_would_return_more_than_500_samples_before_any_request(_server):
+    """W7e review F8: a 10 km line at 5 m is 2001 rows; the tool says which step fits instead of flooding the agent."""
+    route = respx.get(PROFILE).mock(return_value=httpx.Response(200, json={"samples": []}))
+    text = _tool_error_text(
+        await _call_as_caller(
+            _server,
+            "terrain_profile",
+            {"project_id": 42, "terrain_id": 7, "line": [[149.0, -35.28], [149.11, -35.28]], "step_m": 5},
+        )
+    )
+    assert "500" in text and "step_m of at least" in text and "Nothing was sent" in text
+    assert not route.called
+
+
+@respx.mock
+async def test_terrain_profile_reports_the_spacing_actually_used(_server):
+    """W7e review F8: Hydrata fits whole steps to the line, so summary.step_m is the spacing of the rows."""
+    rows = [{"distance_m": d, "lon": 149.1, "lat": -35.28, "dem": 10.0 + d} for d in (0.0, 4.8, 9.6, 14.4)]
+    respx.get(PROFILE).mock(return_value=httpx.Response(200, json={"samples": rows}))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "terrain_profile",
+            {"project_id": 42, "terrain_id": 7, "line": [[149.1, -35.28], [149.1002, -35.28]], "step_m": 5},
+        )
+    )
+    assert data["summary"]["step_m"] == 4.8 and data["summary"]["step_m_requested"] == 5
