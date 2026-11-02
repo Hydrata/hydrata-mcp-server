@@ -1633,7 +1633,7 @@
       "additionalProperties": false,
       "properties": {
         "line": {
-          "description": "The line to read along: at least two [longitude, latitude] pairs in WGS84 degrees (longitude FIRST)",
+          "description": "The line to read along: 2 to 150 [longitude, latitude] pairs in WGS84 degrees (longitude FIRST); simplify a longer line, it rides in the request URL",
           "items": {
             "items": {
               "type": "number"

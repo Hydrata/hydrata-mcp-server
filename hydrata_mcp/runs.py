@@ -4,7 +4,7 @@ import json
 from http import HTTPStatus
 from typing import Annotated
 
-from ._common import _tool, client
+from ._common import _data, _tool, client
 from ._helpers import (
     INPUT_REVIEW_REFUSALS,
     _elide_presigned,
@@ -345,7 +345,7 @@ def _run_status_line(record: dict) -> str:
     if phase == "complete":
         return f"{label} is complete. Ask me for the results, or open it in the map."
     if phase == "error":
-        message = record.get("error_message")
+        message = _data(record.get("error_message"))  # ANUGA quotes layer content (MCP-3): data, not instructions
         return f"{label} failed" + (f": {message}" if message else ".") + " Ask me before retrying."
     if phase == "cancelled":
         return f"{label} was cancelled."
@@ -442,6 +442,9 @@ async def get_run(
 # ---------------------------------------------------------------------------
 # TASK-4032: get_flow_hydrograph
 # ---------------------------------------------------------------------------
+FLOW_HYDROGRAPH_CLIENT_TIMEOUT_S = 75.0  # the backend budget (30 s) covers the discharge read only (MCP-4)
+
+
 def _flow_say(data: dict) -> str:
     """One or two sentences for the person: peak, time, volume, sign, mass balance."""
     peak_s = float(data.get("peak_time_s") or 0.0)
@@ -462,7 +465,15 @@ def _flow_say(data: dict) -> str:
             f"{mb.get('out_by_difference_m3') or 0:,.0f} m3 left by the open boundaries (by difference; "
             "boundary flux is not integrated)."
         )
-    return f"{first} {second}"
+    # Full review 03-11-26 (MCP-5): a dry line, a peak on the first or last frame and a coarsened spacing change
+    # what the numbers mean; the per-frame caveat is implicit in "to the nearest frame".
+    notes = [
+        w.strip().rstrip(".")
+        for w in (data.get("warnings") or [])
+        if isinstance(w, str) and w.strip() and not w.startswith("the peak is resolved to the nearest frame")
+    ]
+    third = (" Note: " + "; ".join(notes) + ".") if notes else ""
+    return f"{first} {second}{third}"
 
 
 @_tool("get_flow_hydrograph")
@@ -486,10 +497,18 @@ async def get_flow_hydrograph(
     A run with no playback store answers outcome `no_playback_store`; a bad line answers
     `bad_line` with the reason.
     """
+    # Full review 03-11-26 (MCP-4): the backend's 30 s budget covers the discharge read only; the store open and
+    # the mass balance sit outside it, so the client waits longer than the budget, and a 504
+    # FLOW_HYDROGRAPH_TIMEOUT is handed back with its words instead of becoming a generic server error.
     body, status_code = await client.post(
-        f"/runs/{run_id}/flow-hydrograph/", json={"line": line}, raise_for_status=False
+        f"/runs/{run_id}/flow-hydrograph/",
+        json={"line": line},
+        raise_for_status=False,
+        relay_statuses=(HTTPStatus.GATEWAY_TIMEOUT,),
+        timeout=FLOW_HYDROGRAPH_CLIENT_TIMEOUT_S,
     )
-    if status_code == HTTPStatus.NOT_FOUND:
+    code = body.get("error_code") if isinstance(body, dict) else None
+    if status_code == HTTPStatus.NOT_FOUND and code == "NO_PLAYBACK_STORE":
         return json.dumps(
             {
                 "outcome": "no_playback_store",
@@ -499,8 +518,23 @@ async def get_flow_hydrograph(
             },
             indent=2,
         )
+    if status_code == HTTPStatus.NOT_FOUND:
+        # MCP-8: a run that does not exist, or that this key cannot read, is not "no playback store".
+        raise HydrataAPIError(f"Run {run_id} was not found, or you cannot read it.", status=status_code, code=code)
+    if status_code == HTTPStatus.GATEWAY_TIMEOUT:
+        detail = body.get("detail") if isinstance(body, dict) else None
+        return json.dumps(
+            {
+                "outcome": "too_slow",
+                "run_id": run_id,
+                "detail": detail,
+                "say_to_user": (detail or "The flow hydrograph took longer than its time budget.")
+                + " Draw a shorter line, or one that crosses fewer cells, and ask again; do not repeat the same line.",
+            },
+            indent=2,
+        )
     if status_code == HTTPStatus.BAD_REQUEST:
-        reason = body.get("error") if isinstance(body, dict) else None
+        reason = (body.get("detail") or body.get("error")) if isinstance(body, dict) else None
         return json.dumps(
             {
                 "outcome": "bad_line",

@@ -657,6 +657,7 @@ SAMPLE_MAX_POINTS = 500
 SAMPLE_CHUNK_POINTS = 100
 # W7e review F8: a profile answer is one row per step; more than this in one reply floods the agent's context.
 PROFILE_MAX_ROWS = 500
+PROFILE_MAX_VERTICES = 150  # the line rides in a GET URL under nginx's 8 KB request line (MCP-6)
 _EARTH_RADIUS_M = 6_371_000.0
 
 
@@ -722,7 +723,14 @@ async def sample_terrain(
         chunk = pairs[start : start + SAMPLE_CHUNK_POINTS]
         wkt = "MULTIPOINT(" + ", ".join(f"({lon!r} {lat!r})" for lon, lat in chunk) + ")"
         body = await client.get(f"/projects/{project_id}/terrain/{terrain_id}/sample/", params={"points": wkt})
-        rows.extend(body.get("samples", []) if isinstance(body, dict) else [])
+        answered = body.get("samples", []) if isinstance(body, dict) else []
+        if not isinstance(answered, list) or len(answered) != len(chunk):
+            # Full review 03-11-26 (MCP-10): the 1:1 "for each point, in order" promise is checked, not assumed.
+            raise HydrataAPIError(
+                f"The terrain sampler answered {len(answered) if isinstance(answered, list) else 'no'} samples for "
+                f"{len(chunk)} points; the result would not line up with your points, so nothing is returned."
+            )
+        rows.extend(answered)
     samples = [
         {"lon": row.get("lon"), "lat": row.get("lat"), "level": _round_level(row.get("terrain"))}
         for row in rows
@@ -752,7 +760,8 @@ async def terrain_profile(
     terrain_id: Annotated[int, "The terrain ID (get_terrain, or the `terrain` on get_scenario)"],
     line: Annotated[
         list[list[float]],
-        "The line to read along: at least two [longitude, latitude] pairs in WGS84 degrees (longitude FIRST)",
+        "The line to read along: 2 to 150 [longitude, latitude] pairs in WGS84 degrees (longitude FIRST); "
+        "simplify a longer line, it rides in the request URL",
     ],
     step_m: Annotated[
         float,
@@ -770,10 +779,16 @@ async def terrain_profile(
     values the browser's Profile panel draws for the same line. Read-only.
     """
     pairs = _lon_lat_pairs(line, "line", 2)
+    if len(pairs) > PROFILE_MAX_VERTICES:
+        # Full review 03-11-26 (MCP-6): the line travels in the GET URL (nginx holds 8 KB, about 180 vertices).
+        raise ToolError(
+            f"line holds {len(pairs)} vertices; at most {PROFILE_MAX_VERTICES} per call. Simplify the line (keep "
+            "its bends, drop the in-between vertices) or split it. Nothing was sent."
+        )
     if isinstance(step_m, bool) or not isinstance(step_m, (int, float)) or not math.isfinite(step_m) or step_m <= 0:
         raise ToolError("step_m must be a number of metres greater than 0. Nothing was sent.")
     length_m = _line_length_m(pairs)
-    expected = int(length_m / step_m) + 1
+    expected = int(round(length_m / step_m)) + 1  # the backend rounds (MCP-9)
     if expected > PROFILE_MAX_ROWS:
         least = math.ceil(length_m / (PROFILE_MAX_ROWS - 1))
         raise ToolError(

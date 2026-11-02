@@ -100,11 +100,15 @@ DATA_TEXT_KEYS = frozenset(
         "error_message",
         "user_message",
         "cloudwatch_log_tail",
+        # full review 03-11-26 (MCP-3): the levels-datum mismatch sentence embeds the person's datum label
+        "levels_datum_mismatch",
     }
 )
 # Keys holding a VERBATIM third-party record: every string inside is data.
 # TASK-4088: `sources` is the agent's own citation list (title, url, locator): every string in it is data.
-DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config", "sources"})
+# Full review 03-11-26 (MCP-2, MCP-3): a feature's `properties` are the person's attribute values (any column
+# name), and `levels_datum` carries the label they typed and their username.
+DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config", "sources", "properties", "levels_datum"})
 
 
 def _is_wrapped(text: str) -> bool:
@@ -272,9 +276,9 @@ mcp = FastMCP(
         "is under about 10 minutes, keep polling and report completion in the same turn. "
         "FLOW ACROSS A LINE: get_flow_hydrograph(run_id, line) integrates depth times velocity normal to a "
         "drawn line from the run's playback store: relay the peak, its time, the volume, the sign convention "
-        "and the mass-balance line; it is not a gauge reading. The results hydrograph comes from "
-        "get_flow_hydrograph: Hydrata has no results hydrograph panel, so never promise one, and never promise "
-        "an output or a screen that no tool here produces. "
+        "and the mass-balance line; it is not a gauge reading. The browser's Profile panel has a Flow tab that "
+        "draws the same hydrograph for a line the person draws; there is no other results hydrograph screen, so "
+        "never promise one, and never promise an output or a screen that no tool here produces. "
         "PERMISSIONS: say once, at the start, that claude.ai will ask to allow each Hydrata tool the first time it "
         "is used, and that Always allow saves the interruptions. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "

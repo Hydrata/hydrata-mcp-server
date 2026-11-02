@@ -979,12 +979,25 @@ async def write_input_layer(
         payload["target"] = target
     if replace_shared:
         payload["replace_shared"] = True
-    body, status_code = await client.post(
-        INLINE_WRITE_PATH.format(project_id=project_id), json=payload, raise_for_status=False
-    )
+    try:
+        body, status_code = await client.post(
+            INLINE_WRITE_PATH.format(project_id=project_id), json=payload, raise_for_status=False
+        )
+    except HydrataAPIError as exc:
+        if exc.code != "UPSTREAM_TIMEOUT":
+            raise
+        # Full review 03-11-26 (MCP-7): the backend may have committed the write after the client gave up; a
+        # blind retry of an append would land the features twice.
+        raise HydrataAPIError(
+            f"The {kind} write timed out but may have landed: call read_input_layer({project_id}, '{kind}') "
+            "before writing again, so nothing is appended twice.",
+            code="UPSTREAM_TIMEOUT",
+        ) from exc
     if status_code >= 400:
         detail = body.get("detail") if isinstance(body, dict) else None
         code = body.get("error_code") if isinstance(body, dict) and isinstance(body.get("error_code"), str) else None
+        if code == "SHARED_ROW_REFUSED" and isinstance(detail, str):
+            detail = _data(detail)  # it names the scenarios (people's text)
         # TASK-4081: carry the upstream status so a 5xx is recorded broken, a 4xx refused.
         raise HydrataAPIError(
             f"Hydrata refused the {kind} layer ({status_code}): {detail or body}", status=status_code, code=code
@@ -1002,12 +1015,19 @@ async def write_input_layer(
     summary.update(kind=kind, row_id=result.get("row_id"), feature_count=result.get("feature_count"))
     sharing = [sc for sc in (result.get("shared_by_scenarios") or []) if isinstance(sc, dict)]
     share_note = ""
-    if sharing and not result.get("targeted_row"):
+    if sharing:
+        # Full review 03-11-26 (MCP-1): a targeted write that reused an existing row changes that row for every
+        # scenario on it exactly as a default-row write does: the note is said whatever `target` was.
         names = ", ".join(f"#{sc.get('id')} {_data(str(sc.get('name')))}" for sc in sharing)
         share_note = (
             f" This row is shared: scenario(s) {names} use it and now point at the new content "
             "(rebuild them before running)."
         )
+    if result.get("targeted_row") and not result.get("created_row"):
+        share_note = (
+            f" The target named the existing row #{result.get('row_id')} {_data(str(result.get('row_title')))}, "
+            "which was reused."
+        ) + share_note
     elif result.get("created_row") and target not in (None, ""):
         share_note = (
             " It is a new row attached to no scenario yet: attach it to the scenario it is for with update_scenario."
@@ -1057,7 +1077,19 @@ async def read_input_layer(
     features = result.get("features") or []
     result["feature_count"] = len(features)
     result["person_features"] = sum(1 for f in features if (f.get("author") or {}).get("type") == "person")
+    if len(features) > READ_MAX_FEATURES:
+        # Full review 03-11-26 (MCP-12): a person-uploaded building or friction layer can hold tens of thousands
+        # of polygons; the first READ_MAX_FEATURES come back with the truncation stated, never silently.
+        result["features"] = features[:READ_MAX_FEATURES]
+        result["truncated"] = True
+        result["say_to_user"] = (
+            f"This layer holds {len(features)} features; only the first {READ_MAX_FEATURES} are shown here. "
+            "The counts above cover the whole layer. Open it in the map to see all of it."
+        )
     return json.dumps(result, indent=2)
+
+
+READ_MAX_FEATURES = 1000  # full review 03-11-26 (MCP-12): the most features read_input_layer returns in one call
 
 
 UPLOAD_PAGE_LIMIT_MB = 100  # the importer's per-file cap (dataset_upload_size)

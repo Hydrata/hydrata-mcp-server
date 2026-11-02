@@ -91,8 +91,8 @@ REQUIRED_V2 = {
         "You cannot watch a run between turns",
     ],
     "6 never promises a panel or output that does not exist": [
-        "The results hydrograph comes from get_flow_hydrograph",
-        "Hydrata has no results hydrograph panel, so never promise one",
+        "The browser's Profile panel has a Flow tab",
+        "there is no other results hydrograph screen, so never promise one",
     ],
 }
 

@@ -613,7 +613,8 @@ async def clone_scenario(
                 "id": new_id,
                 "summary": {"scenario_id": new_id},
                 "say_to_user": (
-                    f"Copied scenario {scenario_id} to {new_id}, but its detail could not be read back ({exc}): "
+                    f"Copied scenario {scenario_id} to {new_id}, but its detail could not be read back "
+                    f"({_data(str(exc)[:300])}): "
                     f"call get_scenario {new_id}. No run was copied and nothing was built."
                 ),
             },

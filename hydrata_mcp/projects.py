@@ -56,8 +56,8 @@ def _levels_sentence(levels) -> str:
     """TASK-4118: the project's levels datum in one sentence for the user."""
     if not levels:
         return "No levels datum is recorded for this project: ask the user which datum their levels are in."
-    who = f", declared by {levels['declared_by']}" if levels.get("declared_by") else ""
-    return f"The user's levels are on {levels.get('label') or levels.get('datum')}{who}."
+    who = f", declared by {_data(str(levels['declared_by']))}" if levels.get("declared_by") else ""
+    return f"The user's levels are on {_data(str(levels.get('label') or levels.get('datum')))}{who}."
 
 
 async def _levels_mismatch(project_id: int) -> str | None:

@@ -49,7 +49,7 @@ class TestProgressLine:
         "status,expect",
         [
             ("complete", "is complete"),
-            ("error", "failed: boom"),
+            ("error", "failed: <untrusted-data>boom</untrusted-data>"),  # MCP-3: the message is data
             ("cancelled", "was cancelled"),
             ("queued", "is queued"),
         ],
