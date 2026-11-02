@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 ACTOR_HEADER = "X-Hydrata-Actor"
 REQUEST_ID_HEADER = "X-Request-ID"
 EVENT = "mcp_tool_call"
+# TASK-4090: the log level a kind=call line carries, so Loki's detected_level means what it says: a refusal
+# is working as designed (warning), only our own faults are errors.
+LEVEL_BY_OUTCOME = {"ok": "info", "refused": "warning", "invalid": "warning", "broken": "error"}
 ERROR_TEXT_MAX = 300
 CLIENT_TEXT_MAX = 200
 REQUEST_ID_MAX = 64
@@ -333,7 +336,7 @@ def build_record(
             "identity": caller["fingerprint"],
         }
     tool_name = _clip(tool, 100)
-    return {
+    record = {
         "event": EVENT,
         "kind": "call",
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
@@ -341,6 +344,7 @@ def build_record(
         "gen_ai.tool.name": tool_name,
         "mcp.method.name": "tools/call",
         "outcome": outcome,
+        "level": LEVEL_BY_OUTCOME.get(outcome, "error"),
         "error.type": error_type,
         "error_code": code,
         "http_status": status,
@@ -355,6 +359,12 @@ def build_record(
         "scenario_id": _int_arg(arguments, "scenario_id"),
         "run_id": _int_arg(arguments, "run_id"),
     }
+    # TASK-4090: Loki's level detection reads an `error` key as an error even when it is null, so an
+    # ok line carries neither key; a set value stays.
+    for key in ("error", "error.type"):
+        if record[key] is None:
+            del record[key]
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +546,7 @@ def build_sample(record: dict, arguments) -> dict:
         "request_id": record["request_id"],
         "tool": record["tool"],
         "outcome": record["outcome"],
+        "level": "info",  # TASK-4090: a sample line is never an error
         "user_id": record["user_id"],
         "username": record["username"],
         "internal": record["internal"],
