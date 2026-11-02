@@ -21,6 +21,7 @@ from ._helpers import (
     _run_quote_words,
     _status_of,
 )
+from .client import HydrataAPIError
 from .inputs import _unbound_series
 
 # TASK-3187 (W0, epic 3200) — the scenario fields a COMPACT read keeps, on top
@@ -562,7 +563,8 @@ async def clone_scenario(
     The copy points at the SAME input rows as the original. Give the variant
     its own input row by writing one with write_input_layer (target = a title)
     and passing the new row id in `overrides`; the original scenario's inputs
-    stay as they were.
+    stay as they were. The name and overrides go in the one copy call and Hydrata checks them first: a
+    refused name or id makes no copy.
     """
     overrides = dict(overrides or {})
     allowed = {
@@ -581,16 +583,29 @@ async def clone_scenario(
     unknown = sorted(set(overrides) - allowed)
     if unknown:
         raise ToolError(f"overrides can set only: {', '.join(sorted(allowed))} (not {', '.join(unknown)})")
-    body, _status = await client.post(f"/projects/{project_id}/scenarios/{scenario_id}/duplicate/")
-    new_id = body.get("id") if isinstance(body, dict) else None
-    if new_id is None:
-        return _post_result(body, _status)
     payload = {key: value for key, value in overrides.items() if value is not None}
     if name:
         payload["name"] = name
+    # TASK-4125: name + overrides ride the ONE duplicate POST; Hydrata validates them before it makes the
+    # copy, so a refused name or id (400 VALIDATION_ERROR) creates nothing.
+    body, _status = await client.post(f"/projects/{project_id}/scenarios/{scenario_id}/duplicate/", json=payload)
+    new_id = body.get("id") if isinstance(body, dict) else None
+    if new_id is None:
+        return _post_result(body, _status)
     base = f"/projects/{project_id}/scenarios/{new_id}/"
-    if payload:
-        await client.patch(base, json=payload)
+    unapplied = {key: value for key, value in payload.items() if body.get(key) != value}
+    if unapplied:
+        # An older Hydrata ignores the body and answers '<name>-copy': apply them with the PATCH it does have.
+        try:
+            await client.patch(base, json=unapplied)
+        except HydrataAPIError as exc:
+            copy_name = body.get("name") or f"{scenario_id}-copy"
+            raise HydrataAPIError(
+                f"{exc} The copy exists as scenario {new_id} named '{copy_name}'; "
+                "fix it with update_scenario or delete it.",
+                status=exc.status,
+                code=exc.code,
+            ) from exc
     detail = await client.get(base)
     say = (
         f"Copied scenario {scenario_id} to {new_id}. No run was copied and nothing was built. "

@@ -54,8 +54,10 @@ async def test_update_scenario_with_nothing_to_change_is_refused_before_any_requ
 
 
 @respx.mock
-async def test_clone_scenario_duplicates_then_names_and_overrides_the_copy_without_a_build(_server):
-    dup = respx.post(f"{SCENARIO_URL}duplicate/").mock(return_value=httpx.Response(201, json={"id": 6}))
+async def test_clone_scenario_names_and_overrides_the_copy_in_one_post_without_a_build(_server):
+    dup = respx.post(f"{SCENARIO_URL}duplicate/").mock(
+        return_value=httpx.Response(201, json={"id": 6, "name": "x - rain 0.26", "rainfall": 99})
+    )
     patch = respx.patch(NEW_URL).mock(return_value=httpx.Response(200, json={}))
     respx.get(NEW_URL).mock(return_value=httpx.Response(200, json=_scenario(id=6, name="x - rain 0.26")))
     build = respx.post(url__regex=r".*/build.*").mock(return_value=httpx.Response(200, json={}))
@@ -67,7 +69,8 @@ async def test_clone_scenario_duplicates_then_names_and_overrides_the_copy_witho
         )
     )
     assert dup.call_count == 1
-    assert json.loads(patch.calls[0].request.content) == {"rainfall": 99, "name": "x - rain 0.26"}
+    assert json.loads(dup.calls[0].request.content) == {"rainfall": 99, "name": "x - rain 0.26"}
+    assert patch.call_count == 0
     assert data["id"] == 6 and build.call_count == 0
     assert "No run was copied" in data["say_to_user"]
 

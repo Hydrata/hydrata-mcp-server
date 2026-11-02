@@ -245,7 +245,7 @@
       "readOnlyHint": false,
       "title": "Copy a scenario (no run, no build)"
     },
-    "description": "Copy a scenario into a new sibling, for a variant. No run is copied and nothing is built.\n\nThe copy points at the SAME input rows as the original. Give the variant\nits own input row by writing one with write_input_layer (target = a title)\nand passing the new row id in `overrides`; the original scenario's inputs\nstay as they were.",
+    "description": "Copy a scenario into a new sibling, for a variant. No run is copied and nothing is built.\n\nThe copy points at the SAME input rows as the original. Give the variant\nits own input row by writing one with write_input_layer (target = a title)\nand passing the new row id in `overrides`; the original scenario's inputs\nstay as they were. The name and overrides go in the one copy call and Hydrata checks them first: a\nrefused name or id makes no copy.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

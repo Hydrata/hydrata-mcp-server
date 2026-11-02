@@ -881,3 +881,42 @@ class TestGetScenarioSources:
         respx.get(f"{BASE}/projects/1/scenarios/5/").mock(return_value=httpx.Response(200, json={"id": 5}))
         data = json.loads(await _server.get_scenario(project_id=1, scenario_id=5))
         assert "sources" not in data and "authored_method" not in data
+
+
+class TestCloneScenarioOneCall:
+    DUP = f"{SCENARIO_URL}duplicate/"
+    NEW = f"{BASE}/projects/42/scenarios/6/"
+
+    @respx.mock
+    async def test_clone_older_server_applies_the_overrides_with_a_patch(self, _server):
+        respx.post(self.DUP).mock(return_value=httpx.Response(201, json={"id": 6, "name": "x-copy", "resolution": 40}))
+        patch = respx.patch(self.NEW).mock(return_value=httpx.Response(200, json={}))
+        respx.get(self.NEW).mock(return_value=httpx.Response(200, json=_scenario(id=6)))
+        await _call_as_caller(
+            _server,
+            "clone_scenario",
+            {"project_id": 42, "scenario_id": 5, "name": "fine", "overrides": {"resolution": 10}},
+        )
+        assert json.loads(patch.calls[0].request.content) == {"resolution": 10, "name": "fine"}
+
+    @respx.mock
+    async def test_clone_refused_patch_names_the_copy_that_exists(self, _server):
+        respx.post(self.DUP).mock(return_value=httpx.Response(201, json={"id": 6, "name": "x-copy"}))
+        respx.patch(self.NEW).mock(return_value=httpx.Response(400, json={"error_code": "VALIDATION_ERROR"}))
+        text = _tool_error_text(
+            await _call_as_caller(_server, "clone_scenario", {"project_id": 42, "scenario_id": 5, "name": "fine"})
+        )
+        assert "scenario 6" in text and "'x-copy'" in text and "update_scenario" in text
+
+    @respx.mock
+    async def test_clone_refused_by_the_one_call_creates_nothing_and_never_patches(self, _server):
+        respx.post(self.DUP).mock(
+            return_value=httpx.Response(
+                400, json={"error_code": "VALIDATION_ERROR", "problems": {"name": ["This field may not be blank."]}}
+            )
+        )
+        patch = respx.patch(url__regex=r".*/scenarios/\d+/$").mock(return_value=httpx.Response(200, json={}))
+        text = _tool_error_text(
+            await _call_as_caller(_server, "clone_scenario", {"project_id": 42, "scenario_id": 5, "name": "fine"})
+        )
+        assert "VALIDATION_ERROR" in text and patch.call_count == 0
