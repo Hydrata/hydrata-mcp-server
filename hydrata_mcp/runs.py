@@ -376,7 +376,8 @@ async def _sww_summary(run_id, run) -> dict:
     """`{state, size_bytes, ui_url}` for a run's full time series (TASK-4062).
 
     Only those keys are copied from the API answer, so a download link could
-    never ride along. Best effort: a failed lookup gives `state: null` and a
+    never ride along. When (and only when) the state is `unreadable` the API's
+    `error_code` and `detail` are copied too (TASK-4161): the plain words for why there is no download. Best effort: a failed lookup gives `state: null` and a
     short `error`, never a failed get_run.
     """
     summary: dict = {"state": None, "size_bytes": None, "ui_url": None}
@@ -385,6 +386,9 @@ async def _sww_summary(run_id, run) -> dict:
         if isinstance(body, dict):
             summary["state"] = body.get("state")
             summary["size_bytes"] = body.get("size_bytes")
+            if body.get("state") == "unreadable":
+                summary["error_code"] = body.get("error_code")
+                summary["detail"] = body.get("detail")
     except Exception as exc:
         summary["error"] = f"could not check the time series: {exc}"
         return summary
@@ -415,10 +419,12 @@ async def get_run(
     `gn_layer_*` entries (published WMS layers on the project's map).
 
     `sww` reports the run's full time series (the raw ANUGA output): `state`
-    (available, not_kept, archived or restoring), `size_bytes`, and a `ui_url`
+    (available, not_kept, archived, restoring or unreadable), `size_bytes`, and a `ui_url`
     to the Results panel where the person downloads it (or requests a restore
     of an archived one and is emailed when it is ready). The download link
-    itself is never returned.
+    itself is never returned. `unreadable` means the storage refused the read:
+    there is no download to offer, so tell the person and ask them to ask the
+    operator; `sww.error_code` and `sww.detail` carry the reason in words.
     """
     data = _elide_presigned(await client.get(f"/runs/{run_id}/"))
     if isinstance(data, dict):

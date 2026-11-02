@@ -324,6 +324,41 @@ class TestGetRunSwwDownload:
         assert "/catalogue/#/map/1525" in sww["ui_url"] and "panel=results" in sww["ui_url"]
 
     @respx.mock
+    async def test_sww_unreadable_relays_error_code_and_detail_and_no_url(self, _server):
+        run = _presigned_run(67181, "complete", project=42, scenario=7)
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "state": "unreadable",
+                    "error_code": "SWW_STORAGE_UNREADABLE",
+                    "detail": "The storage refused the read; ask the operator.",
+                    "url": "https://b.s3.amazonaws.com/k.sww?X-Amz-Signature=zz",
+                },
+            )
+        )
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
+        result = await _server.get_run(run_id=67181)
+        assert "X-Amz" not in result
+        sww = json.loads(result)["sww"]
+        assert sww["state"] == "unreadable" and sww["error_code"] == "SWW_STORAGE_UNREADABLE"
+        assert sww["detail"] and "url" not in sww and "link" not in sww
+
+    @respx.mock
+    async def test_sww_summary_available_relays_neither_error_code_nor_detail(self, _server):
+        run = _presigned_run(67181, "complete", project=42, scenario=7)
+        respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
+        respx.get(f"{BASE}/runs/67181/sww/").mock(
+            return_value=httpx.Response(
+                200, json={"state": "available", "size_bytes": 5, "error_code": "X", "detail": "stray"}
+            )
+        )
+        respx.get(f"{BASE}/projects/42/").mock(return_value=httpx.Response(200, json={"id": 42, "base_map": 1525}))
+        sww = json.loads(await _server.get_run(run_id=67181))["sww"]
+        assert sww["state"] == "available" and "error_code" not in sww and "detail" not in sww
+
+    @respx.mock
     async def test_sww_download_lookup_failure_does_not_fail_get_run(self, _server):
         run = _presigned_run(67181, "complete", project=42, scenario=7)
         respx.get(f"{BASE}/runs/67181/").mock(return_value=httpx.Response(200, json=run))
