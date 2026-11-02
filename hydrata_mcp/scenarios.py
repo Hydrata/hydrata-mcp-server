@@ -65,6 +65,9 @@ SCENARIO_RECORD_KEYS = (
     # TASK-3213: Hydrata's per-feature hydrology check (series, summary, gross volume, structured warnings),
     # passed through VERBATIM when the server sends it (its shape is TASK-3212's)
     "hydrology_check",
+    # TASK-4142: how an agent made the scenario and the documents it cites (the person's own scenario: null / [])
+    "authored_method",
+    "sources",
 )
 
 
@@ -80,7 +83,10 @@ def _scenario_record(detail) -> dict:
     """
     if not isinstance(detail, dict):
         return {}
-    return {key: detail[key] for key in SCENARIO_RECORD_KEYS if key in detail}
+    record = {key: detail[key] for key in SCENARIO_RECORD_KEYS if key in detail}
+    if "sources" in record and not record["sources"]:
+        record["sources"] = []  # TASK-4142: no citations reads as an empty list, never as withheld
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +109,8 @@ async def get_scenario(
     `quote_estimate` (the ONE pre-build price in USD, GPU formula, labelled an
     estimate: `price` is what the person pays, `0.00` inside the daily free band, and
     `list_price` is the real figure), and
+    `authored_method` and `sources` (how the agent made the scenario and the documents it cites:
+    `[]` when none), and
     `inflow_anchor_mismatch` (null unless an inflow series starts after the
     model does: the model gets zero flow from that series over the lead-in
     gap before its first sample), and

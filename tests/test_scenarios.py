@@ -856,3 +856,28 @@ class TestBuildConfirmPrice:
         _mock_boundary(True)
         data = _tool_json(await _build(_server))
         assert data["outcome"] == "refused" and "unknown price" in data["say_to_user"]
+
+
+class TestGetScenarioSources:
+    @respx.mock
+    async def test_get_scenario_relays_authored_method_and_sources(self, _server):
+        cited = [{"title": "GHD 2015", "url": "https://example.org/ghd", "locator": "Table 5-2"}]
+        respx.get(f"{BASE}/projects/1/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=_scenario(id=5, authored_method="Read off Table 5-2", sources=cited))
+        )
+        data = json.loads(await _server.get_scenario(project_id=1, scenario_id=5))
+        assert data["sources"] == cited and data["authored_method"] == "Read off Table 5-2"
+
+    @respx.mock
+    async def test_get_scenario_with_no_citations_reads_sources_empty_and_method_null(self, _server):
+        respx.get(f"{BASE}/projects/1/scenarios/5/").mock(
+            return_value=httpx.Response(200, json=_scenario(id=5, authored_method=None, sources=None))
+        )
+        data = json.loads(await _server.get_scenario(project_id=1, scenario_id=5))
+        assert data["sources"] == [] and data["authored_method"] is None
+
+    @respx.mock
+    async def test_get_scenario_sources_absent_when_the_server_withholds_them(self, _server):
+        respx.get(f"{BASE}/projects/1/scenarios/5/").mock(return_value=httpx.Response(200, json={"id": 5}))
+        data = json.loads(await _server.get_scenario(project_id=1, scenario_id=5))
+        assert "sources" not in data and "authored_method" not in data
