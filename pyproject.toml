@@ -2,6 +2,10 @@
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.package-data]
+# TASK-4177: the catalog icon served at <mcp-url>/icon.png
+hydrata_mcp = ["assets/icon.png"]
+
 [project]
 name = "hydrata-mcp-server"
 version = "0.2.2"
