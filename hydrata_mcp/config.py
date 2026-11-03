@@ -3,6 +3,21 @@
 import os
 from dataclasses import dataclass
 
+# TASK-4177 — User-Agent substrings (matched case-insensitively) of the MCP catalog
+# crawlers that may read the tool catalog without credentials. See RequireAuth in
+# server.py and docs/security-model.md. mcptry.com's indexer and Smithery's
+# scanner; no real MCP client (claude.ai, ChatGPT, Claude Code, Cursor, VS Code)
+# sends either.
+DEFAULT_DISCOVERY_USER_AGENTS = ("mcptry.com indexer", "SmitheryBot")
+
+
+def _discovery_user_agents(raw: str | None) -> tuple[str, ...]:
+    """Parse HYDRATA_MCP_DISCOVERY_USER_AGENTS: unset → the default; comma-separated;
+    blanks dropped, so an explicitly EMPTY value disables anonymous discovery."""
+    if raw is None:
+        return tuple(ua.lower() for ua in DEFAULT_DISCOVERY_USER_AGENTS)
+    return tuple(ua.strip().lower() for ua in raw.split(",") if ua.strip())
+
 
 @dataclass(frozen=True)
 class Config:
@@ -43,6 +58,12 @@ class Config:
     # one-click connect flow is passed through to Django, which verifies it.
     # Unset (the default): hk_ agent keys only, exactly as before.
     resource_url: str = ""
+    # TASK-4177 — lower-cased User-Agent substrings whose ANONYMOUS requests may
+    # read the catalog (initialize, notifications/initialized, ping, tools/list;
+    # never tools/call). HYDRATA_MCP_DISCOVERY_USER_AGENTS, comma-separated;
+    # unset = DEFAULT_DISCOVERY_USER_AGENTS; set but empty = off (every
+    # anonymous request 401s, as before TASK-4177).
+    discovery_user_agents: tuple[str, ...] = tuple(ua.lower() for ua in DEFAULT_DISCOVERY_USER_AGENTS)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -59,4 +80,5 @@ class Config:
             resource_url=os.environ.get("HYDRATA_MCP_RESOURCE_URL", "").strip(),
             data_envelope=os.environ.get("HYDRATA_MCP_DATA_ENVELOPE", "on").strip().lower()
             not in ("off", "0", "false", "no"),
+            discovery_user_agents=_discovery_user_agents(os.environ.get("HYDRATA_MCP_DISCOVERY_USER_AGENTS")),
         )

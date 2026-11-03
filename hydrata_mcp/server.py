@@ -1,13 +1,16 @@
 """Hydrata MCP Server — 29 hand-crafted tools for ANUGA flood simulation."""
 
 import base64
+import hashlib
 import json
 import re
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import uvicorn
 from starlette.middleware import Middleware
+from starlette.responses import Response
 
 from ._common import config, mcp
 from ._helpers import _ui_origin
@@ -98,6 +101,23 @@ def _connect_token_expired(value: str) -> bool:
     return isinstance(exp, (int, float)) and not isinstance(exp, bool) and exp <= time.time()
 
 
+# TASK-4177 — what an allowlisted catalog crawler may do with no credential: the
+# handshake and the catalog. Never tools/call (or resources/*, prompts/*, …):
+# anything that reaches Hydrata, or might tomorrow, needs a caller.
+DISCOVERY_METHODS = frozenset({"initialize", "notifications/initialized", "ping", "tools/list"})
+
+
+def _is_discovery_crawler(scope) -> bool:
+    """True when a User-Agent header contains an allowlisted crawler substring (any case).
+
+    ``config.discovery_user_agents`` is already lower-cased; empty disables this.
+    """
+    if not config.discovery_user_agents:
+        return False
+    agents = [value.decode("latin-1").lower() for name, value in scope.get("headers", []) if name == b"user-agent"]
+    return any(token in agent for agent in agents for token in config.discovery_user_agents)
+
+
 def _www_authenticate(error: str = "") -> bytes:
     challenge = 'Bearer realm="hydrata.com"'
     if error:
@@ -132,7 +152,24 @@ class RequireAuth:
     sign-in" and the first connect failed. A 401 + ``WWW-Authenticate`` on the
     first request is what an auth-required server answers (MCP authorization
     spec; claude.com connector authentication docs). The anonymous tool catalog
-    and MCP-directory liveness probes are given up for it.
+    and MCP-directory liveness probes were given up for it, until TASK-4177 below.
+
+    TASK-4177 — the catalog-crawler allowlist, the ONE exception. A request with NO
+    ``Authorization`` header whose ``User-Agent`` contains one of
+    ``config.discovery_user_agents`` (``HYDRATA_MCP_DISCOVERY_USER_AGENTS``; default
+    ``mcptry.com indexer,SmitheryBot``; case-insensitive substring; set it empty to
+    turn this off) is let through for :data:`DISCOVERY_METHODS` only
+    (``initialize``, ``notifications/initialized``, ``ping``, ``tools/list``), so
+    MCP catalogs that probe without credentials can list the tools. Everything else
+    is unchanged: ``tools/call`` (or any other method, or a batch holding one) still
+    401s with the same challenge, and a request that carries an ``Authorization``
+    header follows the rules above whatever its User-Agent (a bad token still 401s).
+    Why matching a spoofable header is acceptable: the catalog is public anyway (the
+    README lists every tool), so a client that fakes the User-Agent learns only that
+    list; ``tools/call`` always needs a credential that Django verifies. And why it
+    does not bring TASK-3987 back: no real client (claude.ai, ChatGPT, Claude Code,
+    Cursor, VS Code) sends a crawler User-Agent, so every one of them still gets the
+    401 on its first ``initialize`` and keeps defaulting to sign-in.
 
     Why this shape and not the built-ins: ``fastmcp.server.auth`` is Bearer-only
     (it would refuse the ``hk_`` passthrough rules above); Starlette's
@@ -189,6 +226,16 @@ class RequireAuth:
         # ASGI header names are lowercase bytes; a blank value is not a credential.
         auths = [value.decode("latin-1") for name, value in scope.get("headers", []) if name == b"authorization"]
         credentials = [a for a in auths if a.strip()]
+        # TASK-4177: an allowlisted catalog crawler with NO Authorization header at
+        # all may run the discovery methods. Every message must be one: a batch that
+        # smuggles in a tools/call is refused whole.
+        if (
+            needs_auth
+            and not auths
+            and all(m.get("method") in DISCOVERY_METHODS for m in messages)
+            and _is_discovery_crawler(scope)
+        ):
+            needs_auth = False
         refusal = None
         token_error = ""
         if needs_auth and not credentials:
@@ -243,6 +290,64 @@ class RequireAuth:
             return await receive()
 
         await self.app(scope, replay_receive, send)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4177 — the static MCP Server Card (SEP-2127), GET <mcp-url>/server-card
+# ---------------------------------------------------------------------------
+# Served at the path SEP-2127 reserves, relative to the streamable-HTTP URL: the
+# app is mounted at "/" behind nginx's `location /mcp/` (proxy_pass .../), so
+# https://hydrata.com/mcp/server-card reaches this route as /server-card. Built
+# from the repo's server.json (the MCP Registry entry), so the two cannot drift;
+# the version in it is kept equal to pyproject.toml by `make parity`. A card
+# deliberately carries no tools: those vary per caller and are read live with
+# tools/list. Public, read-only metadata: no credential needed (RequireAuth gates
+# only POST), CORS open and cacheable as the SEP's discovery doc asks.
+SERVER_JSON = Path(__file__).resolve().parent.parent / "server.json"
+SERVER_CARD_SCHEMA = "https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json"
+SERVER_CARD_MEDIA_TYPE = "application/mcp-server-card+json"
+# The ServerCard properties server.json also has; packages and the registry's own
+# $schema are not part of a card.
+SERVER_CARD_FIELDS = ("name", "title", "description", "version", "websiteUrl", "repository", "icons", "remotes")
+SERVER_CARD_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET",
+    "Access-Control-Allow-Headers": "Content-Type, If-None-Match",
+    "Access-Control-Expose-Headers": "ETag",
+}
+
+
+def build_server_card(server_json: Path = SERVER_JSON) -> dict:
+    """The Server Card: ``$schema`` plus server.json's card fields, unchanged."""
+    registry = json.loads(server_json.read_text())
+    return {"$schema": SERVER_CARD_SCHEMA, **{key: registry[key] for key in SERVER_CARD_FIELDS if key in registry}}
+
+
+try:
+    # Prod runs an editable install from the clone (/opt/hydrata-mcp), so server.json
+    # sits next to the package. A wheel without it serves a 404, never a crash.
+    SERVER_CARD_BODY: bytes | None = json.dumps(build_server_card(), indent=2).encode()
+except FileNotFoundError:
+    SERVER_CARD_BODY = None
+SERVER_CARD_ETAG = f'"{hashlib.sha256(SERVER_CARD_BODY).hexdigest()[:32]}"' if SERVER_CARD_BODY else ""
+
+
+@mcp.custom_route("/server-card", methods=["GET", "OPTIONS"])
+async def server_card(request):
+    """TASK-4177: the Server Card, with CORS, ``Cache-Control``, ``ETag`` and ``304`` on ``If-None-Match``."""
+    if SERVER_CARD_BODY is None:
+        return Response(status_code=404, headers=SERVER_CARD_CORS)
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=SERVER_CARD_CORS)
+    headers = {**SERVER_CARD_CORS, "Cache-Control": "public, max-age=3600", "ETag": SERVER_CARD_ETAG, "Vary": "Accept"}
+    validators = [tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")]
+    if "*" in validators or SERVER_CARD_ETAG in validators:
+        return Response(status_code=304, headers=headers)
+    # Echo the card media type to a client that asks for it; plain JSON otherwise.
+    media_type = (
+        SERVER_CARD_MEDIA_TYPE if SERVER_CARD_MEDIA_TYPE in request.headers.get("accept", "") else "application/json"
+    )
+    return Response(SERVER_CARD_BODY, media_type=media_type, headers=headers)
 
 
 # One list, baked into the one `app` below, which BOTH entry points serve: prod's

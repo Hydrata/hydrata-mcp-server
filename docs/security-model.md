@@ -18,8 +18,36 @@ The MCP server is a stateless protocol adapter in front of Hydrata's REST API. I
 | The server never validates a key or token itself. Hydrata verifies it on every request the server makes to the REST API, which is every tool call; `initialize`, `tools/list` and `ping` are answered after the shape check alone | `mcp: hydrata_mcp/server.py:113-155`; test `mcp: tests/test_connect_token.py:98` (a shape-valid unsigned token gets the catalog) |
 | The accepted `Authorization` header is forwarded to the REST API with its value unchanged. The server also relays the inbound `Mcp-Session-Id`, normalised to a UUID, as `X-Hydrata-Session`, and adds `X-Hydrata-Client` and `Host` | `mcp: hydrata_mcp/client.py:37`, `:127-147`; tests `mcp: tests/test_server.py:3284`, `mcp: tests/test_connect_token.py:55` |
 | A request with no credential, HTTP Basic, a non-`hk_` non-JWT bearer token (such as a GeoNode OAuth token), or two `Authorization` headers is answered `401` (`-32001`, `WWW-Authenticate: Bearer realm="hydrata.com"`) before any tool runs, and is never forwarded | `mcp: hydrata_mcp/server.py:192-234`; tests `mcp: tests/test_server.py:250`, `:287`, `:3294`, `:3302`, `:3311`, `:3319`, `:3339`, `mcp: tests/test_connect_token.py:90` |
-| That refusal applies to every JSON-RPC method (`initialize`, `tools/list`, `ping`, `tools/call`), not only tool calls | `mcp: hydrata_mcp/server.py:186-188`; tests `mcp: tests/test_server.py:250`, `:270`, `:287`, `:303` |
+| That refusal applies to every JSON-RPC method (`initialize`, `tools/list`, `ping`, `tools/call`), not only tool calls, with one exception for allowlisted catalog crawlers (below, TASK-4177) that never covers `tools/call` | `mcp: hydrata_mcp/server.py:186-188`; tests `mcp: tests/test_server.py:250`, `:270`, `:287`, `:303` |
 | A connect-flow token whose `exp` has passed is answered `401` with `error="invalid_token"`; `exp` is read without verifying the signature, only to give the client a correct `401`. A token with no readable `exp` is left to Hydrata | `mcp: hydrata_mcp/server.py:87-101` and `:210-212`; tests `mcp: tests/test_connect_token.py:138`, `:148`, `:158` |
+
+### Anonymous catalog discovery for MCP catalog crawlers (TASK-4177)
+
+The one exception to "every request needs a credential". MCP catalogs (mcptry.com, Smithery) check a server by listing its tools without credentials; under the rule above they saw only a `401`. A request is now let through with no credential only when all of these hold:
+
+- it carries **no** `Authorization` header at all (a request that carries one, even a blank or malformed one, follows the rules above unchanged, so a bad token still gets `401`);
+- its `User-Agent` contains, ignoring case, one of the configured crawler substrings: `HYDRATA_MCP_DISCOVERY_USER_AGENTS`, comma-separated, default `mcptry.com indexer,SmitheryBot`; set to an empty value it turns the exception off;
+- **every** JSON-RPC message in the body is one of `initialize`, `notifications/initialized`, `ping`, `tools/list`. A `tools/call`, any other method, or a batch holding one is answered with the same `401` and `WWW-Authenticate` challenge (including `resource_metadata`) as any anonymous request.
+
+Why a `User-Agent` match, which anyone can send, is acceptable:
+
+- **The catalog is public anyway.** The README lists every tool, and `tools/list` is answered from the statically registered tools without any call to Hydrata. A client that fakes a crawler `User-Agent` learns only that public list.
+- **`tools/call` always needs a credential.** Reading project data, writing and spending are never reachable this way; they still go through the shape check here and Hydrata's verification.
+- **Real clients keep the OAuth default (TASK-3987).** claude.ai, ChatGPT, Claude Code, Cursor and VS Code never send a crawler `User-Agent`, so their first `initialize` still gets the `401` that tells them the server needs sign-in. The exception is an allowlist, not a general anonymous `initialize`, for exactly this reason.
+
+Anonymous discovery adds no telemetry line: `ToolCallRecorder` records `tools/call` only.
+
+| Claim | Evidence |
+|---|---|
+| The exception needs no `Authorization` header, an allowlisted `User-Agent` (case-insensitive substring) and only discovery methods | `mcp: hydrata_mcp/server.py` (`DISCOVERY_METHODS`, `_is_discovery_crawler`, `RequireAuth.__call__`); tests `mcp: tests/test_discovery.py` (`crawler_discovery_method_is_200`, `crawler_match_is_case_insensitive_substring`) |
+| `tools/call`, other methods, a mixed batch and any `Authorization` header still get `401` | tests `mcp: tests/test_discovery.py` (`crawler_tools_call_is_401_with_todays_challenge`, `crawler_tools_call_challenge_names_the_resource_metadata`, `crawler_other_methods_are_401`, `crawler_batch_with_a_tools_call_is_401`, `crawler_with_any_authorization_header_follows_todays_rules`) |
+| Any other `User-Agent` (including an empty one) gets `401` exactly as before | test `mcp: tests/test_discovery.py` (`default_user_agent_is_401_exactly_as_today`) |
+| The allowlist comes from `HYDRATA_MCP_DISCOVERY_USER_AGENTS`; empty disables it | `mcp: hydrata_mcp/config.py` (`DEFAULT_DISCOVERY_USER_AGENTS`, `_discovery_user_agents`); tests `crawler_allowlist_env_override`, `crawler_allowlist_empty_disables`, `crawler_allowlist_default` |
+| Listing the catalog makes no request to Hydrata, and discovery writes no telemetry line | tests `crawler_discovery_method_is_200` (no outbound request), `crawler_discovery_is_not_recorded_by_telemetry` |
+
+### The Server Card (TASK-4177)
+
+`GET <mcp-url>/server-card` (`https://hydrata.com/mcp/server-card`) serves a static MCP Server Card (SEP-2127) built from this repository's `server.json`: name, title, description, version, website, repository, icons and the remote endpoint. It holds no tools (SEP-2127 leaves them to `tools/list`), no credential and nothing per-user, and needs no credential (`RequireAuth` gates only `POST`). Evidence: `mcp: hydrata_mcp/server.py` (`build_server_card`, `server_card`); tests `mcp: tests/test_discovery.py` (`TestServerCard`).
 
 ### What the server records (TASK-3961)
 
