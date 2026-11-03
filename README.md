@@ -12,11 +12,22 @@ MCP server for [Hydrata Cloud](https://hydrata.com) — build [ANUGA](https://gi
 
 Every tool call needs the caller's own hydrata.com credential: an **agent key** (`Authorization: Bearer hk_…`), a named, revocable grant at one of three levels (read < draft < launch) that the account owner creates — and can revoke, one at a time or all at once — on the site's Agent keys page (`/agents/`). The server holds no identity and no key store of its own: it checks only the shape of the credential (an `hk_` prefix, or with the connect flow configured a JWT-shaped token) and forwards the one accepted `Authorization` header unchanged to the Hydrata REST API, where Django verifies it on every tool call (for a connect-flow token: signature, issuer, audience, expiry and the live grant; for an agent key: the stored hash and the live grant) — so results are scoped by the real user's project permissions and the key's level, and the audit trail names them. Every JSON-RPC request — `initialize`, `tools/list` and `ping` as well as `tools/call` — that does not carry exactly one accepted credential (an agent key, or with the one-click connect flow configured its access token) is answered with `401`, a JSON-RPC error `-32001` and `WWW-Authenticate: Bearer realm="hydrata.com"` (plus `resource_metadata="…"` when the connect flow is configured) before it reaches the MCP SDK: no `Authorization` header, HTTP Basic, or any other `Bearer` token such as a GeoNode OAuth token. Agent keys and connect-flow tokens both map to an agent grant, so both are subject to the grant's level, the account's pause switch, the spend limit and the agent activity log. The 401 on the first request is what tells an OAuth-aware client such as claude.ai that the server needs sign-in (TASK-3987), so the tool catalog is not served to a request without a credential of an accepted shape; for `initialize`, `tools/list` and `ping` that credential is checked for shape only, not verified. Each claim about this server's security behaviour is cited to code or a test in [docs/security-model.md](docs/security-model.md); to report a vulnerability see [SECURITY.md](SECURITY.md). A body that is not JSON-RPC is left to the SDK's own error, and a GET is answered `405`.
 
-The server is **not yet open to external accounts**: there is no self-serve way to connect your own hydrata.com login to it today, and this README deliberately carries no client-side credential recipe. If you would like to use it, contact us at [hydrata.com](https://hydrata.com).
+Anyone with a [hydrata.com](https://hydrata.com) account can connect. There are two ways in, and both give the assistant a named, revocable permission at one access level (Read, Draft or Launch):
+
+- **One-click connect (OAuth)** — for claude.ai, ChatGPT and any MCP client that can add a connector by URL. Add `https://hydrata.com/mcp/` as a custom connector, sign in with your Hydrata account, name the connection and choose its level. The assistant never sees your password.
+- **Agent key** — for Claude Code, scripts and any client that can send an HTTP header. Create a key on the Agent keys page (`https://hydrata.com/agents/`) and send it as `Authorization: Bearer hk_…`. In Claude Code:
+
+  ```bash
+  claude mcp add --transport http hydrata https://hydrata.com/mcp/ --header "Authorization: Bearer hk_YOUR_KEY"
+  ```
+
+  Do not add `--scope project`: that writes the key into the project's shared `.mcp.json`.
+
+Keys and connections are listed, and revoked, on the same Agent keys page. A run that costs money waits for your consent in the browser unless the key's monthly spend limit covers it. Full guide: [Connect an AI assistant](https://hydrata.com/docs/mcp/connect/) in the [Hydrata MCP docs](https://hydrata.com/docs/mcp/).
 
 ## Tools
 
-Version 0.2.0 exposes thirty-six tools. The table below lists the original twenty-eight and `suggest_capability`; `tools/list` returns all of them. Of the original twenty-eight, eleven that read projects, inputs and scenarios and drive a run, eight that build a model from terrain and input layers the agent has already uploaded, six that record flood observations, and three that compare a historic run with them (Compare with observations). Every tool carries MCP annotations (a `title`; `readOnlyHint` on the eleven read tools; `destructiveHint` only on `cancel_run` and `delete_observation`).
+Version 0.2.1 exposes forty-two tools, all listed below; nineteen of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
 
 | Tool | Description |
 |------|-------------|
@@ -26,6 +37,7 @@ Version 0.2.0 exposes thirty-six tools. The table below lists the original twent
 | `start_simulation` | Start a flood simulation (local/EC2/Batch backends); the returned run record has its presigned download links elided; hand-back link opens the run. A run over the agent key's monthly spend limit (default $0), or one Hydrata cannot price, is not started: the tool relays Hydrata's `CONSENT_REQUIRED` at once with the `consent_url` the person opens in their browser (`consent_timeout_seconds` > 0 also polls the run for their click) |
 | `get_run_status` | Lightweight status poll (<50ms); `phase` is never empty (`preparing_inputs` while a computing run has no progress yet) |
 | `get_run` | Full run details with timing, log and result layers; presigned `s3_*_url` download links are elided |
+| `get_flow_hydrograph` | Flow (Q) across a line you draw, at every frame of a completed run: peak, time of peak, volume and a mass balance, from the run's playback store (the model's flow, not a gauge reading) |
 | `cancel_run` | Cancel an in-flight simulation; hand-back link opens the scenario |
 | `retry_run` | Retry a failed simulation (rebuilds the scenario as a new run); hand-back link opens the scenario |
 | `list_runs` | List runs across a project (with status filter); presigned `s3_*_url` download links are elided from every row |
@@ -35,9 +47,21 @@ Version 0.2.0 exposes thirty-six tools. The table below lists the original twent
 | `presign_terrain_upload` | Return a presigned URL + key so the agent PUTs the terrain GeoTIFF itself (no file bytes pass through MCP) |
 | `finalize_terrain_upload` | Register the uploaded terrain; the import chain seeds the project's six default boundary/friction/inflow/rainfall/building/mesh-region rows (no culvert row: `attach_input_layer` creates 'Culvert 01' on demand) |
 | `get_terrain` | Poll the terrain until it is ready (bounded; `timed_out` means call again); `phase` is never empty; summary = WGS84 bbox, elevation min/max, nodata fraction, native CRS; the link frames the DEM |
+| `list_terrain_sources` | The terrain Hydrata can fetch for a site, finest first (Copernicus GLO-30 worldwide, finer regional LiDAR such as Geoscience Australia 5 m where it has data), with coverage, size cap, vertical datum and licence |
+| `create_terrain_from_source` | Have Hydrata fetch, reproject and publish a DEM from one of those sources, then wait for the import like `get_terrain` |
+| `sample_terrain` | Ground level at points (null where the terrain has no data), to place a culvert, inflow or boundary on the ground |
+| `terrain_profile` | Ground along a line (a cross-section) with the lowest sample, to find where a channel runs |
 | `create_time_series` | Create a time series (rain gauge, hydrograph or tide/stage — `series_type` and `units` are top-level fields) from `{"rowData": [...]}`; a rainfall polygon binds to its gauge by the series name; summary = row count + first/last timestamp; the link opens the Hydrology panel |
+| `update_time_series` | Correct a time series (PATCH); the same validation as create, and a series a built scenario uses sends that scenario back for rebuild and review |
+| `delete_time_series` | Delete a time series (Manager role); refused while a layer feature still uses it, naming the layer and feature |
 | `attach_input_layer` | Attach a GeoJSON dataset the agent already uploaded as the project's boundary/friction/inflow/rainfall/building/mesh-region or culvert layer (kind `structure` = deprecated alias of `building`); culvert attributes are mapped onto the culvert fields with defaults filled, and `culvert_problems` lists what the build will still refuse; breakline is refused; summary = feature count (WFS hits) + WGS84 bbox + whether the map now shows the layer; the link opens Inputs and frames the layer |
+| `describe_input_kinds` | What each input layer kind looks like (geometry, properties, allowed values, a minimal example), generated from the definitions the build reads |
+| `read_input_layer` | Read a project input layer's features as GeoJSON, each with its author (a person, or the agent that wrote it) |
+| `write_input_layer` | Write an input layer (boundary, friction, inflow, rainfall, building, mesh region or culvert) from GeoJSON sent in the call; `target` writes a separate row for a variant |
+| `request_input_upload` | The link where the person uploads a big input layer (over about 150 KB) in their browser: GeoJSON, zipped shapefile or GeoPackage up to 100 MB |
 | `create_scenario` | Create a draft scenario and return its mesh-triangle estimate and price (`resolution` — scenario and mesh-region — is a length in metres); the link opens the scenario |
+| `update_scenario` | Edit a scenario's name, description, resolution, duration or attached inputs; never builds or runs, the changed scenario is marked stale |
+| `clone_scenario` | Copy a scenario into a sibling for a variant (no run copied, nothing built), with overrides checked before the copy is made |
 | `build_scenario` | Build the scenario package; shows the estimate first and needs `confirm=true` above 100,000 triangles; polls `computed_status` to built; never re-posts a build that is in flight or already built (`rebuild=true` to force one); surfaces the server's 422 refusals (MESH_TOO_LARGE, BOUNDARY_NO_EXTERNAL, MESH_REGION_UNITS_UNMARKED) verbatim; a missing/empty/perimeter-less boundary sends the human to the map to draw or fix it; summary = triangle count + re-priced cost |
 | `create_observation_layer` | Create a flood observation layer (project-level, never a scenario input) with its vertical datum (`terrain`, `AHD`, `EGM2008`, `ellipsoidal`, or `local` + `datum_offset_m`); waits for the map layer (`ready`, bounded); the link frames it in the Observations group |
 | `list_observations` | A project's flood observation layers, or one layer's observations — `fid`, subtype, stage/depth, sigma, bound, observed window in UTC, datum status (`unknown` = not scored), `photo_count` and `problems` |
