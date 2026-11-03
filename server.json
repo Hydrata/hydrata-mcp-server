@@ -3,6 +3,7 @@
   "name": "com.hydrata/hydrata-mcp-server",
   "title": "Hydrata - ANUGA Flood Simulation",
   "description": "Run ANUGA flood simulations, track progress, and retrieve results on Hydrata Cloud.",
+  "websiteUrl": "https://hydrata.com/docs/mcp/",
   "repository": {
     "url": "https://github.com/Hydrata/hydrata-mcp-server",
     "source": "github"
