@@ -211,3 +211,39 @@ class TestServerCard:
         async with _asgi_client(_server) as c:
             resp = await c.post("/server-card", headers=MCP_HEADERS, json=_rpc("tools/list"))
         assert resp.status_code in (401, 405)
+
+
+ICON_URL = "https://hydrata.com/mcp/icon.png"
+ICON_FILE = TESTS.parent / "hydrata_mcp" / "assets" / "icon.png"
+
+
+def _png_size(data: bytes) -> tuple[int, int]:
+    """Width and height from a PNG's IHDR chunk (no image library needed)."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+class TestIcon:
+    """The catalog icon: a square PNG the server serves itself, so its URL is on the server's own origin."""
+
+    def test_server_json_lists_the_square_icon_on_the_server_origin(self):
+        assert ROOT_SERVER_JSON["icons"] == [{"src": ICON_URL, "mimeType": "image/png", "sizes": ["512x512"]}]
+
+    def test_icon_file_is_a_512_square_png(self):
+        assert _png_size(ICON_FILE.read_bytes()) == (512, 512)
+
+    async def test_icon_get_is_200_png_without_a_credential(self, _server):
+        async with _asgi_client(_server) as c:
+            resp = await c.get("/icon.png")
+            assert resp.status_code == 200
+            assert resp.headers["content-type"] == "image/png"
+            assert resp.headers["access-control-allow-origin"] == "*"
+            assert resp.headers["cache-control"] == "public, max-age=86400"
+            assert resp.content == ICON_FILE.read_bytes()
+            again = await c.get("/icon.png", headers={"If-None-Match": resp.headers["etag"]})
+            assert again.status_code == 304
+
+    async def test_initialize_server_info_carries_the_same_icon(self, _server):
+        resp = await _post(_server, MCPTRY, _rpc("initialize", INITIALIZE_PARAMS))
+        icons = _parse(resp)["result"]["serverInfo"]["icons"]
+        assert icons == ROOT_SERVER_JSON["icons"]
