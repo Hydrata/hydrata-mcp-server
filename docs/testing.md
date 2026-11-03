@@ -15,7 +15,9 @@ They cover:
 - **Response shaping.** What the tool hands back to the agent: summaries, `ui_url` links, elided presigned URLs,
   the data envelope, the relay of Hydrata's refusals (for example `CONSENT_REQUIRED` and unreviewed inputs).
 - **Credential shape gate.** Requests without exactly one accepted `Authorization` credential get `401` before reaching
-  the MCP SDK; the credential is forwarded unchanged (`tests/test_connect_token.py` and `tests/test_app.py`).
+  the MCP SDK; the credential is forwarded unchanged (`tests/test_connect_token.py` and `tests/test_app.py`). The one
+  exception, anonymous `initialize`/`ping`/`tools/list` for allowlisted catalog-crawler User-Agents, and the Server Card
+  route are in `tests/test_discovery.py`.
 - **Configuration and version parity** (`tests/test_config.py`, `tests/test_version.py`).
 
 ## What they do not cover
@@ -53,7 +55,8 @@ curl -s "${H[@]}" http://localhost:8765/ -d '{"jsonrpc":"2.0","id":2,"method":"t
 ```
 
 Expected: `28 tools`, the same count as `tests/snapshots/tools.json`. With no `Authorization` header, or a non-`hk_` Bearer,
-expect `401` instead.
+expect `401` instead, unless the `User-Agent` matches the catalog-crawler allowlist (`-A 'mcptry.com indexer'`), which
+lists the tools but still gets `401` on `tools/call`.
 
 ### 2b. With MCP Inspector
 

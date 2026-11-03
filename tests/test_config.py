@@ -33,6 +33,7 @@ class TestFromEnv:
             "ui_origin",
             "data_envelope",
             "resource_url",
+            "discovery_user_agents",  # TASK-4177: public crawler User-Agent substrings, not a credential
         }
 
     @pytest.mark.parametrize(
