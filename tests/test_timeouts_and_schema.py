@@ -9,17 +9,15 @@ import json
 
 import pytest
 
-from tests.test_server import _server  # noqa: F401  (shared fixture)
-
 pytestmark = pytest.mark.asyncio
 
 
-async def test_poll_constants_are_at_most_200(_server):  # noqa: F811
+async def test_poll_constants_are_at_most_200(_server):
     assert _server.POLL_MAX_TIMEOUT_SECONDS <= 200
     assert _server.POLL_DEFAULT_TIMEOUT_SECONDS <= _server.POLL_MAX_TIMEOUT_SECONDS
 
 
-async def test_poll_until_clamps_oversized_timeout(_server):  # noqa: F811
+async def test_poll_until_clamps_oversized_timeout(_server):
     """A caller asking for 9999 s is clamped to the ceiling (never waits longer)."""
     clock = {"t": 0.0}
     slept = []
@@ -35,15 +33,14 @@ async def test_poll_until_clamps_oversized_timeout(_server):  # noqa: F811
     _server.time.monotonic = lambda: clock["t"]
     _server.asyncio.sleep = fake_sleep
     try:
-        _v, _polls, elapsed, timed_out = await _server._poll_until(
-            fetch, lambda v: v["status"] == "done", 9999, 5)
+        _v, _polls, elapsed, timed_out = await _server._poll_until(fetch, lambda v: v["status"] == "done", 9999, 5)
     finally:
         _server.time.monotonic, _server.asyncio.sleep = orig_mono, orig_sleep
     assert timed_out is True
     assert elapsed <= 200
 
 
-async def test_every_timeout_default_is_within_ceiling(_server):  # noqa: F811
+async def test_every_timeout_default_is_within_ceiling(_server):
     tools = await _server.mcp.list_tools()
     seen = 0
     for tool in tools:
@@ -54,20 +51,20 @@ async def test_every_timeout_default_is_within_ceiling(_server):  # noqa: F811
     assert seen >= 4
 
 
-async def test_no_tool_text_promises_more_than_200(_server):  # noqa: F811
-    source = inspect.getsource(_server)
+async def test_no_tool_text_promises_more_than_200(_server):
+    source = _server.module_source()
     assert "ceiling 280" not in source and "default 240" not in source
 
 
-async def test_timed_out_still_says_call_again(_server):  # noqa: F811
-    source = inspect.getsource(_server)
+async def test_timed_out_still_says_call_again(_server):
+    source = _server.module_source()
     assert "call build_scenario again with the same arguments" in source
     tools = {t.name: t for t in await _server.mcp.list_tools()}
     assert "timed_out" in tools["get_terrain"].description
     assert "call" in tools["get_terrain"].description.lower()
 
 
-async def test_start_simulation_has_no_compute_backend(_server):  # noqa: F811
+async def test_start_simulation_has_no_compute_backend(_server):
     assert "compute_backend" not in inspect.signature(_server.start_simulation).parameters
     tools = {t.name: t for t in await _server.mcp.list_tools()}
     tool = tools["start_simulation"]
@@ -75,6 +72,6 @@ async def test_start_simulation_has_no_compute_backend(_server):  # noqa: F811
     assert "compute_backend" not in (tool.description or "")
 
 
-async def test_no_tool_schema_mentions_compute_backend(_server):  # noqa: F811
+async def test_no_tool_schema_mentions_compute_backend(_server):
     for tool in await _server.mcp.list_tools():
         assert "compute_backend" not in json.dumps(tool.parameters), tool.name

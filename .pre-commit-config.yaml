@@ -1,0 +1,8 @@
+# Same ruff version as the dev extra in pyproject.toml and `make check`.
+# Install once: pre-commit install   |   Run everything: pre-commit run --all-files
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.2
+    hooks:
+      - id: ruff-check
+      - id: ruff-format

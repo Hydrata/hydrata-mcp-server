@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastmcp.server.dependencies import get_context, get_http_headers
 
+from . import telemetry
 from .config import Config
 
 try:
@@ -55,7 +56,17 @@ class HydrataAPIError(Exception):
 
     FastMCP catches this and returns ``isError: true`` with the message,
     giving agents a clean signal instead of a raw traceback.
+
+    TASK-3961: ``status`` is the HTTP status Django answered (None when there was no
+    answer: connect error, timeout, or a refusal the tool raised before calling out) and
+    ``code`` the body's ``error_code``. The call record classifies on these, never on the
+    class, because this exception is raised for EVERY 4xx and 5xx.
     """
+
+    def __init__(self, message: str = "", status: int | None = None, code: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
 
 
 def _client_error_message(exc: httpx.HTTPStatusError, method: str, path: str) -> str:
@@ -74,6 +85,16 @@ def _client_error_message(exc: httpx.HTTPStatusError, method: str, path: str) ->
     if detail:
         message = f"{message} — {detail}"
     return message
+
+
+def _error_code(resp: httpx.Response) -> str | None:
+    """The body's ``error_code`` when the reply is a JSON object carrying a string one."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    code = body.get("error_code") if isinstance(body, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def _is_agent_paused(resp: httpx.Response) -> bool:
@@ -138,6 +159,8 @@ class HydrataClient:
         headers: dict[str, str] = {
             CLIENT_HEADER: CLIENT_HEADER_VALUE,
             SESSION_HEADER: session_header_value(),
+            # TASK-3961: joins the Django AgentActionLog row, the nginx line and the call record.
+            telemetry.REQUEST_ID_HEADER: telemetry.current_request_id(),
         }
         auth = get_http_headers(include={"authorization"}).get("authorization")
         if auth:
@@ -151,7 +174,7 @@ class HydrataClient:
             await self._client.aclose()
 
     async def _send(
-        self, method: str, url: str, path: str, raise_for_status: bool = True, **kwargs
+        self, method: str, url: str, path: str, raise_for_status: bool = True, relay_statuses: tuple = (), **kwargs
     ) -> httpx.Response:
         """One request with the caller's headers; every failure becomes a HydrataAPIError.
 
@@ -173,23 +196,30 @@ class HydrataClient:
         client = await self._ensure_client()
         try:
             resp = await client.request(method, url, headers=self._request_headers(), **kwargs)
-            if raise_for_status or resp.is_server_error:
+            telemetry.note_reply(resp)  # Django's X-Hydrata-Actor, on any status that carries it
+            # Full review 03-11-26 (MCP-4): a 5xx named in ``relay_statuses`` is handed back with its body (the
+            # 504 FLOW_HYDROGRAPH_TIMEOUT carries "try a shorter line"); every other 5xx is still an error.
+            if raise_for_status or (resp.is_server_error and resp.status_code not in relay_statuses):
                 resp.raise_for_status()
         except httpx.ConnectError:
             raise HydrataAPIError(
-                f"Hydrata API is unreachable at {self._base}. The backend may be restarting."
+                f"Hydrata API is unreachable at {self._base}. The backend may be restarting.",
+                code="UPSTREAM_UNREACHABLE",
             )
         except httpx.TimeoutException:
             raise HydrataAPIError(
-                "Hydrata API request timed out after 30s. Try again shortly."
+                "Hydrata API request timed out after 30s. Try again shortly.", code="UPSTREAM_TIMEOUT"
             )
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
+            code = _error_code(exc.response)
             if status >= 500 and not _is_agent_paused(exc.response):
                 raise HydrataAPIError(
-                    f"Hydrata API server error ({status}). The backend may be experiencing issues."
+                    f"Hydrata API server error ({status}). The backend may be experiencing issues.",
+                    status=status,
+                    code=code,
                 )
-            raise HydrataAPIError(_client_error_message(exc, method, path))
+            raise HydrataAPIError(_client_error_message(exc, method, path), status=status, code=code)
         return resp
 
     @staticmethod
@@ -222,7 +252,12 @@ class HydrataClient:
         return resp.json()
 
     async def post(
-        self, path: str, json: dict | None = None, raise_for_status: bool = True
+        self,
+        path: str,
+        json: dict | None = None,
+        raise_for_status: bool = True,
+        relay_statuses: tuple = (),
+        timeout: float | None = None,
     ) -> tuple[Any, int]:
         """POST request. Returns (body, status_code) since some endpoints return 202.
 
@@ -230,9 +265,25 @@ class HydrataClient:
         too (TASK-3172: build_scenario surfaces 422/409 bodies verbatim);
         the default keeps every other tool's raise-on-4xx behaviour.
         """
+        extra = {"timeout": httpx.Timeout(timeout, connect=10.0)} if timeout else {}
         resp = await self._send(
-            "POST", f"{self._base}{path}", path, raise_for_status=raise_for_status, json=json or {}
+            "POST",
+            f"{self._base}{path}",
+            path,
+            raise_for_status=raise_for_status,
+            relay_statuses=relay_statuses,
+            json=json or {},
+            **extra,
         )
+        return self._body(resp), resp.status_code
+
+    async def post_from_origin(self, path: str, json: dict | None = None) -> tuple[Any, int]:
+        """POST a path relative to the API's ORIGIN (e.g. ``/api/v2/agents/suggestions/``).
+
+        TASK-3964 — for Hydrata endpoints outside /api/v2/anuga; `path` must start with '/'.
+        Same headers and error mapping as post(): a 4xx raises HydrataAPIError, with its status.
+        """
+        resp = await self._send("POST", f"{self._origin}{path}", path, json=json or {})
         return self._body(resp), resp.status_code
 
     async def patch(self, path: str, json: dict | None = None) -> tuple[Any, int]:

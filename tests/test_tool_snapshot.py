@@ -14,8 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_server import _server  # noqa: F401  (shared fixture)
-
 pytestmark = pytest.mark.asyncio
 
 SNAPSHOT = Path(__file__).resolve().parent / "snapshots" / "tools.json"
@@ -35,7 +33,7 @@ def _render(tools):
     return json.dumps(tools, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-async def test_tool_list_matches_snapshot(_server):  # noqa: F811
+async def test_tool_list_matches_snapshot(_server):
     live = _render(await _live_tools(_server))
     if os.environ.get("UPDATE_SNAPSHOT") == "1":
         SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
@@ -61,6 +59,22 @@ async def test_tool_list_matches_snapshot(_server):  # noqa: F811
         pytest.fail("tool list changed; if intended run UPDATE_SNAPSHOT=1 pytest tests/test_tool_snapshot.py\n" + diff)
 
 
-async def test_snapshot_covers_every_annotated_tool(_server):  # noqa: F811
+async def test_snapshot_covers_every_annotated_tool(_server):
     names = {t["name"] for t in json.loads(SNAPSHOT.read_text())}
     assert names == set(_server.TOOL_ANNOTATIONS)
+
+
+# TASK-4170: MCP directories read the hints on EVERY tool. ChatGPT's plugin review
+# wants explicit boolean readOnlyHint, destructiveHint and openWorldHint; Anthropic's
+# directory wants a title plus readOnlyHint or destructiveHint. A snapshot regenerated
+# without them would still pass the test above, so this asserts the shape directly.
+async def test_every_tool_carries_the_directory_hints(_server):
+    missing = []
+    for tool in await _live_tools(_server):
+        ann = tool.get("annotations", {})
+        if not ann.get("title"):
+            missing.append((tool["name"], "title"))
+        for hint in ("readOnlyHint", "destructiveHint", "openWorldHint"):
+            if not isinstance(ann.get(hint), bool):
+                missing.append((tool["name"], hint))
+    assert not missing, missing

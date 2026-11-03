@@ -6,14 +6,13 @@ Hydrata's own guess exists it tells the agent to ASK the user. It also hands bac
 terrain's true elevation range untouched (the range itself is fixed in hydrata).
 """
 
-import importlib
 import json
 
 import httpx
 import pytest
 import respx
 
-from tests.test_server import BASE, CALLER_KEY, _call_as_caller, _tool_error_text, _tool_json
+from tests.helpers import BASE, CALLER_KEY, _call_as_caller, _tool_error_text, _tool_json, reload_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,30 +23,42 @@ GUESS = {"datum_guess": "orthometric_egm2008", "confidence": 0.7, "basis": "dod"
 
 @pytest.fixture
 def _server(env_vars):
-    import hydrata_mcp.server as srv
-    importlib.reload(srv)
-    return srv
+    return reload_server()
 
 
 def _ready(**extra):
-    return {"id": 7, "title": "dem", "status": "ready", "gn_layer": 1, "gn_layer_name": "geonode:dem",
-            "dem_elev_min": 554.94, "dem_elev_max": 561.37, "metadata": {}, "vertical_datum": None,
-            "recorded_vertical_datum": None, **extra}
+    return {
+        "id": 7,
+        "title": "dem",
+        "status": "ready",
+        "gn_layer": 1,
+        "gn_layer_name": "geonode:dem",
+        "dem_elev_min": 554.94,
+        "dem_elev_max": 561.37,
+        "metadata": {},
+        "vertical_datum": None,
+        "recorded_vertical_datum": None,
+        **extra,
+    }
 
 
 async def _get(srv, record):
     respx.get(TERRAIN).mock(return_value=httpx.Response(200, json=record))
     respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
-    return _tool_json(await _call_as_caller(
-        srv, "get_terrain", {"project_id": 42, "terrain_id": 7, "poll_interval_seconds": 0}))
+    return _tool_json(
+        await _call_as_caller(srv, "get_terrain", {"project_id": 42, "terrain_id": 7, "poll_interval_seconds": 0})
+    )
 
 
 @respx.mock
 async def test_finalize_with_ahd_sends_it_as_vertical_datum_declared(_server):
     route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
     respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
-    await _call_as_caller(_server, "finalize_terrain_upload", {
-        "project_id": 42, "staging_key": "k", "process_id": "p", "vertical_datum_declared": "AHD"})
+    await _call_as_caller(
+        _server,
+        "finalize_terrain_upload",
+        {"project_id": 42, "staging_key": "k", "process_id": "p", "vertical_datum_declared": "AHD"},
+    )
     assert route.calls[0].request.headers["authorization"] == CALLER_KEY
     assert json.loads(route.calls[0].request.content)["vertical_datum_declared"] == "ahd"
 
@@ -63,8 +74,13 @@ async def test_finalize_without_a_datum_sends_no_datum_key(_server):
 @respx.mock
 async def test_finalize_refuses_an_unknown_datum_without_calling_the_api(_server):
     route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={}))
-    text = _tool_error_text(await _call_as_caller(_server, "finalize_terrain_upload", {
-        "project_id": 42, "staging_key": "k", "vertical_datum_declared": "navd88"}))
+    text = _tool_error_text(
+        await _call_as_caller(
+            _server,
+            "finalize_terrain_upload",
+            {"project_id": 42, "staging_key": "k", "vertical_datum_declared": "navd88"},
+        )
+    )
     assert "ahd" in text and "ask them" in text
     assert route.call_count == 0
 
@@ -82,9 +98,14 @@ async def test_declared_datum_is_reported_and_effective(_server):
 @respx.mock
 async def test_recorded_beats_declared_beats_inferred(_server):
     rec = {"value": "EPSG:5711", "label": "AHD height (EPSG:5711)", "source": "editor"}
-    data = await _get(_server, _ready(
-        metadata={"vertical_datum_declared": "ellipsoid", "vertical_datum_recorded": "EPSG:5711"},
-        vertical_datum=GUESS, recorded_vertical_datum=rec))
+    data = await _get(
+        _server,
+        _ready(
+            metadata={"vertical_datum_declared": "ellipsoid", "vertical_datum_recorded": "EPSG:5711"},
+            vertical_datum=GUESS,
+            recorded_vertical_datum=rec,
+        ),
+    )
     datum = data["vertical_datum"]
     assert (datum["recorded"], datum["declared"]) == ("EPSG:5711", "ellipsoid")
     assert datum["effective"] == "EPSG:5711" and datum["effective_source"] == "recorded"
@@ -121,3 +142,68 @@ async def test_an_unknown_inference_is_no_inference_and_asks_the_user(_server):
     datum = data["vertical_datum"]
     assert datum["inferred"] is None and datum["effective"] is None
     assert "guesses" not in data["say_to_user"] and "ask the user" in data["say_to_user"].lower()
+
+
+@respx.mock
+async def test_finalize_levels_datum_is_sent_beside_not_as_the_terrain_datum(_server):
+    """TASK-4118 (D32): the person's levels datum is its own field; vertical_datum_declared is untouched."""
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    await _call_as_caller(
+        _server, "finalize_terrain_upload", {"project_id": 42, "staging_key": "k", "levels_datum": " NAVD88 "}
+    )
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["levels_datum"] == "NAVD88" and "vertical_datum_declared" not in sent
+
+
+@respx.mock
+async def test_finalize_without_levels_datum_sends_no_levels_datum_key(_server):
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    await _call_as_caller(_server, "finalize_terrain_upload", {"project_id": 42, "staging_key": "k"})
+    assert "levels_datum" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+async def test_get_terrain_levels_datum_and_mismatch_are_relayed(_server):
+    levels = {"datum": "NAVD88", "label": "NAVD88", "declared_by": "dave", "declared_at": None}
+    sentence = "Your levels are on NAVD88 but this terrain is on AHD height (EPSG:5711)."
+    data = await _get(
+        _server,
+        _ready(metadata={"vertical_datum_declared": "ahd"}, levels_datum=levels, levels_datum_mismatch=sentence),
+    )
+    assert data["levels_datum"] == levels
+    assert sentence in data["say_to_user"] and data["vertical_datum"]["effective"] == "ahd"
+
+
+@respx.mock
+async def test_get_terrain_without_a_levels_datum_asks_the_user_for_it(_server):
+    data = await _get(_server, _ready(metadata={"vertical_datum_declared": "ahd"}, levels_datum=None))
+    assert data["levels_datum"] is None and "no levels datum" in data["say_to_user"].lower()
+
+
+@respx.mock
+async def test_get_terrain_levels_datum_drops_the_inferred_guess_when_the_basis_is_declared(_server):
+    declared = {
+        "datum_guess": "orthometric_ahd",
+        "basis": "declared",
+        "confidence": None,
+        "inferred_datum_guess": "orthometric_egm2008",
+        "inferred_confidence": 0.559,
+    }
+    data = await _get(_server, _ready(metadata={"vertical_datum_declared": "ahd"}, vertical_datum=declared))
+    relayed = data["terrain"]["vertical_datum"]
+    assert "inferred_datum_guess" not in relayed and "inferred_confidence" not in relayed
+    assert relayed["datum_guess"] == "orthometric_ahd"
+
+
+@respx.mock
+async def test_get_terrain_levels_datum_keeps_the_inferred_guess_when_nothing_is_declared(_server):
+    only_guess = {
+        "datum_guess": "orthometric_egm2008",
+        "basis": "dod",
+        "confidence": 0.7,
+        "inferred_datum_guess": "orthometric_egm2008",
+    }
+    data = await _get(_server, _ready(vertical_datum=only_guess))
+    assert data["terrain"]["vertical_datum"]["inferred_datum_guess"] == "orthometric_egm2008"

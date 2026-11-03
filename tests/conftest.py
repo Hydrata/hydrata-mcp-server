@@ -3,6 +3,7 @@
 import pytest
 
 from hydrata_mcp.config import Config
+from tests.helpers import reload_server
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +17,7 @@ def _clean_env(monkeypatch):
         "HYDRATA_MCP_HOST",
         "HYDRATA_MCP_RESOURCE_URL",  # TASK-3512: the one-click connect switch must not leak in
         "HYDRATA_MCP_DATA_ENVELOPE",  # TASK-3511: the harness's negative-control switch must not leak in
+        "HYDRATA_MCP_DISCOVERY_USER_AGENTS",  # TASK-4177: the catalog-crawler allowlist must not leak in
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -35,3 +37,19 @@ def env_vars(monkeypatch):
 def config(env_vars):
     """Build a Config from the test env vars."""
     return Config.from_env()
+
+
+@pytest.fixture
+def _server(env_vars):
+    """The server modules, reloaded after the env vars are set (Config.from_env runs at import)."""
+    return reload_server()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sampler():
+    """TASK-3962: the sampler's per-day state is process memory; no test may inherit another's."""
+    from hydrata_mcp import telemetry
+
+    telemetry.SAMPLER.reset()
+    yield
+    telemetry.SAMPLER.reset()

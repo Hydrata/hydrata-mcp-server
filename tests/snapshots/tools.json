@@ -125,7 +125,7 @@
       "readOnlyHint": false,
       "title": "Attach an uploaded layer as a project input"
     },
-    "description": "Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building, mesh_region or culvert layer.\n\nOnly for a client that has a shell and an agent key. A connector agent\nwith no shell (claude.ai) writes the layer inline with write_input_layer,\nor, for a file above the inline cap, gives the user the\nrequest_input_upload link instead.\n\nThe agent moves the bytes: first upload the GeoJSON yourself, with the\nsame agent key, to GeoNode's upload endpoint at the site origin:\n\n    curl -sS -H 'Authorization: Bearer hk_...' -F \"base_file=@/path/rainfall.geojson\" https://<site>/api/v2/uploads/upload/\n\n→ JSON with `execution_id`. Then call this tool with it. The tool polls\nGET /api/v2/resource-service/execution-status/<execution_id> (bounded by\ntimeout_seconds; statuses ready → running → finished | failed), reads the\nnew dataset's pk, and PATCHes it onto the project's DEFAULT row of that\nkind ('Boundary 01' … 'MeshRegion 01' — the six rows the terrain import\nseeds ~30 s after get_terrain reports ready; if the list is still empty\nthe tool says so: run finalize_terrain_upload / wait for get_terrain first).\n\nkind `culvert` (Hydraulic Structures; one two-point line per culvert,\nInlet first, then Outlet): no culvert row is seeded by the terrain import,\nso a project with none answers `no_default_row`: write the culverts with\nwrite_input_layer, which makes the row. Hydrata converts every attached\nlayer into the project's grid and the kind's table shape (single\ngeometries, the_geom, the kind's own columns); attribute names are matched\nas they are, nothing is renamed for you (see write_input_layer).\nThe culvert engine conveys flow through each culvert in a run (GPU\nlanes and localhost; the multi-core CPU lanes refuse a culvert scenario).\n\n`outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk,\ndataset_alternate — the WFS typename — and every row id seen);\n`timed_out` (still importing: call\nagain with the same arguments, except pass `retry_execution_id` as\nexecution_id when the result carries one); `upload_failed` (the\nexecution record, incl. its log, is returned verbatim — fix the file and\nupload again); `no_default_row`; `no_dataset` (finished but no resource\nwas recorded). The PATCH is refused with a 400 if the dataset is not\nowned by you.\n\nEvery layer attached here is marked as written by your agent key and is\nUNREVIEWED until the user reviews it in their browser (the build refuses\nUNREVIEWED_INPUTS until then). INFLOWS: never invent an inflow location —\nno coordinates you made up, guessed or \"placed plausibly\". Import the\nlocation from the study's own files, or give the user the ui_url to draw\nit in the map; say in say_to_user that the inflow is unreviewed and where\nthey check or draw it.\n\nRefused, with no request made: kind `breakline` — no REST create path\nexists for it at HEAD (TASK-3040 AC6), so attaching one would only\npretend. Also refused without a request: an execution_id that is not the\nUUID the upload returned.\nOne GeoJSON per kind: all of a kind's features travel in that one file. A\nrainfall polygon names its gauge in its `data` property — create that\ngauge with create_time_series under the exact same name.",
+    "description": "Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building, mesh_region or culvert layer.\n\nOnly for a client that has a shell and an agent key. A connector agent\nwith no shell (claude.ai) writes the layer inline with write_input_layer,\nor, for a file above the inline cap, gives the user the\nrequest_input_upload link instead.\n\nThe agent moves the bytes: first upload the GeoJSON yourself, with the\nsame agent key, to GeoNode's upload endpoint at the site origin:\n\n    curl -sS -H 'Authorization: Bearer hk_...' -F \"base_file=@/path/rainfall.geojson\" https://<site>/api/v2/uploads/upload/\n\n→ JSON with `execution_id`. Then call this tool with it. The tool polls\nGET /api/v2/resource-service/execution-status/<execution_id> (bounded by\ntimeout_seconds; statuses ready → running → finished | failed), reads the\nnew dataset's pk, and PATCHes it onto the project's DEFAULT row of that\nkind ('Boundary 01' … 'MeshRegion 01' — the six rows the terrain import\nseeds ~30 s after get_terrain reports ready; if the list is still empty\nthe tool says so: run finalize_terrain_upload / wait for get_terrain first).\n\nkind `culvert` (Hydraulic Structures; one two-point line per culvert,\nInlet first, then Outlet): no culvert row is seeded by the terrain import,\nso a project with none answers `no_default_row`: write the culverts with\nwrite_input_layer, which makes the row. Hydrata converts every attached\nlayer into the project's grid and the kind's table shape (single\ngeometries, the_geom, the kind's own columns); attribute names are matched\nas they are, nothing is renamed for you (see write_input_layer).\nThe culvert engine conveys flow through each culvert in a run (GPU\nlanes and localhost; the multi-core CPU lanes refuse a culvert scenario).\n\n`outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk and\ndataset_alternate — the WFS typename — of the CONVERTED layer the row now\nuses, source_dataset_pk — the dataset you uploaded — and every row id seen);\n`timed_out` (still importing: call\nagain with the same arguments, except pass `retry_execution_id` as\nexecution_id when the result carries one); `upload_failed` (the\nexecution record, incl. its log, is returned verbatim — fix the file and\nupload again); `no_default_row`; `no_dataset` (finished but no resource\nwas recorded). The PATCH is refused with a 400 if the dataset is not\nowned by you.\n\nEvery layer attached here is marked as written by your agent key and is\nUNREVIEWED until the user reviews it in their browser (the build refuses\nUNREVIEWED_INPUTS until then). INFLOWS: never invent an inflow location —\nno coordinates you made up, guessed or \"placed plausibly\". Import the\nlocation from the study's own files, or give the user the ui_url to draw\nit in the map; say in say_to_user that the inflow is unreviewed and where\nthey check or draw it.\n\nRefused, with no request made: kind `breakline` — no REST create path\nexists for it at HEAD (TASK-3040 AC6), so attaching one would only\npretend. Also refused without a request: an execution_id that is not the\nUUID the upload returned.\nOne GeoJSON per kind: all of a kind's features travel in that one file. A\nrainfall polygon names its gauge in its `data` property — create that\ngauge with create_time_series under the exact same name.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -170,7 +170,7 @@
       "readOnlyHint": false,
       "title": "Build a scenario's mesh and package"
     },
-    "description": "Build a scenario's package (mesh + inputs) after showing what it will cost, and poll until built.\n\nNeeds a launch-level agent key (a build can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nOrder of operations, so the number is shown before anything is spent:\n\n1. GET the scenario detail. A record with no `boundary`/`computed_status`\n   keys is a non-member's read of a public project → refused: a build\n   needs the EDITOR role.\n2. Re-call checks on `latest_run` (a re-POST is NOT deduplicated after\n   `built`/`complete` — it would dispatch a duplicate build): no run →\n   proceed; run `created`/`building` → resume polling, no POST; run\n   `built`/`queued`/`computing`/`processing`/`complete` with\n   `latest_run_is_valid` not false → return that state, no POST unless\n   rebuild=true; run `error`/`cancelled`, or `latest_run_is_valid` false\n   (the scenario was edited since the build) → proceed.\n3. Spend gates, each a refusal with `outcome: \"refused\"` and no POST: the\n   scenario has no boundary or its boundary row has no features (the\n   server would admit the build and fail it in make_package); the\n   estimate is None (resolution is 0/unset); the estimate is above\n   100,000 triangles and confirm is not true — the refusal states the\n   number; re-call with confirm=true to proceed. An estimate of 0 over a\n   boundary WITH features is buildable and is reported, not refused.\n4. POST /projects/<id>/scenarios/<pk>/build/. Every 4xx comes back\n   verbatim as a normal result with `http_status`: 422 MESH_TOO_LARGE\n   (`error_code`, `estimate`, `ceiling`, `detail` — the server's hard\n   ceiling; coarsen `resolution` or shrink the boundary; no run was\n   created), 409 COMPUTE_TARGET_UNAVAILABLE, 400/403/404. 409\n   UNREVIEWED_INPUTS (inputs you wrote that the user has not reviewed)\n   answers `outcome` `unreviewed_inputs` with the `unreviewed_inputs` list and a\n   `ui_url` to the scenario's review screen: give the user the link, poll\n   get_scenario until its `unreviewed_inputs` is empty, then build again. A 409 WITHOUT\n   an error_code is the dedup body ({status, run_id, detail}: a build is\n   already in flight) — the tool resumes polling that run.\n5. On 202 poll the detail's `computed_status` (created → building →\n   built | error), bounded by timeout_seconds.\n\nReturns a COMPACT state, never the whole detail: `outcome` (built, error,\ncancelled, complete/queued/computing/processing for a run past the build,\ntimed_out, or refused), `computed_status`, `mesh_triangle_count_estimate`,\n`posted`, the POST's `build` body + `http_status` when one was made, and\nthe latest run's `run_id`, `run_status`, `error_message`, `user_message`,\n`mesh_triangle_count`. `timed_out` is normal (make_package re-downloads\nthe terrain from S3 every build; minutes): call again with the same\narguments — step 2 resumes polling the same run, it never POSTs twice —\nor cancel_run(run_id) if the run is stuck in `created` with no worker.\n`error` is terminal: `error_message` says why (fix the inputs, then call\nagain — an errored latest run is rebuilt).\n\nUnits: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is\na LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField\ndefault 100, not nullable; 0 makes the estimate None), and the estimate\nprices both the same way (TASK-3186). The smallest value becomes the raster\ncell size. A MeshRegion feature must carry `resolution_units = m` (features\ndrawn in the map are marked automatically); an unmarked one makes the build\nanswer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.",
+    "description": "Build a scenario's package (mesh + inputs) after showing what it will cost, and poll until built.\n\nNeeds a launch-level agent key (a build can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nOrder of operations, so the number is shown before anything is spent:\n\n1. GET the scenario detail. A record with no `boundary`/`computed_status`\n   keys is a non-member's read of a public project → refused: a build\n   needs the EDITOR role.\n2. Re-call checks on `latest_run` (a re-POST is NOT deduplicated after\n   `built`/`complete` — it would dispatch a duplicate build): no run →\n   proceed; run `created`/`building` → resume polling, no POST; run\n   `built`/`queued`/`computing`/`processing`/`complete` with\n   `latest_run_is_valid` not false → return that state, no POST unless\n   rebuild=true; run `error`/`cancelled`, or `latest_run_is_valid` false\n   (the scenario was edited since the build) → proceed.\n3. Spend gates, each a refusal with `outcome: \"refused\"` and no POST: the\n   scenario has no boundary or its boundary row has no features (the\n   server would admit the build and fail it in make_package); the\n   estimate is None (resolution is 0/unset); the estimate is above\n   100,000 triangles and confirm is not true — the refusal carries\n   `mesh_triangle_count_estimate` and `quote_estimate` (the ONE pre-build price,\n   labelled an estimate) and a `say_to_user` asking the person's yes: relay the\n   number and the price and get the user's yes before confirm=true. confirm=true\n   is a rule for you, not something the user does; never pass it on your own say-so. An estimate of 0 over a\n   boundary WITH features is buildable and is reported, not refused.\n4. POST /projects/<id>/scenarios/<pk>/build/. Every 4xx comes back\n   verbatim as a normal result with `http_status`: 422 MESH_TOO_LARGE\n   (`error_code`, `estimate`, `ceiling`, `detail` — the server's hard\n   ceiling; coarsen `resolution` or shrink the boundary; no run was\n   created), 409 COMPUTE_TARGET_UNAVAILABLE, 400/403/404. 409\n   UNREVIEWED_INPUTS (inputs you wrote that the user has not reviewed)\n   answers `outcome` `unreviewed_inputs` with the `unreviewed_inputs` list and a\n   `ui_url` to the scenario's review screen: give the user the link, poll\n   get_scenario until its `unreviewed_inputs` is empty, then build again. A 409 WITHOUT\n   an error_code is the dedup body ({status, run_id, detail}: a build is\n   already in flight) — the tool resumes polling that run.\n5. On 202 poll the detail's `computed_status` (created → building →\n   built | error), bounded by timeout_seconds.\n\nReturns a COMPACT state, never the whole detail: `outcome` (built, error,\ncancelled, complete/queued/computing/processing for a run past the build,\ntimed_out, or refused), `computed_status`, `mesh_triangle_count_estimate`,\n`posted`, the POST's `build` body + `http_status` when one was made, and\nthe latest run's `run_id`, `run_status`, `error_message`, `user_message`,\n`mesh_triangle_count`. `timed_out` is normal (make_package re-downloads\nthe terrain from S3 every build; minutes): call again with the same\narguments — step 2 resumes polling the same run, it never POSTs twice —\nor cancel_run(run_id) if the run is stuck in `created` with no worker.\n`error` is terminal: `error_message` says why (fix the inputs, then call\nagain — an errored latest run is rebuilt).\n\nUnits: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is\na LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField\ndefault 100, not nullable; 0 makes the estimate None), and the estimate\nprices both the same way (TASK-3186). The smallest value becomes the raster\ncell size. A MeshRegion feature must carry `resolution_units = m` (features\ndrawn in the map are marked automatically); an unmarked one makes the build\nanswer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -236,6 +236,61 @@
     },
     "name": "cancel_run",
     "title": "Cancel a run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Copy a scenario (no run, no build)"
+    },
+    "description": "Copy a scenario into a new sibling, for a variant. No run is copied and nothing is built.\n\nThe copy points at the SAME input rows as the original. Give the variant\nits own input row by writing one with write_input_layer (target = a title)\nand passing the new row id in `overrides`; the original scenario's inputs\nstay as they were. The name and overrides go in the one copy call and Hydrata checks them first: a\nrefused name or id makes no copy.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Name for the copy (default: '<name>-copy'). Name it for what differs."
+        },
+        "overrides": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fields of the copy to set at once, the same as update_scenario: description, resolution, duration, terrain, boundary, friction, inflow, rainfall, building, mesh_region, culvert."
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "scenario_id": {
+          "description": "The scenario to copy",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "scenario_id"
+      ],
+      "type": "object"
+    },
+    "name": "clone_scenario",
+    "title": "Copy a scenario (no run, no build)"
   },
   {
     "annotations": {
@@ -332,7 +387,7 @@
       "readOnlyHint": false,
       "title": "Create a draft scenario"
     },
-    "description": "Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.\n\nPOSTs /projects/<id>/scenarios/ with the write fields, then GETs the\nscenario detail — the create response carries NO estimate; the detail's\n`mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact\nrecord (the same fields get_scenario answers with): id, name, the FK ids\nas stored, resolution, duration, `computed_status` (`created` = no run\nyet), the estimate and its breakdown, the price (`compute_cost_estimate`\nin USD, `vcpu_hours_estimate`), `inflow_anchor_mismatch`, and\nhttp_status. Next step: build_scenario (which asks for\nconfirm=true above 100,000 triangles). Nothing is meshed or queued here.\n\nUnits: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is\na LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField\ndefault 100, not nullable; 0 makes the estimate None), and the estimate\nprices both the same way (TASK-3186). The smallest value becomes the raster\ncell size. A MeshRegion feature must carry `resolution_units = m` (features\ndrawn in the map are marked automatically); an unmarked one makes the build\nanswer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.\n\nThe server does NOT validate that the FK ids belong to `project_id` —\npass the row ids attach_input_layer / get_terrain returned for THIS\nproject. Every FK is nullable at create time, and the build fails later\non a scenario with no terrain, or with neither an inflow nor a rainfall.\nA `boundary` whose row has no features (the default 'Boundary 01' before\nattach_input_layer) is accepted here and refused by build_scenario. The\nestimate is None when resolution is 0; an estimate of 0 with a real\nboundary is a very coarse mesh, not an error.",
+    "description": "Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.\n\nPOSTs /projects/<id>/scenarios/ with the write fields, then GETs the\nscenario detail — the create response carries NO estimate; the detail's\n`mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact\nrecord (the same fields get_scenario answers with): id, name, the FK ids\nas stored, resolution, duration, `computed_status` (`created` = no run\nyet), the estimate and its breakdown, the price (`quote_estimate`:\nthe ONE pre-build price in USD, labelled an estimate), `inflow_anchor_mismatch`, and\nhttp_status. Next step: build_scenario (which asks for\nconfirm=true above 100,000 triangles). Nothing is meshed or queued here.\n\nUnits: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is\na LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField\ndefault 100, not nullable; 0 makes the estimate None), and the estimate\nprices both the same way (TASK-3186). The smallest value becomes the raster\ncell size. A MeshRegion feature must carry `resolution_units = m` (features\ndrawn in the map are marked automatically); an unmarked one makes the build\nanswer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.\n\nThe server does NOT validate that the FK ids belong to `project_id` —\npass the row ids attach_input_layer / get_terrain returned for THIS\nproject. Every FK is nullable at create time, and the build fails later\non a scenario with no terrain, or with neither an inflow nor a rainfall.\nA `boundary` whose row has no features (the default 'Boundary 01' before\nattach_input_layer) is accepted here and refused by build_scenario. The\nestimate is None when resolution is 0; an estimate of 0 with a real\nboundary is a very coarse mesh, not an error.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -441,6 +496,22 @@
           "description": "Mesh resolution as a LENGTH in metres (ANUGA maximum_triangle_area = resolution²/2). Coarser (larger) = fewer triangles: on a ~13 km² boundary 36-40 m gives ~16-20k triangles, 10 m ~255k, 1 m ~25M (refused by the API).",
           "type": "number"
         },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document."
+        },
         "structure": {
           "anyOf": [
             {
@@ -496,6 +567,10 @@
           },
           "type": "array"
         },
+        "levels_datum": {
+          "description": "REQUIRED. The datum the PERSON'S levels (study, survey, tailwater) are on: `AHD`, `NAVD88`, `Ordnance Datum Newlyn`, or an EPSG vertical code such as `EPSG:5711`. Ask the user; never guess. Recorded on the project, NOT as the terrain's own datum.",
+          "type": "string"
+        },
         "poll_interval_seconds": {
           "default": 5.0,
           "description": "Seconds between polls (default 5)",
@@ -523,7 +598,8 @@
       "required": [
         "project_id",
         "bbox",
-        "source"
+        "source",
+        "levels_datum"
       ],
       "type": "object"
     },
@@ -575,15 +651,36 @@
           "description": "The project ID",
           "type": "integer"
         },
+        "rainfall_basis": {
+          "default": "",
+          "description": "REQUIRED for a hyetograph (rainfall): `excess` = rain AFTER losses (what you write; the simulation applies no losses) or `gross` = rain before losses (a design storm). Ignored for other series types.",
+          "type": "string"
+        },
         "series_type": {
           "default": "hyetograph",
-          "description": "One of hyetograph (rainfall depth/intensity — the default), hydrograph (flow, read by the Hydrographs panel and inflow boundaries), stage (water level, e.g. a tide) or generic. Sent as a top-level field.",
+          "description": "One of hyetograph (rainfall depth/intensity — the default), hydrograph (flow that DRIVES an inflow boundary: an input, not a result; the flow out of a run comes from get_flow_hydrograph), stage (water level, e.g. a tide) or generic. Sent as a top-level field.",
           "type": "string"
         },
         "source": {
           "default": "",
           "description": "Where the data came from, e.g. a gauge id or agency (optional)",
           "type": "string"
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document."
         },
         "timezone": {
           "default": "UTC",
@@ -706,6 +803,11 @@
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "levels_datum": {
+          "default": "",
+          "description": "TASK-4118: the datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, `NAVD88`, `Ordnance Datum Newlyn` or an EPSG vertical code (`EPSG:5711`). A project fact, separate from the terrain's own datum. Pass it when the user told you; if they did not, ask them, do not guess.",
+          "type": "string"
+        },
         "process_id": {
           "default": "",
           "description": "`process_id` returned by presign_terrain_upload (pass it so the upload's progress record is reused; the API tolerates its absence)",
@@ -738,6 +840,42 @@
     },
     "name": "finalize_terrain_upload",
     "title": "Register an uploaded terrain"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Flow across a line for a run"
+    },
+    "description": "Flow (Q) across a drawn line, at every frame of a completed run.\n\nIntegrates depth times velocity normal to the line from the run's playback store:\nreturns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`, `volume_m3`,\n`sign_convention`, `frame_spacing_s`, `warnings` (the peak is resolved to the nearest\nframe, so the true peak may fall between frames) and a `mass_balance` (rain and inflow\nin, left in the model; outflow is by difference, open-boundary flux is not integrated).\nRelay `say_to_user`. This is the model's flow, not a gauge reading.\n\nA run with no playback store answers outcome `no_playback_store`; a bad line answers\n`bad_line` with the reason.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "The line to measure across, as [[lon, lat], [lon, lat], ...] in WGS84 (at least 2 points), in the order drawn. Positive flow crosses from the line's left bank to its right bank.",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "run_id": {
+          "description": "The run ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "line"
+      ],
+      "type": "object"
+    },
+    "name": "get_flow_hydrograph",
+    "title": "Flow across a line for a run"
   },
   {
     "annotations": {
@@ -838,7 +976,7 @@
       "readOnlyHint": true,
       "title": "Get a run's full record"
     },
-    "description": "Get full details of a simulation run including timing and results.\n\nReturns the complete run record: status, progress, timing (start/end\ntimestamps, duration), compute details (backend, instance type, cost),\nmesh info, error messages, and result log. Use get_run_status for\nlightweight polling; use this for final results.\n\nThe presigned `s3_*_url` download links are ELIDED — each is a 6-hour\ncapability and no tool relays one. The results stay viewable through the\n`gn_layer_*` entries (published WMS layers on the project's map).\n\n`sww` reports the run's full time series (the raw ANUGA output): `state`\n(available, not_kept, archived or restoring), `size_bytes`, and a `ui_url`\nto the Results panel where the person downloads it (or requests a restore\nof an archived one and is emailed when it is ready). The download link\nitself is never returned.",
+    "description": "Get full details of a simulation run including timing and results.\n\nReturns the complete run record: status, progress, timing (start/end\ntimestamps, duration), compute details (backend, instance type, cost),\nmesh info, error messages, and result log. Use get_run_status for\nlightweight polling; use this for final results.\n\nThe presigned `s3_*_url` download links are ELIDED — each is a 6-hour\ncapability and no tool relays one. The results stay viewable through the\n`gn_layer_*` entries (published WMS layers on the project's map).\n\n`sww` reports the run's full time series (the raw ANUGA output): `state`\n(available, not_kept, archived, restoring or unreadable), `size_bytes`, and a `ui_url`\nto the Results panel where the person downloads it (or requests a restore\nof an archived one and is emailed when it is ready). The download link\nitself is never returned. `unreadable` means the storage refused the read:\nthere is no download to offer, so tell the person and ask them to ask the\noperator; `sww.error_code` and `sww.detail` carry the reason in words.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -863,12 +1001,17 @@
       "readOnlyHint": true,
       "title": "Poll a run's status"
     },
-    "description": "Lightweight status check for a simulation run (fast, <50ms).\n\nUse this for polling instead of get_run. Returns only: id, status,\n`phase`, progress_pct (0-100), eta_seconds, error_message, and\ncompute_backend.\n\n`phase` is never empty: it is `status`, except `preparing_inputs` while a\n`computing` run has no progress yet (it is downloading its input package\nand building the domain — minutes on a big model; this is NOT a stall).\nPoll every 5-10 seconds. Terminal states: complete, error, cancelled.",
+    "description": "Status of a simulation run, optionally waiting for it to move.\n\nUse this instead of get_run. Returns: id, status, `phase`, status_detail,\nprogress_pct (0-100), eta_seconds, error_message, compute_backend, and\n`say_to_user`.\n\nFOLLOWING A RUN FROM CHAT: call with wait_seconds=180. The call returns as soon\nas the status, phase or progress (5 points) changes, or after 180 s, whichever is\nfirst. Then RELAY `say_to_user` to the person (one short line after every call) and call\nagain. Do not sleep or wait yourself between calls: the wait happens inside this\ncall. After about 10 minutes of this in one turn, stop and tell the person to ask\nyou for the status: you cannot watch the run between their messages, and Hydrata\nemails them when it finishes.\n\n`phase` is never empty: it is `status`, except `preparing_inputs` while a\n`computing` run has no progress yet (it is downloading its input package\nand building the domain — minutes on a big model; this is NOT a stall).\nTerminal states: complete, error, cancelled. A waiting call returns at once\non a terminal state.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "run_id": {
           "description": "The run ID",
+          "type": "integer"
+        },
+        "wait_seconds": {
+          "default": 0,
+          "description": "Wait up to this many seconds for the run to move before answering (max 180, the proven ceiling; larger values are clamped). Returns early when the status, the phase or the progress (by 5 points) changes. Default 0: answer at once.",
           "type": "integer"
         }
       },
@@ -888,7 +1031,7 @@
       "readOnlyHint": true,
       "title": "Get a scenario's state, inputs and price"
     },
-    "description": "Get a scenario's COMPACT state: its `computed_status`, inputs, estimate and price.\n\nReturns a compact record, never the raw ~50 KB detail: `scenario_id`,\n`computed_status`, `mesh_triangle_count_estimate` and its `_breakdown`,\n`latest_run_is_valid`, the latest run's `run_id`, `run_status`,\n`error_message`, `user_message`, `status_detail` and `mesh_triangle_count`\n— plus what the scenario IS and what it will cost: `name`, `description`,\n`project`, `resolution`, `duration`, the input row ids (`terrain`,\n`boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),\n`compute_cost_estimate` (USD), `vcpu_hours_estimate`, and\n`inflow_anchor_mismatch` (null unless an inflow series starts after the\nmodel does: the model gets zero flow from that series over the lead-in\ngap before its first sample), and\n`hydrology_check` (when Hydrata sends it: for each inflow and rainfall\nfeature, the series that drives it, its peak and volume, and structured\nwarnings — repeat those numbers to the user, never your own), and\n`unbound_series` with a `say_to_user` warning when the project holds a\nrainfall or flow series that no inflow or rainfall feature uses (the model\nignores it: tell the user and ask which input it belongs to).\n\nThe `computed_status` field (there is NO `status` key on a scenario) is\nderived from the latest run and will be one of: created, building, built,\nqueued, computing, processing, complete, error, or cancelled — `created`\nalso means no run exists yet. A scenario must be `built` before it can be\nrun. `latest_run_is_valid` is false after any edit since the last build.\n`unreviewed_inputs` lists the inputs written by an agent key that the user\nhas not reviewed at their current content (kind, layer_id, title,\nfeature_count, the grant that wrote it, `authored_method` (the agent's own account of\nhow it made the input, when it gave one), `reopened` when an edit undid an\nearlier input review): while it is not empty, build and run are refused\nUNREVIEWED_INPUTS. Only the user reviews, in the browser — poll this tool\nevery 30-60 s after giving them the review link.\nA non-member reading a public project's scenario gets a reduced record:\nthe fields the server withholds (the input ids, the price,\n`inflow_anchor_mismatch`) are ABSENT here rather than reported as null —\n\"withheld\" is not \"no terrain, no cost\" — while the run-state keys,\n`computed_status` among them, read null.\n\nNo presigned S3 URL is returned by any read tool (each is a 6-hour\ncapability): results stay viewable through a run's `gn_layer_*` WMS\nentries — use get_run for the full run record.",
+    "description": "Get a scenario's COMPACT state: its `computed_status`, inputs, estimate and price.\n\nReturns a compact record, never the raw ~50 KB detail: `scenario_id`,\n`computed_status`, `mesh_triangle_count_estimate` and its `_breakdown`,\n`latest_run_is_valid`, the latest run's `run_id`, `run_status`,\n`error_message`, `user_message`, `status_detail` and `mesh_triangle_count`\n— plus what the scenario IS and what it will cost: `name`, `description`,\n`project`, `resolution`, `duration`, the input row ids (`terrain`,\n`boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),\n`quote_estimate` (the ONE pre-build price in USD, GPU formula, labelled an\nestimate: `price` is what the person pays, `0.00` inside the daily free band, and\n`list_price` is the real figure), and\n`authored_method` and `sources` (how the agent made the scenario and the documents it cites:\n`[]` when none), and\n`inflow_anchor_mismatch` (null unless an inflow series starts after the\nmodel does: the model gets zero flow from that series over the lead-in\ngap before its first sample), and\n`hydrology_check` (when Hydrata sends it: for each inflow and rainfall\nfeature, the series that drives it, its peak and volume, and structured\nwarnings — repeat those numbers to the user, never your own), and\n`unbound_series` with a `say_to_user` warning when the project holds a\nrainfall or flow series that no inflow or rainfall feature uses (the model\nignores it: tell the user and ask which input it belongs to).\n\nThe `computed_status` field (there is NO `status` key on a scenario) is\nderived from the latest run and will be one of: created, building, built,\nqueued, computing, processing, complete, error, or cancelled — `created`\nalso means no run exists yet. A scenario must be `built` before it can be\nrun. `latest_run_is_valid` is false after any edit since the last build.\n`unreviewed_inputs` lists the inputs written by an agent key that the user\nhas not reviewed at their current content (kind, layer_id, title,\nfeature_count, the grant that wrote it, `authored_method` (the agent's own account of\nhow it made the input, when it gave one), `reopened` when an edit undid an\nearlier input review): while it is not empty, build and run are refused\nUNREVIEWED_INPUTS. Only the user reviews, in the browser — poll this tool\nevery 30-60 s after giving them the review link.\nA non-member reading a public project's scenario gets a reduced record:\nthe fields the server withholds (the input ids, the price,\n`inflow_anchor_mismatch`) are ABSENT here rather than reported as null —\n\"withheld\" is not \"no terrain, no cost\" — while the run-state keys,\n`computed_status` among them, read null.\n\nNo presigned S3 URL is returned by any read tool (each is a 6-hour\ncapability): results stay viewable through a run's `gn_layer_*` WMS\nentries — use get_run for the full run record.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1205,6 +1348,48 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "Read the features of a project input layer"
+    },
+    "description": "Read the features of a project input layer: GeoJSON in EPSG:4326 with each feature's `id` (fid),\nits attributes and its `author` (`person`, or the agent grant and client that wrote it).\n\nRead a layer before you write to it. A person may have drawn features in\nthe map that you cannot otherwise see; write_input_layer then ADDS to the\nlayer rather than replacing it. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "Which input: boundary, friction, inflow, rainfall, building, mesh_region or culvert.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "row_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The input row's id (from list_inputs). Leave empty for the project's default row of that kind."
+        }
+      },
+      "required": [
+        "project_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "read_input_layer",
+    "title": "Read the features of a project input layer"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "Get a browser upload link for a big input layer"
     },
     "description": "Get the link where the PERSON uploads a big input layer in their browser.\n\nFor a layer too big to send with write_input_layer (over about 150 KB):\nbuilding footprints, land-use friction. You cannot move file bytes, so give\nthe person `ui_url`. It opens the project's upload page for this kind; they\ndrop a GeoJSON, a zipped shapefile or a GeoPackage (up to 100 MB), Hydrata\nconverts it into the project's grid and attaches it to the kind's layer,\nreplacing what it held. Nothing is created until they drop a file.\n\nA file the person drops is their own input: it is marked 'uploaded by the\nuser' and needs no review step. Afterwards call list_inputs: the layer is\nthere with that `authored_method`. A file of the wrong kind (polygons on an\ninflow) is refused on the page with a plain message. The person needs Editor\naccess on the project.",
@@ -1253,6 +1438,47 @@
     },
     "name": "retry_run",
     "title": "Retry a failed run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Read ground levels at points"
+    },
+    "description": "Read the ground level of a terrain at points, to place a culvert, inflow or boundary on the ground.\n\nReturns `samples`: for each point you gave, in order, `lon`, `lat` and `level`\n(the terrain's own height in metres, on the terrain's vertical datum: see\nget_terrain `vertical_datum`). `level` is null where the terrain has no\ndata or the point lies outside it: say so, never treat it as zero. These\nare the same values the browser's Profile panel reads. Read-only; changes nothing.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "points": {
+          "description": "Up to 500 [longitude, latitude] pairs in WGS84 degrees (longitude FIRST), e.g. [[149.1, -35.28]]",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "terrain_id": {
+          "description": "The terrain ID (get_terrain, or the `terrain` on get_scenario)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "points"
+      ],
+      "type": "object"
+    },
+    "name": "sample_terrain",
+    "title": "Read ground levels at points"
   },
   {
     "annotations": {
@@ -1337,7 +1563,7 @@
       "readOnlyHint": false,
       "title": "Start a simulation run (spends compute)"
     },
-    "description": "Start a flood simulation run for a built scenario.\n\nNeeds a launch-level agent key (a run spends compute); a read or draft key\ngets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the\nsite's Agent keys page (/agents/).\n\nThe scenario must be in 'built' status. Returns 202 with the new run.\nThe run transitions through: built → queued → computing → processing → complete.\n\nAfter starting, poll get_run_status to track progress. Returns 409\nif the scenario is not in the correct state. The returned run record has\nits presigned `s3_*_url` links elided (6-hour capabilities).\n\nINPUT REVIEW (Hydrata enforces it): while an input you wrote is not reviewed by\nthe user, the run is not started - `outcome` `unreviewed_inputs`,\n`error_code` UNREVIEWED_INPUTS, a `ui_url` to the scenario's review screen.\nA run built from inputs other than the ones reviewed now answers\n`outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with\nrebuild=true, then start it again.\n\nSPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not\nfit your agent key's monthly spend limit (default $0), or that Hydrata\ncannot price, is NOT started. The result is then a normal (non-error)\nanswer with `outcome` `consent_required`, `error_code` CONSENT_REQUIRED,\n`quoted_cost_usd` and `consent_url`: give the user the link and the price\n(`say_to_user`). Only they can approve, in their browser. Then do NOT call\nstart_simulation again for this run: poll get_run_status(run_id) — the run\nleaves `built` once they press the button. (With consent_timeout_seconds > 0\nthis call polls the run itself and answers `outcome` `consented`, with the\nrun, if they approve within that time.)",
+    "description": "Start a flood simulation run for a built scenario.\n\nNeeds a launch-level agent key (a run spends compute); a read or draft key\ngets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the\nsite's Agent keys page (/agents/).\n\nThe scenario must be in 'built' status. Returns 202 with the new run.\nThe run transitions through: built → queued → computing → processing → complete.\n\nAfter starting, tell the person how they will hear about the end (`say_to_user` says it:\nyou cannot watch the run after your reply; Hydrata emails them when it completes or\nfails). If the run is estimated at under about 10 minutes, keep following it with\nget_run_status(wait_seconds=180) and report the completion yourself in the same turn.\nPoll get_run_status to track progress. Returns 409\nif the scenario is not in the correct state. The returned run record has\nits presigned `s3_*_url` links elided (6-hour capabilities).\n\nINPUT REVIEW (Hydrata enforces it): while an input you wrote is not reviewed by\nthe user, the run is not started - `outcome` `unreviewed_inputs`,\n`error_code` UNREVIEWED_INPUTS, a `ui_url` to the scenario's review screen.\nA run built from inputs other than the ones reviewed now answers\n`outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with\nrebuild=true, then start it again.\n\nHOW THE RUN IS PAID (TASK-4101): a started run's answer carries `quote` (what the\nuser is charged; `0.00` inside the daily free band), `quote_list_price` (the run's\nreal price, the same figure the map and billing show) and `paid_by` (`free_band` or\n`credit`), and `say_to_user` states them. Say that figure, never another: the only\nprice you can quote is `quote` / `quote_list_price` (built run) or `quote_estimate`\n(before a build, always called an estimate).\n\nSPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not\nfit your agent key's monthly spend limit (default $0), or that Hydrata\ncannot price, is NOT started. The result is then a normal (non-error)\nanswer with `outcome` `consent_required`, `error_code` CONSENT_REQUIRED,\n`quoted_cost_usd` and `consent_url`: give the user the link and the price\n(`say_to_user`). Only they can approve, in their browser. Then do NOT call\nstart_simulation again for this run: poll get_run_status(run_id) — the run\nleaves `built` once they press the button. (With consent_timeout_seconds > 0\nthis call polls the run itself and answers `outcome` `consented`, with the\nrun, if they approve within that time.)",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1363,6 +1589,82 @@
     },
     "name": "start_simulation",
     "title": "Start a simulation run (spends compute)"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Tell the Hydrata team about a capability that is missing"
+    },
+    "description": "Tell the Hydrata team about something the person asked for that NO existing tool can do.\n\nUse it only when you have checked the other tools and none can do what the person asked\n(never to report a bug, and never instead of a tool that can do it). Describe the need, not a\nworkaround; send no personal data, keys or file contents. It changes none of the person's data.\nThe reply tells you what to say: relay `say_to_user` to the person as it is. Limit: 20 a day\nper person.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "goal": {
+          "default": "",
+          "description": "What they were trying to achieve with it (optional)",
+          "type": "string"
+        },
+        "what": {
+          "description": "What the person asked for that no tool can do, in one or two plain sentences",
+          "type": "string"
+        }
+      },
+      "required": [
+        "what"
+      ],
+      "type": "object"
+    },
+    "name": "suggest_capability",
+    "title": "Tell the Hydrata team about a capability that is missing"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Read the ground along a line"
+    },
+    "description": "Read the ground along a line (a cross-section) to find where a channel runs and snap a structure to it.\n\nReturns `profile`: samples ordered along the line, each with `distance_m`\nfrom the start, `lon`, `lat` and `level` (the terrain's height in metres,\non its vertical datum: see get_terrain). `lowest` is the sample with the\nminimum level: across a channel it is the invert candidate, and its\nlon/lat is where the channel is. `level` is null where there is no data\nor the line leaves the terrain: those samples are never `lowest`. The same\nvalues the browser's Profile panel draws for the same line. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "The line to read along: 2 to 150 [longitude, latitude] pairs in WGS84 degrees (longitude FIRST); simplify a longer line, it rides in the request URL",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "step_m": {
+          "default": 5.0,
+          "description": "Metres between samples (default 5). One call returns at most 500 samples: use a larger step for a long line.",
+          "type": "number"
+        },
+        "terrain_id": {
+          "description": "The terrain ID (get_terrain, or the `terrain` on get_scenario)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "line"
+      ],
+      "type": "object"
+    },
+    "name": "terrain_profile",
+    "title": "Read the ground along a line"
   },
   {
     "annotations": {
@@ -1404,6 +1706,180 @@
     },
     "name": "update_observation",
     "title": "Edit one flood observation"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Edit a scenario's name, size or attached inputs"
+    },
+    "description": "Edit a scenario: its name, description, resolution, duration, or which input rows it points at.\n\nA thin PATCH of scenarios/{id}/ with only the fields you pass. It NEVER\nbuilds or runs anything: a changed scenario is marked stale and you call\nbuild_scenario when the person agrees. Keep the name true: a scenario\nnamed '... - 10m' whose resolution you set to 30 must be renamed in the\nsame call. Attaching an input row changes only THIS scenario; to vary an\ninput for a variant, clone_scenario first, then attach the new row to the\nclone.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "boundary": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Boundary row id to attach"
+        },
+        "building": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Building row id to attach"
+        },
+        "culvert": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Culvert row id to attach"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New description"
+        },
+        "duration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Simulation duration in seconds"
+        },
+        "friction": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Friction row id to attach"
+        },
+        "inflow": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Inflow row id to attach"
+        },
+        "mesh_region": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MeshRegion row id to attach"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "New name. Keep it true: if it states a resolution or duration, change it too."
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "rainfall": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Rainfall row id to attach (write_input_layer with a target returns one)"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Mesh resolution as a LENGTH in metres (smaller = finer, more triangles)"
+        },
+        "scenario_id": {
+          "description": "The scenario ID",
+          "type": "integer"
+        },
+        "terrain": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Terrain id to attach"
+        }
+      },
+      "required": [
+        "project_id",
+        "scenario_id"
+      ],
+      "type": "object"
+    },
+    "name": "update_scenario",
+    "title": "Edit a scenario's name, size or attached inputs"
   },
   {
     "annotations": {
@@ -1461,6 +1937,11 @@
           "description": "The project ID",
           "type": "integer"
         },
+        "rainfall_basis": {
+          "default": "",
+          "description": "State what a rainfall series' numbers are: `excess` (rain after losses) or `gross` (before losses). Use it to correct a series that was saved without a basis.",
+          "type": "string"
+        },
         "series_id": {
           "description": "The time series id (from list_time_series or create_time_series)",
           "type": "integer"
@@ -1469,6 +1950,22 @@
           "default": "",
           "description": "New series_type: hyetograph, hydrograph, stage or generic",
           "type": "string"
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document. Replaces the earlier list."
         },
         "units": {
           "default": "",
@@ -1493,7 +1990,7 @@
       "readOnlyHint": false,
       "title": "Write a project input layer from GeoJSON"
     },
-    "description": "Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.\n\nNo file, no key, no upload: the features go in `features`. Hydrata\nconverts them into the project's grid and puts them in the project's\ndefault layer of that kind, replacing what it held (the old layer is kept,\nunlinked). Unlike attach_input_layer there is nothing to poll.\n\nEvery feature must be the kind's geometry (lines for boundary, inflow and\nculvert; polygons for friction, rainfall, building and mesh_region); a\nfeature of another geometry refuses the whole write and nothing changes.\nA culvert is one two-point line per culvert, Inlet first, then Outlet; its\nattributes are the culvert fields (name, shape, width_m, ... see the\nculvert guidance), nothing is renamed for you.\n\nLimit: about 150 KB of GeoJSON (a few thousand vertices). A bigger layer\nis refused before anything is sent: ask the person to upload it in their\nbrowser with a request_input_upload link instead.\n\nThe layer is marked as written by your agent key and is UNREVIEWED until\nthe user reviews it in their browser. INFLOWS: never invent an inflow\nlocation; take it from the study's files or give the user the ui_url to\ndraw it.",
+    "description": "Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.\n\nNo file, no key, no upload: the features go in `features`. Hydrata\nconverts them into the project's grid and puts them in the project's\ndefault layer of that kind. Unlike attach_input_layer there is nothing to\npoll.\n\nVARIANTS: the default row may feed scenarios that already ran, and writing\nit changes what they point at. For a variant (a copy of a scenario with\ndifferent rainfall, say) write a SEPARATE row with `target` set to a\ntitle, then attach it to the copy with update_scenario or clone_scenario.\nA no-target write to a default row that a scenario with a built or\ncomplete run uses is refused, naming those scenarios, unless the person\nagreed and you pass replace_shared=true.\n\nREAD FIRST with read_input_layer. When the layer holds features a person\ndrew, this tool ADDS yours beside them (mode 'append', the default; their\nfeature ids hold). A replace (mode 'replace') writes a new layer and unlinks\nthe old one, so it is refused unless the person agreed and you pass\nreplace_existing=true; the refusal says how many of their features it would\nremove. Ask them before you replace.\n\nEvery feature must be the kind's geometry (lines for boundary, inflow and\nculvert; polygons for friction, rainfall, building and mesh_region); a\nfeature of another geometry refuses the whole write and nothing changes.\nA culvert is one two-point line per culvert, Inlet first, then Outlet; its\nattributes are the culvert fields (name, shape, width_m, ... see the\nculvert guidance), nothing is renamed for you.\n\nLimit: about 150 KB of GeoJSON (a few thousand vertices). A bigger layer\nis refused before anything is sent: ask the person to upload it in their\nbrowser with a request_input_upload link instead.\n\nThe layer is marked as written by your agent key and is UNREVIEWED until\nthe user reviews it in their browser. INFLOWS: never invent an inflow\nlocation; take it from the study's files or give the user the ui_url to\ndraw it.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1511,9 +2008,55 @@
           "description": "One short phrase saying how you made these features (e.g. 'traced from the council PDF', 'digitised from the survey CSV'). Shown to the person who reviews the layer.",
           "type": "string"
         },
+        "mode": {
+          "default": "",
+          "description": "'append' adds `features` to the layer's existing features (the person's keep their ids); 'replace' writes a new layer. Leave empty: Hydrata appends when the layer holds features a person drew, and replaces otherwise.",
+          "type": "string"
+        },
         "project_id": {
           "description": "The project ID",
           "type": "integer"
+        },
+        "replace_existing": {
+          "default": false,
+          "description": "Only true after the person agreed to a replace that removes the features they drew. Without it a replace of a layer holding their features is refused and the refusal says how many.",
+          "type": "boolean"
+        },
+        "replace_shared": {
+          "default": false,
+          "description": "Only true after the person agreed to change a default row that scenarios with a built or complete run use. Without it that write is refused and the refusal names those scenarios.",
+          "type": "boolean"
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "TASK-4088: the documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) is optional. At most 20. Pass it beside the method whenever you cite a document."
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which input row to write: an existing row id of this kind (list_inputs), or a TITLE for a NEW row of this kind (e.g. 'Rainfall - no losses'). Leave empty to write the project's default row. A new row is attached to no scenario until you attach it with update_scenario."
         }
       },
       "required": [

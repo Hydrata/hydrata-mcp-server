@@ -8,8 +8,7 @@ check: lint parity test
 
 lint:
 	$(PY) -m ruff check .
-	# TASK-4015 (W5.1) does the one-off `ruff format` of the tree and then adds
-	# `ruff format --check .` here; today 12 files (~6.5k lines) would be reformatted.
+	$(PY) -m ruff format --check .
 
 parity:
 	$(PY) scripts/check_version_parity.py
