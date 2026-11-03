@@ -4,6 +4,8 @@ Drives the REAL ASGI app (like tests/test_app.py) and reads the JSON lines the s
 Test names carry ``tool_call_record`` so the card's stored proof (``-k tool_call_record``) selects them.
 """
 
+import base64
+import hashlib
 import json
 from urllib.parse import quote
 
@@ -14,7 +16,7 @@ from fastmcp.exceptions import NotFoundError, ToolError
 from fastmcp.tools import ToolResult
 
 from hydrata_mcp import telemetry
-from tests.helpers import BASE, CALLER_KEY, KEY_HEADERS, MCP_HEADERS, _asgi_client, _parse, _tools_call
+from tests.helpers import BASE, CALLER_KEY, KEY_HEADERS, MCP_HEADERS, _asgi_client, _parse, _tools_call, reload_server
 
 pytestmark = pytest.mark.asyncio
 
@@ -481,3 +483,132 @@ async def test_telemetry_level_sample_lines_are_info(_server, capsys):
     await _call(_server, "list_projects")
     samples = _records(capsys, kind="sample")
     assert samples and all(s["level"] == "info" for s in samples)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4172: a call rejected before Django carries the user Django last verified for the same token
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _fresh_actor_cache():
+    telemetry.ACTOR_CACHE.clear()
+    yield
+    telemetry.ACTOR_CACHE.clear()
+
+
+def _jwt(sub="user_1", signature="sig"):
+    seg = base64.urlsafe_b64encode(json.dumps({"sub": sub, "client_id": "client_ABC"}).encode()).decode().rstrip("=")
+    return f"eyJhbGciOiJSUzI1NiJ9.{seg}.{signature}"
+
+
+def _verified_reply(actor=ACTOR):
+    respx.get(f"{BASE}/projects/").mock(
+        return_value=httpx.Response(200, json={"results": []}, headers={"X-Hydrata-Actor": actor})
+    )
+
+
+@respx.mock
+async def test_tool_call_record_credential_cache_carries_the_verified_user_onto_a_pre_django_failure(_server, capsys):
+    _verified_reply("user_id=12&username=ann&grant=34&credential=agent_key&internal=1")
+    await _call(_server, "list_projects")
+    await _call(_server, "get_project", {})  # missing required argument: fails inside FastMCP
+    verified, failed = _records(capsys)
+    assert failed["outcome"] == "invalid"
+    for key in ("user_id", "username", "grant", "credential", "internal"):
+        assert failed[key] == verified[key], key
+    assert failed["internal"] is True and failed["user_id"] == 12
+    assert failed["identity"] == "user:12" and failed["identity_source"] == "credential_cache"
+
+
+@respx.mock
+async def test_tool_call_record_credential_cache_miss_before_any_verified_call(_server, capsys):
+    await _call(_server, "get_project", {})
+    (record,) = _records(capsys)
+    assert record["identity_source"] == "credential" and record["internal"] is None and record["user_id"] is None
+    assert record["identity"] == "hk_0123456789ab"
+
+
+@pytest.fixture
+def _connect_server(env_vars, monkeypatch):
+    monkeypatch.setenv("HYDRATA_MCP_RESOURCE_URL", "https://hydrata.com/mcp/")
+    return reload_server()
+
+
+@respx.mock
+async def test_tool_call_record_credential_cache_spoofed_jwt_is_a_miss(_connect_server, capsys):
+    srv = _connect_server
+    _verified_reply()
+    await _call(srv, "list_projects", headers={"Authorization": f"Bearer {_jwt()}"})
+    # same sub, different signature segment: this server verifies nothing, so it must not inherit the user
+    await _call(srv, "get_project", {}, headers={"Authorization": f"Bearer {_jwt(signature='forged')}"})
+    _, forged = _records(capsys)
+    assert forged["identity_source"] == "credential" and forged["user_id"] is None and forged["internal"] is None
+    assert forged["identity"].startswith("jwt_")
+
+
+@respx.mock
+async def test_tool_call_record_credential_cache_spoofed_key_with_the_same_prefix_is_a_miss(_server, capsys):
+    _verified_reply()
+    await _call(_server, "list_projects")
+    await _call(_server, "get_project", {}, headers={"Authorization": "Bearer hk_0123456789ab_DIFFERENTsecret"})
+    _, forged = _records(capsys)
+    assert forged["identity"] == "hk_0123456789ab"  # same fingerprint, still a miss
+    assert forged["identity_source"] == "credential" and forged["user_id"] is None and forged["internal"] is None
+
+
+@respx.mock
+async def test_tool_call_record_credential_cache_forgets_on_a_reply_without_an_actor(_server, capsys):
+    _verified_reply()
+    await _call(_server, "list_projects")
+    respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(401, json={"error_code": "AGENT_KEY_INVALID"}))
+    await _call(_server, "list_projects")  # revoked: Django answered with no actor
+    await _call(_server, "get_project", {})  # must NOT be attributed any more
+    _, revoked, after = _records(capsys)
+    assert revoked["identity_source"] == "credential" and revoked["user_id"] is None
+    assert after["identity_source"] == "credential" and after["user_id"] is None and after["internal"] is None
+
+
+def test_tool_call_record_credential_cache_is_bounded_and_empty_after_restart():
+    cache = telemetry.ActorCache()
+    digests = [cache.digest(f"Bearer tok-{i}") for i in range(telemetry.ACTOR_CACHE_MAX + 1)]
+    for i, digest in enumerate(digests):
+        cache.remember(digest, {"user_id": i})
+    assert cache.lookup(digests[0]) is None  # the oldest was evicted
+    assert cache.lookup(digests[1]) == {"user_id": 1}
+    assert all(cache.lookup(d) is not None for d in digests[1:])
+    assert telemetry.ActorCache().lookup(digests[-1]) is None  # a restart starts empty
+
+
+def test_tool_call_record_credential_cache_evicts_least_recently_used():
+    cache = telemetry.ActorCache(maximum=2)
+    a, b, c = (cache.digest(f"Bearer {t}") for t in "abc")
+    cache.remember(a, {"user_id": 1})
+    cache.remember(b, {"user_id": 2})
+    assert cache.lookup(a) == {"user_id": 1}  # a hit refreshes a, so b is now the oldest
+    cache.remember(c, {"user_id": 3})
+    assert cache.lookup(b) is None and cache.lookup(a) is not None and cache.lookup(c) is not None
+
+
+@respx.mock
+async def test_tool_call_record_credential_cache_never_emits_the_token_or_its_digest(_server, capsys):
+    _verified_reply()
+    await _call(_server, "list_projects")
+    await _call(_server, "get_project", {})
+    out = _stdout_text(capsys)
+    token = CALLER_KEY.partition(" ")[2]
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    assert '"credential_cache"' in out
+    assert token not in out and token.split("_", 2)[2] not in out
+    assert digest not in out and digest[:16] not in out
+
+
+@respx.mock
+async def test_tool_call_record_credential_cache_sample_line_and_sampler_use_the_users_identity(_server, capsys):
+    _verified_reply()
+    await _call(_server, "list_projects")
+    await _call(_server, "get_project", {})
+    samples = _records(capsys, kind="sample")
+    cached = [s for s in samples if s["identity_source"] == "credential_cache"]
+    assert len(cached) == 1 and cached[0]["identity"] == "user:12"
+    # the verified ok call (first ok per tool) and the failure are both counted under the user, not the fingerprint
+    assert telemetry.SAMPLER._counts.get("user:12") == 2
+    assert "hk_0123456789ab" not in telemetry.SAMPLER._counts
