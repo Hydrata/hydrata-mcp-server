@@ -10,7 +10,7 @@ from importlib.metadata import version as _dist_version
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
-from mcp_types import ToolAnnotations
+from mcp_types import Icon, ToolAnnotations
 
 from .client import HydrataClient
 from .config import Config
@@ -173,9 +173,15 @@ except PackageNotFoundError:  # running from a bare source tree
     PACKAGE_VERSION = "0+unknown"
 
 
+# TASK-4177: the catalog icon, served by this server at GET <mcp-url>/icon.png
+# (server.py) so it is on the server's own origin. server.json lists the same
+# icon; tests/test_discovery.py::TestIcon keeps the two equal.
+ICON = Icon(src="https://hydrata.com/mcp/icon.png", mimeType="image/png", sizes=["512x512"])
+
 mcp = FastMCP(
     "Hydrata",
     version=PACKAGE_VERSION,
+    icons=[ICON],
     instructions=(
         "Hydrata is a geospatial hydraulic modeling platform. Use these tools to "
         "manage ANUGA flood simulation projects, scenarios, and runs. Use the "

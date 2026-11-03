@@ -11,9 +11,9 @@
   "version": "0.2.2",
   "icons": [
     {
-      "src": "https://hydrata.com/static/hydratabase/img/logo-bg-lowres.png",
+      "src": "https://hydrata.com/mcp/icon.png",
       "mimeType": "image/png",
-      "sizes": ["110x38"]
+      "sizes": ["512x512"]
     }
   ],
   "remotes": [

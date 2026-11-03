@@ -49,6 +49,8 @@ Anonymous discovery adds no telemetry line: `ToolCallRecorder` records `tools/ca
 
 `GET <mcp-url>/server-card` (`https://hydrata.com/mcp/server-card`) serves a static MCP Server Card (SEP-2127) built from this repository's `server.json`: name, title, description, version, website, repository, icons and the remote endpoint. It holds no tools (SEP-2127 leaves them to `tools/list`), no credential and nothing per-user, and needs no credential (`RequireAuth` gates only `POST`). Evidence: `mcp: hydrata_mcp/server.py` (`build_server_card`, `server_card`); tests `mcp: tests/test_discovery.py` (`TestServerCard`).
 
+`GET <mcp-url>/icon.png` (`https://hydrata.com/mcp/icon.png`) serves the catalog icon, a static 512×512 PNG shipped in the package (`hydrata_mcp/assets/icon.png`), on the server's own origin. It needs no credential, carries nothing per-user, and is the same icon listed in `server.json` and `serverInfo.icons`. Evidence: `mcp: hydrata_mcp/server.py` (`icon`), `mcp: hydrata_mcp/_common.py` (`ICON`); tests `mcp: tests/test_discovery.py` (`TestIcon`).
+
 ### What the server records (TASK-3961)
 
 "Holds no identity" means the server never decides who a caller is. It does write one JSON line to stdout (journald, then Loki) for every authenticated `tools/call`, and the identity in that line is Hydrata's answer, not the server's.

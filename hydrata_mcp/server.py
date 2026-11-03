@@ -350,6 +350,31 @@ async def server_card(request):
     return Response(SERVER_CARD_BODY, media_type=media_type, headers=headers)
 
 
+# TASK-4177: the catalog icon (server.json `icons`, serverInfo.icons), a 512x512
+# square PNG of the Hydrata mark. Served here, not from the website's static
+# files, so it shares the server's origin (the MCP spec asks clients to check an
+# icon's origin) and ships with the version that lists it. Public, like the card.
+ICON_FILE = Path(__file__).resolve().parent / "assets" / "icon.png"
+try:
+    ICON_BODY: bytes | None = ICON_FILE.read_bytes()
+except FileNotFoundError:
+    ICON_BODY = None
+ICON_ETAG = f'"{hashlib.sha256(ICON_BODY).hexdigest()[:32]}"' if ICON_BODY else ""
+ICON_HEADERS = {"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"}
+
+
+@mcp.custom_route("/icon.png", methods=["GET"])
+async def icon(request):
+    """TASK-4177: the catalog icon, with CORS, ``Cache-Control``, ``ETag`` and ``304`` on ``If-None-Match``."""
+    if ICON_BODY is None:
+        return Response(status_code=404)
+    headers = {**ICON_HEADERS, "ETag": ICON_ETAG}
+    validators = [tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")]
+    if "*" in validators or ICON_ETAG in validators:
+        return Response(status_code=304, headers=headers)
+    return Response(ICON_BODY, media_type="image/png", headers=headers)
+
+
 # One list, baked into the one `app` below, which BOTH entry points serve: prod's
 # unit file (`uvicorn hydrata_mcp.server:app`) and the `hydrata-mcp` CLI. An
 # unguarded CLI entry would be a second, anonymous server.
