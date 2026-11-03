@@ -442,3 +442,42 @@ async def test_tool_call_record_cancelled_inside_a_wrapped_error_is_found_in_the
     wrapped.__cause__ = asyncio.CancelledError()
     assert telemetry.classify_exception(wrapped, 3)[:3] == ("invalid", None, "CANCELLED")
     assert telemetry.classify_exception(wrapped, 300)[0] == "broken"
+
+
+@respx.mock
+async def test_telemetry_level_ok_is_info_and_carries_no_error_keys(_server, capsys):
+    respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={}))
+    await _call(_server, "list_projects")
+    (record,) = _records(capsys)
+    assert record["outcome"] == "ok" and record["level"] == "info"
+    assert "error" not in record and "error.type" not in record
+
+
+@respx.mock
+async def test_telemetry_level_refused_and_invalid_are_warning(_server, capsys):
+    respx.get(f"{BASE}/projects/").mock(
+        return_value=httpx.Response(403, json={"error_code": "AGENT_LEVEL_INSUFFICIENT"})
+    )
+    await _call(_server, "list_projects")
+    await _call(_server, "get_project", {"project_id": "not-a-number"})
+    refused, invalid = _records(capsys)
+    assert (refused["outcome"], refused["level"]) == ("refused", "warning")
+    assert (invalid["outcome"], invalid["level"]) == ("invalid", "warning")
+    assert refused["error"] and refused["error.type"]  # a set value stays
+
+
+@respx.mock
+async def test_telemetry_level_broken_is_error_and_keeps_error_type(_server, capsys):
+    respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(500, text="<html>Traceback</html>"))
+    await _call(_server, "list_projects")
+    (record,) = _records(capsys)
+    assert (record["outcome"], record["level"]) == ("broken", "error")
+    assert record["error.type"] and record["error"]
+
+
+@respx.mock
+async def test_telemetry_level_sample_lines_are_info(_server, capsys):
+    respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={}))
+    await _call(_server, "list_projects")
+    samples = _records(capsys, kind="sample")
+    assert samples and all(s["level"] == "info" for s in samples)

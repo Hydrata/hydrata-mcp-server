@@ -173,7 +173,9 @@ class HydrataClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def _send(self, method: str, url: str, path: str, raise_for_status: bool = True, **kwargs) -> httpx.Response:
+    async def _send(
+        self, method: str, url: str, path: str, raise_for_status: bool = True, relay_statuses: tuple = (), **kwargs
+    ) -> httpx.Response:
         """One request with the caller's headers; every failure becomes a HydrataAPIError.
 
         `path` is only for the message (the part after the base, as the tool
@@ -195,7 +197,9 @@ class HydrataClient:
         try:
             resp = await client.request(method, url, headers=self._request_headers(), **kwargs)
             telemetry.note_reply(resp)  # Django's X-Hydrata-Actor, on any status that carries it
-            if raise_for_status or resp.is_server_error:
+            # Full review 03-11-26 (MCP-4): a 5xx named in ``relay_statuses`` is handed back with its body (the
+            # 504 FLOW_HYDROGRAPH_TIMEOUT carries "try a shorter line"); every other 5xx is still an error.
+            if raise_for_status or (resp.is_server_error and resp.status_code not in relay_statuses):
                 resp.raise_for_status()
         except httpx.ConnectError:
             raise HydrataAPIError(
@@ -247,14 +251,30 @@ class HydrataClient:
         resp = await self._send("GET", f"{self._origin}{path}", path, params=params)
         return resp.json()
 
-    async def post(self, path: str, json: dict | None = None, raise_for_status: bool = True) -> tuple[Any, int]:
+    async def post(
+        self,
+        path: str,
+        json: dict | None = None,
+        raise_for_status: bool = True,
+        relay_statuses: tuple = (),
+        timeout: float | None = None,
+    ) -> tuple[Any, int]:
         """POST request. Returns (body, status_code) since some endpoints return 202.
 
         With ``raise_for_status=False`` a 4xx is returned as ``(body, status)``
         too (TASK-3172: build_scenario surfaces 422/409 bodies verbatim);
         the default keeps every other tool's raise-on-4xx behaviour.
         """
-        resp = await self._send("POST", f"{self._base}{path}", path, raise_for_status=raise_for_status, json=json or {})
+        extra = {"timeout": httpx.Timeout(timeout, connect=10.0)} if timeout else {}
+        resp = await self._send(
+            "POST",
+            f"{self._base}{path}",
+            path,
+            raise_for_status=raise_for_status,
+            relay_statuses=relay_statuses,
+            json=json or {},
+            **extra,
+        )
         return self._body(resp), resp.status_code
 
     async def post_from_origin(self, path: str, json: dict | None = None) -> tuple[Any, int]:

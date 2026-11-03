@@ -6,6 +6,8 @@ import re
 import time
 from urllib.parse import quote, urlencode
 
+from fastmcp.exceptions import ToolError
+
 from ._common import _data, client, config
 
 
@@ -65,6 +67,44 @@ def _is_s3_url_key(key) -> bool:
     return isinstance(key, str) and key.startswith("s3_") and key.endswith("_url")
 
 
+# TASK-4101 (epic 4117 W3, D34): the CPU vCPU-hour re-pricing is NOT what a customer pays; a customer never sees
+# two disagreeing dollar figures. Hydrata drops these from a member's payloads; this server drops them from every
+# result it relays (staff keys included), so the ONE price an agent can say is the quote / quote_estimate.
+CPU_DOLLAR_KEYS = frozenset({"compute_cost_estimate", "mesh_actual_cost_estimate", "vcpu_hours_estimate"})
+
+
+def _money(value) -> float | None:
+    """A price string or number as a float, else None."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quote_estimate_words(quote_estimate) -> str:
+    """The PRE-BUILD price (Hydrata's `quote_estimate`: {price, list_price, label: 'estimate'}) in words,
+    always labelled an estimate. D24: inside the daily free band it says so and keeps the real figure."""
+    if not isinstance(quote_estimate, dict):
+        return "an unknown price (no estimate available)"
+    price, list_price = _money(quote_estimate.get("price")), _money(quote_estimate.get("list_price"))
+    if price is None and list_price is None:
+        return "an unknown price (no estimate available)"
+    if price == 0 and list_price:
+        return f"free (estimated price US${list_price:,.2f}, inside the daily free band)"
+    shown = price if price is not None else list_price
+    return f"about US${shown:,.2f} (an estimate)"
+
+
+def _run_quote_words(quote, list_price=None) -> str:
+    """A BUILT run's quote (the figure the ledger debits) in words. D24 wording for the free band."""
+    price, listed = _money(quote), _money(list_price)
+    if price is None:
+        return "an unknown price"
+    if price == 0:
+        return f"free (quoted US${listed:,.2f}, inside the daily free band)" if listed else "free"
+    return f"US${price:,.2f}"
+
+
 def _elide_presigned(value):
     """Recursively return `value` with every presigned S3 URL elided.
 
@@ -78,6 +118,7 @@ def _elide_presigned(value):
                 ELIDED_PRESIGNED if _is_s3_url_key(key) and isinstance(item, str) and item else _elide_presigned(item)
             )
             for key, item in value.items()
+            if key not in CPU_DOLLAR_KEYS
         }
     if isinstance(value, list):
         return [_elide_presigned(item) for item in value]
@@ -262,14 +303,63 @@ async def _input_review_hand_back(result: dict, project_id, scenario_id) -> dict
         params = {"panel": "input-review", "scenario": scenario_id}
     else:
         changed = result.get("changed_inputs") or []
+        settings = result.get("changed_settings") or []  # TASK-4095: resolution / duration ... changed
         result["outcome"] = "run_invalidated"
         result["next_step"] = (
             f"Call build_scenario(project_id, scenario_id={scenario_id}, rebuild=true), then start_simulation."
         )
-        say = (
-            f"The built model is out of date: {', '.join(changed) or 'its inputs'} changed and were reviewed "
-            "after it was built, so I need to build it again before it can run. Nothing was started."
-        )
+        if settings and not changed:
+            say = (
+                f"The built model is out of date: its settings ({', '.join(settings)}) changed after it was built, "
+                "so I need to build it again at the new settings before it can run. Nothing was started."
+            )
+        else:
+            say = (
+                f"The built model is out of date: {', '.join(changed) or 'its inputs'} changed and were reviewed "
+                "after it was built, so I need to build it again before it can run. Nothing was started."
+            )
         summary = {"scenario_id": scenario_id, "outcome": "run_invalidated", "changed_inputs": changed}
+        if settings:
+            summary["changed_settings"] = settings
         params = {"panel": "scenarios", "scenario": scenario_id}
     return await _hand_back(result, project_id, summary, say, **params)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4088 (epic 4117 W6) - sources: the documents an input comes from.
+# ---------------------------------------------------------------------------
+SOURCES_ARGUMENT_HELP = (
+    "TASK-4088: the documents this came from, so the engineer can click through to them: a list of "
+    "{title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: "
+    "'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) "
+    "is optional. At most 20. Pass it beside the method whenever you cite a document."
+)
+SOURCES_MAX = 20
+
+
+def _clean_sources(sources) -> list[dict] | None:
+    """The `sources` argument checked and trimmed, or None when none were given. Raises ToolError before any request."""
+    if sources is None or sources == []:
+        return None
+    if not isinstance(sources, list):
+        raise ToolError("sources must be a list of {title, url, locator} objects. Nothing was sent.")
+    if len(sources) > SOURCES_MAX:
+        raise ToolError(f"sources holds at most {SOURCES_MAX} entries (got {len(sources)}). Nothing was sent.")
+    clean: list[dict] = []
+    for position, entry in enumerate(sources, start=1):
+        label = f"sources[{position}]"
+        if not isinstance(entry, dict):
+            raise ToolError(f"{label} must be an object with title and url. Nothing was sent.")
+        title, url, locator = entry.get("title"), entry.get("url"), entry.get("locator")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200:
+            raise ToolError(f"{label}.title is required (1-200 characters). Nothing was sent.")
+        if not isinstance(url, str) or not re.match(r"^https?://[^\s/]+", url.strip()):
+            raise ToolError(f"{label}.url must be an http or https link. Nothing was sent.")
+        item = {"title": title.strip(), "url": url.strip()}
+        if locator is not None:
+            if not isinstance(locator, str) or len(locator.strip()) > 100:
+                raise ToolError(f"{label}.locator must be text of at most 100 characters. Nothing was sent.")
+            if locator.strip():
+                item["locator"] = locator.strip()
+        clean.append(item)
+    return clean

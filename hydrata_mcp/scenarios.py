@@ -1,20 +1,28 @@
 """Scenario tools: read, create and build scenarios."""
 
 import json
+import math
 from typing import Annotated
+
+from fastmcp.exceptions import ToolError
 
 from ._common import _data, _tool, client
 from ._helpers import (
     INPUT_REVIEW_REFUSALS,
     POLL_DEFAULT_TIMEOUT_SECONDS,
+    SOURCES_ARGUMENT_HELP,
     _alternate,
+    _clean_sources,
     _elide_presigned,
     _hand_back,
     _input_review_hand_back,
     _poll_until,
     _post_result,
+    _quote_estimate_words,
+    _run_quote_words,
     _status_of,
 )
+from .client import HydrataAPIError
 from .inputs import _unbound_series
 
 # TASK-3187 (W0, epic 3200) — the scenario fields a COMPACT read keeps, on top
@@ -23,7 +31,7 @@ from .inputs import _unbound_series
 # among the 17 and no other read path to a scenario record, so a session that
 # did not create the scenario would otherwise be blind to what it is about to
 # build (`resolution`, `duration`, the input FKs, the terrain) and what it
-# will cost (`compute_cost_estimate`, `vcpu_hours_estimate`) — the inverse of
+# will cost (`quote_estimate`, TASK-4101: the ONE pre-build price) — the inverse of
 # "show your work before build and spend". `inflow_anchor_mismatch` is the
 # record's only pre-build correctness warning (a timeseries inflow starting
 # after model_start gets zero flow over the lead-in gap before its first
@@ -48,14 +56,20 @@ SCENARIO_RECORD_KEYS = (
     "mesh_triangle_count_estimate",
     "mesh_triangle_count_estimate_breakdown",
     "latest_run_is_valid",
-    "compute_cost_estimate",
-    "vcpu_hours_estimate",
+    # TASK-4095: the run settings (resolution, duration ...) changed since the newest build; [] = none
+    "run_settings_changed",
+    # TASK-4101 (D34): the ONE pre-build price {price, list_price, label: "estimate"}. The CPU vCPU-hour
+    # figures (compute_cost_estimate, vcpu_hours_estimate) are NOT relayed: a customer never sees two prices.
+    "quote_estimate",
     "inflow_anchor_mismatch",
     # TASK-3208: the inputs you wrote that the user has not reviewed yet (members only)
     "unreviewed_inputs",
     # TASK-3213: Hydrata's per-feature hydrology check (series, summary, gross volume, structured warnings),
     # passed through VERBATIM when the server sends it (its shape is TASK-3212's)
     "hydrology_check",
+    # TASK-4142: how an agent made the scenario and the documents it cites (the person's own scenario: null / [])
+    "authored_method",
+    "sources",
 )
 
 
@@ -71,7 +85,10 @@ def _scenario_record(detail) -> dict:
     """
     if not isinstance(detail, dict):
         return {}
-    return {key: detail[key] for key in SCENARIO_RECORD_KEYS if key in detail}
+    record = {key: detail[key] for key in SCENARIO_RECORD_KEYS if key in detail}
+    if "sources" in record and not record["sources"]:
+        record["sources"] = []  # TASK-4142: no citations reads as an empty list, never as withheld
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +108,11 @@ async def get_scenario(
     — plus what the scenario IS and what it will cost: `name`, `description`,
     `project`, `resolution`, `duration`, the input row ids (`terrain`,
     `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),
-    `compute_cost_estimate` (USD), `vcpu_hours_estimate`, and
+    `quote_estimate` (the ONE pre-build price in USD, GPU formula, labelled an
+    estimate: `price` is what the person pays, `0.00` inside the daily free band, and
+    `list_price` is the real figure), and
+    `authored_method` and `sources` (how the agent made the scenario and the documents it cites:
+    `[]` when none), and
     `inflow_anchor_mismatch` (null unless an inflow series starts after the
     model does: the model gets zero flow from that series over the lead-in
     gap before its first sample), and
@@ -225,8 +246,8 @@ def _build_state(detail, **extra) -> dict:
     return _elide_presigned(state)
 
 
-def _build_refusal(detail, reason: str) -> str:
-    return json.dumps(_build_state(detail, outcome="refused", posted=False, reason=reason), indent=2)
+def _build_refusal(detail, reason: str, **extra) -> str:
+    return json.dumps(_build_state(detail, outcome="refused", posted=False, reason=reason, **extra), indent=2)
 
 
 # The server's pre-build admission refusals (api_v2 _pre_build_admission_refusal):
@@ -253,20 +274,24 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
     """ui_url / summary / say_to_user for every build_scenario answer (TASK-3203)."""
     if result.get("error_code") in INPUT_REVIEW_REFUSALS:
         return await _input_review_hand_back(result, project_id, scenario_id)
-    run_cost = None
-    try:  # the actual-$ re-price lives only on the run record; best effort
+    run_quote = run_list_price = None
+    try:  # the built run's quote (the figure the ledger debits) lives only on the run record; best effort
         if result.get("run_id") is not None and result.get("outcome") == "built":
             run = await client.get(f"/runs/{result['run_id']}/")
-            run_cost = run.get("mesh_actual_cost_estimate") if isinstance(run, dict) else None
+            if isinstance(run, dict):
+                run_quote, run_list_price = run.get("quote"), run.get("quote_list_price")
     except Exception:
-        run_cost = None
+        run_quote = run_list_price = None
     summary = {
         "scenario_id": scenario_id,
         "outcome": result.get("outcome"),
         "mesh_triangle_count_estimate": result.get("mesh_triangle_count_estimate"),
         "mesh_triangle_count": result.get("mesh_triangle_count"),
-        "mesh_actual_cost_estimate": run_cost,
+        "quote": run_quote,
+        "quote_list_price": run_list_price,
     }
+    if "quote_estimate" in result:
+        summary["quote_estimate"] = result["quote_estimate"]
     error_code = result.get("error_code")
     boundary_layer = seen.get("boundary_layer")
     params: dict = {"panel": "scenarios", "scenario": scenario_id}
@@ -284,9 +309,16 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
     elif result.get("outcome") == "built":
         say = (
             f"The scenario is built: {_fmt_count(result.get('mesh_triangle_count'))} triangles "
-            f"(estimated {_fmt_count(result.get('mesh_triangle_count_estimate'))}), about "
-            f"{_fmt_usd(run_cost)} to run. Open the link, check the mesh and inputs, and tell "
+            f"(estimated {_fmt_count(result.get('mesh_triangle_count_estimate'))}); the run's price is "
+            f"{_run_quote_words(run_quote, run_list_price)}. Open the link, check the mesh and inputs, and tell "
             "me when you are happy for me to start the simulation."
+        )
+    elif result.get("outcome") == "refused" and refusal == "confirm_needed":
+        say = (
+            f"This scenario would build about {_fmt_count(result.get('mesh_triangle_count_estimate'))} triangles "
+            f"(the mesh estimate), and its price is estimated at {_quote_estimate_words(result.get('quote_estimate'))}. "
+            "I have not built it. Do you want me to build at this size? Say yes and I will, or give me a coarser "
+            "resolution or a smaller boundary."
         )
     elif result.get("outcome") == "refused":
         say = f"I did not build: {result.get('reason')}."
@@ -308,6 +340,18 @@ async def _build_hand_back(result: dict, project_id, scenario_id, seen: dict) ->
 # ---------------------------------------------------------------------------
 # Tool 16: create_scenario
 # ---------------------------------------------------------------------------
+def _scenario_panel(record: dict) -> str:
+    """TASK-4093: the map panel a scenario's ui_url opens (the one place that decides).
+
+    The one thing the person must do next, with an agent-written input unreviewed, is review it, so the
+    link lands on the Review panel: the existing `panel=input-review` that the UNREVIEWED_INPUTS refusal
+    already uses (epic 3200 D47: no new 'review' value, the machine name stays 'input-review'). With
+    everything reviewed (or no agent input at all) it opens Scenarios, as before. create_scenario,
+    update_scenario and clone_scenario all build their link through here, so they behave alike.
+    """
+    return "input-review" if record.get("unreviewed_inputs") else "scenarios"
+
+
 @_tool("create_scenario")
 async def create_scenario(
     project_id: Annotated[int, "The project ID"],
@@ -340,6 +384,7 @@ async def create_scenario(
         int | None,
         "Deprecated alias of `building` (TASK-3586); ignored when `building` is given.",
     ] = None,
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
     """Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.
 
@@ -348,8 +393,8 @@ async def create_scenario(
     `mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact
     record (the same fields get_scenario answers with): id, name, the FK ids
     as stored, resolution, duration, `computed_status` (`created` = no run
-    yet), the estimate and its breakdown, the price (`compute_cost_estimate`
-    in USD, `vcpu_hours_estimate`), `inflow_anchor_mismatch`, and
+    yet), the estimate and its breakdown, the price (`quote_estimate`:
+    the ONE pre-build price in USD, labelled an estimate), `inflow_anchor_mismatch`, and
     http_status. Next step: build_scenario (which asks for
     confirm=true above 100,000 triangles). Nothing is meshed or queued here.
 
@@ -385,6 +430,9 @@ async def create_scenario(
     }
     if culvert is not None:
         payload["culvert"] = culvert  # TASK-3641: sent only when given (older APIs lack the field)
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        payload["sources"] = cited
     body, status_code = await client.post(f"/projects/{project_id}/scenarios/", json=payload)
     scenario_id = body.get("id") if isinstance(body, dict) else None
     if scenario_id is None:
@@ -398,8 +446,10 @@ async def create_scenario(
     # rather than being fabricated as null.
     result = _scenario_record(detail)
     result["http_status"] = status_code
+    if cited:
+        result["sources"] = cited  # TASK-4088: echoed; Hydrata stores it beside who wrote the scenario
     estimate = result.get("mesh_triangle_count_estimate")
-    cost = result.get("compute_cost_estimate")
+    quote_estimate = result.get("quote_estimate")
     await _hand_back(
         result,
         project_id,
@@ -408,24 +458,187 @@ async def create_scenario(
             "resolution": result.get("resolution"),
             "duration": result.get("duration"),
             "mesh_triangle_count_estimate": estimate,
-            "compute_cost_estimate": cost,
-            "vcpu_hours_estimate": result.get("vcpu_hours_estimate"),
+            "quote_estimate": quote_estimate,
         },
         f"Draft scenario {_data(result.get('name', name))} is set up: about "
-        f"{_fmt_count(estimate)} triangles at {result.get('resolution')} m, estimated "
-        f"{_fmt_usd(cost)} to run. Open the link to review its inputs before I build it.",
-        panel="scenarios",
+        f"{_fmt_count(estimate)} triangles at {result.get('resolution')} m, and its price is estimated at "
+        f"{_quote_estimate_words(quote_estimate)}. Open the link to review its inputs before I build it.",
+        panel=_scenario_panel(result),
         scenario=scenario_id,
     )
     return json.dumps(result, indent=2)
 
 
+# ---------------------------------------------------------------------------
+# TASK-4104 (epic 4117 W1, D31): update_scenario and clone_scenario. Neither builds.
+# ---------------------------------------------------------------------------
+async def _edit_hand_back(project_id, scenario_id, detail, say) -> str:
+    result = _scenario_record(detail)
+    await _hand_back(
+        result,
+        project_id,
+        {
+            "scenario_id": scenario_id,
+            "name": result.get("name"),
+            "resolution": result.get("resolution"),
+            "duration": result.get("duration"),
+        },
+        say,
+        panel=_scenario_panel(result),
+        scenario=scenario_id,
+    )
+    return json.dumps(result, indent=2)
+
+
+@_tool("update_scenario")
+async def update_scenario(
+    project_id: Annotated[int, "The project ID"],
+    scenario_id: Annotated[int, "The scenario ID"],
+    name: Annotated[str | None, "New name. Keep it true: if it states a resolution or duration, change it too."] = None,
+    description: Annotated[str | None, "New description"] = None,
+    resolution: Annotated[
+        float | None, "Mesh resolution as a LENGTH in metres (smaller = finer, more triangles)"
+    ] = None,
+    duration: Annotated[int | None, "Simulation duration in seconds"] = None,
+    terrain: Annotated[int | None, "Terrain id to attach"] = None,
+    boundary: Annotated[int | None, "Boundary row id to attach"] = None,
+    friction: Annotated[int | None, "Friction row id to attach"] = None,
+    inflow: Annotated[int | None, "Inflow row id to attach"] = None,
+    rainfall: Annotated[int | None, "Rainfall row id to attach (write_input_layer with a target returns one)"] = None,
+    building: Annotated[int | None, "Building row id to attach"] = None,
+    mesh_region: Annotated[int | None, "MeshRegion row id to attach"] = None,
+    culvert: Annotated[int | None, "Culvert row id to attach"] = None,
+) -> str:
+    """Edit a scenario: its name, description, resolution, duration, or which input rows it points at.
+
+    A thin PATCH of scenarios/{id}/ with only the fields you pass. It NEVER
+    builds or runs anything: a changed scenario is marked stale and you call
+    build_scenario when the person agrees. Keep the name true: a scenario
+    named '... - 10m' whose resolution you set to 30 must be renamed in the
+    same call. Attaching an input row changes only THIS scenario; to vary an
+    input for a variant, clone_scenario first, then attach the new row to the
+    clone.
+    """
+    fields = {
+        "name": name,
+        "description": description,
+        "resolution": resolution,
+        "duration": duration,
+        "terrain": terrain,
+        "boundary": boundary,
+        "friction": friction,
+        "inflow": inflow,
+        "rainfall": rainfall,
+        "building": building,
+        "mesh_region": mesh_region,
+        "culvert": culvert,
+    }
+    payload = {key: value for key, value in fields.items() if value is not None}
+    if not payload:
+        raise ToolError("nothing to change: pass at least one of " + ", ".join(fields))
+    base = f"/projects/{project_id}/scenarios/{scenario_id}/"
+    await client.patch(base, json=payload)
+    detail = await client.get(base)
+    changed = ", ".join(sorted(payload))
+    say = (
+        f"Scenario {_data(str((detail or {}).get('name', scenario_id)) if isinstance(detail, dict) else scenario_id)} "
+        f"updated ({changed}). Nothing was built or run; its earlier results no longer match it until it is "
+        "built again."
+    )
+    return await _edit_hand_back(project_id, scenario_id, detail, say)
+
+
+@_tool("clone_scenario")
+async def clone_scenario(
+    project_id: Annotated[int, "The project ID"],
+    scenario_id: Annotated[int, "The scenario to copy"],
+    name: Annotated[str | None, "Name for the copy (default: '<name>-copy'). Name it for what differs."] = None,
+    overrides: Annotated[
+        dict | None,
+        "Fields of the copy to set at once, the same as update_scenario: description, resolution, duration, "
+        "terrain, boundary, friction, inflow, rainfall, building, mesh_region, culvert.",
+    ] = None,
+) -> str:
+    """Copy a scenario into a new sibling, for a variant. No run is copied and nothing is built.
+
+    The copy points at the SAME input rows as the original. Give the variant
+    its own input row by writing one with write_input_layer (target = a title)
+    and passing the new row id in `overrides`; the original scenario's inputs
+    stay as they were. The name and overrides go in the one copy call and Hydrata checks them first: a
+    refused name or id makes no copy.
+    """
+    overrides = dict(overrides or {})
+    allowed = {
+        "description",
+        "resolution",
+        "duration",
+        "terrain",
+        "boundary",
+        "friction",
+        "inflow",
+        "rainfall",
+        "building",
+        "mesh_region",
+        "culvert",
+    }
+    unknown = sorted(set(overrides) - allowed)
+    if unknown:
+        raise ToolError(f"overrides can set only: {', '.join(sorted(allowed))} (not {', '.join(unknown)})")
+    payload = {key: value for key, value in overrides.items() if value is not None}
+    if name:
+        payload["name"] = name
+    # TASK-4125: name + overrides ride the ONE duplicate POST; Hydrata validates them before it makes the
+    # copy, so a refused name or id (400 VALIDATION_ERROR) creates nothing.
+    body, _status = await client.post(f"/projects/{project_id}/scenarios/{scenario_id}/duplicate/", json=payload)
+    new_id = body.get("id") if isinstance(body, dict) else None
+    if new_id is None:
+        return _post_result(body, _status)
+    base = f"/projects/{project_id}/scenarios/{new_id}/"
+    unapplied = {key: value for key, value in payload.items() if not _applied(value, body.get(key))}
+    if unapplied:
+        # An older Hydrata ignores the body and answers '<name>-copy': apply them with the PATCH it does have.
+        copy_name = _data(str(body.get("name") or f"{scenario_id}-copy"))
+        exists = f"The copy exists as scenario {new_id} named '{copy_name}'; fix it with update_scenario or delete it."
+        try:
+            await client.patch(base, json=unapplied)
+        except HydrataAPIError as exc:
+            raise HydrataAPIError(f"{exc} {exists}", status=exc.status, code=exc.code) from exc
+        except Exception as exc:  # a transport failure must still name the copy (W7e review F5)
+            raise HydrataAPIError(f"{exc} {exists}", status=502) from exc
+    try:
+        detail = await client.get(base)
+    except Exception as exc:  # the copy is made; a failed read-back must still name it (W7e review F5)
+        return json.dumps(
+            {
+                "id": new_id,
+                "summary": {"scenario_id": new_id},
+                "say_to_user": (
+                    f"Copied scenario {scenario_id} to {new_id}, but its detail could not be read back "
+                    f"({_data(str(exc)[:300])}): "
+                    f"call get_scenario {new_id}. No run was copied and nothing was built."
+                ),
+            },
+            indent=2,
+        )
+    say = (
+        f"Copied scenario {scenario_id} to {new_id}. No run was copied and nothing was built. "
+        "Open the link, check its inputs, then build it when the person agrees."
+    )
+    result_text = await _edit_hand_back(project_id, new_id, detail, say)
+    return result_text
+
+
+def _applied(sent, got) -> bool:
+    """True when the copy carries the value sent: Hydrata trims strings and answers 15 as 15.0 (W7e review F4)."""
+    if isinstance(sent, str) and isinstance(got, str):
+        return sent.strip() == got.strip()
+    if isinstance(sent, (int, float)) and isinstance(got, (int, float)) and not isinstance(sent, bool):
+        return math.isclose(float(sent), float(got), rel_tol=1e-9, abs_tol=1e-9)
+    return sent == got
+
+
 def _fmt_count(value) -> str:
     return f"{value:,}" if isinstance(value, (int, float)) else "an unknown number of"
-
-
-def _fmt_usd(value) -> str:
-    return f"US${value:,.2f}" if isinstance(value, (int, float)) else "an unknown cost"
 
 
 # ---------------------------------------------------------------------------
@@ -476,8 +689,11 @@ async def build_scenario(
        scenario has no boundary or its boundary row has no features (the
        server would admit the build and fail it in make_package); the
        estimate is None (resolution is 0/unset); the estimate is above
-       100,000 triangles and confirm is not true — the refusal states the
-       number; re-call with confirm=true to proceed. An estimate of 0 over a
+       100,000 triangles and confirm is not true — the refusal carries
+       `mesh_triangle_count_estimate` and `quote_estimate` (the ONE pre-build price,
+       labelled an estimate) and a `say_to_user` asking the person's yes: relay the
+       number and the price and get the user's yes before confirm=true. confirm=true
+       is a rule for you, not something the user does; never pass it on your own say-so. An estimate of 0 over a
        boundary WITH features is buildable and is reported, not refused.
     4. POST /projects/<id>/scenarios/<pk>/build/. Every 4xx comes back
        verbatim as a normal result with `http_status`: 422 MESH_TOO_LARGE
@@ -574,7 +790,9 @@ async def _build_scenario_core(
     run_status = _status_of(latest_run)
     if run_status in BUILD_IN_FLIGHT_RUN_STATUSES:
         return await poll(posted=False)
-    package_is_current = detail.get("latest_run_is_valid") is not False
+    # TASK-4095: a changed run setting (resolution, duration ...) makes the built package stale even if
+    # latest_run_is_valid still reads true: build again at the new settings
+    package_is_current = detail.get("latest_run_is_valid") is not False and not detail.get("run_settings_changed")
     if run_status in BUILD_DONE_RUN_STATUSES and package_is_current and not rebuild:
         state = _build_state(detail, outcome=_computed_status(detail), posted=False)
         state["note"] = (
@@ -608,12 +826,20 @@ async def _build_scenario_core(
     if estimate is None:
         return _build_refusal(detail, "resolution is 0/unset: the mesh estimate is None")
     if estimate > BUILD_CONFIRM_ABOVE_TRIANGLES and not confirm:
+        # TASK-4119 (D35): the refusal carries the triangle estimate AND the pre-build price (quote_estimate,
+        # labelled estimate) and asks the PERSON's yes. confirm=true is a conduct rule for the agent, never a
+        # human act: the agent relays the number and the price, gets the yes, and only then passes it.
+        hand_back["refusal"] = "confirm_needed"
+        quote_estimate = detail.get("quote_estimate")
         return _build_refusal(
             detail,
             f"estimate is {estimate:,} triangles, above {BUILD_CONFIRM_ABOVE_TRIANGLES:,}: "
             "building costs minutes on the web box and the run will need compute — "
             "coarsen `resolution` (a length in metres; triangles scale ~1/resolution²) "
-            "or call again with confirm=true to build at this size",
+            "or, once the user has said yes to the number and the price, call again with confirm=true "
+            "to build at this size",
+            quote_estimate=quote_estimate,
+            needs_user_yes=True,
         )
 
     # (4) POST; every 4xx comes back as a result the agent can read.

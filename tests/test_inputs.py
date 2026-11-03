@@ -79,6 +79,7 @@ class TestCreateTimeSeriesTool:
             "series_type": "hyetograph",
             "units": "mm/hr",
             "hold_last_value": False,
+            "rainfall_basis": "excess",  # TASK-4091
             "data": {"rowData": ROW_DATA},
         }
         assert "series_type" not in body["description"]
@@ -96,7 +97,14 @@ class TestCreateTimeSeriesTool:
         }
         # TASK-3203 adds only the hand-back keys on top of the compact record.
         assert {k: data[k] for k in compact} == compact
-        assert set(data) - set(compact) <= {"ui_url", "summary", "say_to_user", "hand_back_error", "hold_last_value"}
+        assert set(data) - set(compact) <= {
+            "ui_url",
+            "summary",
+            "say_to_user",
+            "hand_back_error",
+            "hold_last_value",
+            "rainfall_basis",
+        }
         assert "data" not in data
 
     @respx.mock

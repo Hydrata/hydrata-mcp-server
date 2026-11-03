@@ -12,7 +12,9 @@ from ._common import _data, _tool, client
 from ._helpers import (
     POLL_DEFAULT_TIMEOUT_SECONDS,
     POLL_MAX_TIMEOUT_SECONDS,
+    SOURCES_ARGUMENT_HELP,
     _alternate,
+    _clean_sources,
     _hand_back,
     _layer_summary,
     _poll_until,
@@ -41,6 +43,10 @@ from .client import HydrataAPIError
 # would leave an inflow series invisible. Validated here so an unknown value
 # is refused without an upstream call.
 SERIES_TYPES = ("hyetograph", "hydrograph", "stage", "generic")
+# TASK-4091 (epic 4117 W2, D38/D39): the engine applies NO losses to rainfall, so a rainfall series states what its
+# numbers are -- `excess` (after losses, what an agent writes) or `gross` (before losses, a design storm). Hydrata
+# also stores `unspecified` for a series nobody described; an agent may not choose it for a new rainfall series.
+RAINFALL_BASES = ("excess", "gross")
 # TASK-3213 (epic 3200 W3): the SAME units rule hydrata enforces on POST (TASK-3211,
 # hydrology.serializers_v2.UNITS_BY_SERIES_TYPE): the engine reads a rainfall series as mm/hr and a flow series
 # as m^3/s whatever the label says, so the label must agree with the type. Refused here first, before any POST.
@@ -165,7 +171,8 @@ async def create_time_series(
     series_type: Annotated[
         str,
         "One of hyetograph (rainfall depth/intensity — the default), hydrograph "
-        "(flow, read by the Hydrographs panel and inflow boundaries), stage (water "
+        "(flow that DRIVES an inflow boundary: an input, not a result; the flow out of a run "
+        "comes from get_flow_hydrograph), stage (water "
         "level, e.g. a tide) or generic. Sent as a top-level field.",
     ] = "hyetograph",
     units: Annotated[
@@ -188,6 +195,12 @@ async def create_time_series(
         "One short phrase saying how you got these numbers (e.g. 'read off the council hydrograph PDF', "
         "'scaled the 1% AEP peak'). Shown to the person who reviews the inputs.",
     ] = "",
+    rainfall_basis: Annotated[
+        str,
+        "REQUIRED for a hyetograph (rainfall): `excess` = rain AFTER losses (what you write; the simulation "
+        "applies no losses) or `gross` = rain before losses (a design storm). Ignored for other series types.",
+    ] = "",
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
 
@@ -209,6 +222,12 @@ async def create_time_series(
     """
     if series_type not in SERIES_TYPES:
         raise ToolError(f"series_type {series_type!r} is not one of {', '.join(SERIES_TYPES)}")
+    if series_type == "hyetograph" and rainfall_basis not in RAINFALL_BASES:
+        raise ToolError(
+            "A rainfall series must state its basis, because the simulation applies no losses: "
+            "rainfall_basis='excess' (rain after losses, what you write) or 'gross' (before losses, a design storm). "
+            "Nothing was sent; call again with rainfall_basis set."
+        )
     row_count = _validate_row_data(data)
     allowed = SERIES_UNITS.get(series_type)
     if allowed and units not in allowed:
@@ -228,8 +247,13 @@ async def create_time_series(
         "hold_last_value": hold_last_value,
         "data": data,
     }
+    if series_type == "hyetograph":
+        payload["rainfall_basis"] = rainfall_basis  # TASK-4091
     if method.strip():
         payload["authored_method"] = method.strip()  # TASK-4055: shown on the review screen
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        payload["sources"] = cited
     body, status_code = await client.post(f"/projects/{project_id}/time-series/", json=payload)
     if not isinstance(body, dict):
         return _post_result(body, status_code)
@@ -251,6 +275,10 @@ async def create_time_series(
     last = rows[-1].get("timestamp") if rows and isinstance(rows[-1], dict) else None
     server_summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
     result["hold_last_value"] = body.get("hold_last_value", hold_last_value)
+    if series_type == "hyetograph":
+        result["rainfall_basis"] = body.get("rainfall_basis", rainfall_basis)
+    if cited:
+        result["sources"] = body.get("sources", cited)  # TASK-4088
     say = (
         f"Time series '{result['name']}' ({result['series_type']}, {row_count} rows, "
         f"{first} to {last}, {result['units'] or 'no units'}) is saved. Open the link to "
@@ -297,6 +325,12 @@ async def update_time_series(
     series_type: Annotated[str, "New series_type: hyetograph, hydrograph, stage or generic"] = "",
     hold_last_value: Annotated[bool | None, "Set true only when the last value is meant to be held"] = None,
     method: Annotated[str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
+    rainfall_basis: Annotated[
+        str,
+        "State what a rainfall series' numbers are: `excess` (rain after losses) or `gross` (before losses). "
+        "Use it to correct a series that was saved without a basis.",
+    ] = "",
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP + " Replaces the earlier list."] = None,
 ) -> str:
     """Correct a time series you created (PATCH; only the fields you pass change).
 
@@ -321,14 +355,22 @@ async def update_time_series(
         changes["series_type"] = series_type
     if hold_last_value is not None:
         changes["hold_last_value"] = hold_last_value
+    if rainfall_basis:
+        if rainfall_basis not in RAINFALL_BASES:
+            raise ToolError(f"rainfall_basis {rainfall_basis!r} is not one of {', '.join(RAINFALL_BASES)}")
+        changes["rainfall_basis"] = rainfall_basis
     if data is not None:
         _validate_row_data(data)
         changes["data"] = data
     if method.strip():
         changes["authored_method"] = method.strip()
-    if not changes or set(changes) == {"authored_method"}:
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        changes["sources"] = cited
+    if not changes or set(changes) <= {"authored_method", "sources"}:
         raise ToolError(
-            "Nothing to change: pass at least one of name, data, description, units, series_type, hold_last_value."
+            "Nothing to change: pass at least one of name, data, description, units, series_type, hold_last_value, "
+            "rainfall_basis."
         )
     body, status_code = await client.patch(f"/projects/{project_id}/time-series/{series_id}/", json=changes)
     if not isinstance(body, dict):
@@ -343,6 +385,8 @@ async def update_time_series(
         "timezone": body.get("timezone"),
         "row_count": len(rows),
         "authored_method": body.get("authored_method"),
+        "sources": body.get("sources"),  # TASK-4088
+        "rainfall_basis": body.get("rainfall_basis"),
         "http_status": status_code,
     }
     summary = body.get("summary") if isinstance(body.get("summary"), dict) else None
@@ -352,7 +396,7 @@ async def update_time_series(
         {
             "series_id": result["id"],
             "name": result["name"],
-            "changed_fields": sorted(k for k in changes if k != "authored_method"),
+            "changed_fields": sorted(k for k in changes if k not in ("authored_method", "sources")),
         },
         f"Time series '{_data(result['name'])}' is updated ({', '.join(sorted(changes))}). Open the link to "
         "check its shape in the Hydrology panel; scenarios that use it need a rebuild.",
@@ -820,6 +864,7 @@ async def _map_carries_layer(project_id, alternate) -> bool | None:
 INLINE_LAYER_MAX_BYTES = 150_000
 INLINE_LAYER_KINDS = tuple(INPUT_LAYER_ROUTES)
 INLINE_WRITE_PATH = "/projects/{project_id}/input-layers/write/"
+READ_FEATURES_PATH = "/projects/{project_id}/input-layers/{kind}/{tail}features/"
 
 
 @_tool("write_input_layer")
@@ -841,13 +886,51 @@ async def write_input_layer(
         "One short phrase saying how you made these features (e.g. 'traced from the council PDF', "
         "'digitised from the survey CSV'). Shown to the person who reviews the layer.",
     ] = "",
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
+    mode: Annotated[
+        str,
+        "'append' adds `features` to the layer's existing features (the person's keep their ids); "
+        "'replace' writes a new layer. Leave empty: Hydrata appends when the layer holds features a "
+        "person drew, and replaces otherwise.",
+    ] = "",
+    replace_existing: Annotated[
+        bool,
+        "Only true after the person agreed to a replace that removes the features they drew. Without it a "
+        "replace of a layer holding their features is refused and the refusal says how many.",
+    ] = False,
+    target: Annotated[
+        int | str | None,
+        "Which input row to write: an existing row id of this kind (list_inputs), or a TITLE for a NEW row of "
+        "this kind (e.g. 'Rainfall - no losses'). Leave empty to write the project's default row. A new row "
+        "is attached to no scenario until you attach it with update_scenario.",
+    ] = None,
+    replace_shared: Annotated[
+        bool,
+        "Only true after the person agreed to change a default row that scenarios with a built or complete "
+        "run use. Without it that write is refused and the refusal names those scenarios.",
+    ] = False,
 ) -> str:
     """Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.
 
     No file, no key, no upload: the features go in `features`. Hydrata
     converts them into the project's grid and puts them in the project's
-    default layer of that kind, replacing what it held (the old layer is kept,
-    unlinked). Unlike attach_input_layer there is nothing to poll.
+    default layer of that kind. Unlike attach_input_layer there is nothing to
+    poll.
+
+    VARIANTS: the default row may feed scenarios that already ran, and writing
+    it changes what they point at. For a variant (a copy of a scenario with
+    different rainfall, say) write a SEPARATE row with `target` set to a
+    title, then attach it to the copy with update_scenario or clone_scenario.
+    A no-target write to a default row that a scenario with a built or
+    complete run uses is refused, naming those scenarios, unless the person
+    agreed and you pass replace_shared=true.
+
+    READ FIRST with read_input_layer. When the layer holds features a person
+    drew, this tool ADDS yours beside them (mode 'append', the default; their
+    feature ids hold). A replace (mode 'replace') writes a new layer and unlinks
+    the old one, so it is refused unless the person agreed and you pass
+    replace_existing=true; the refusal says how many of their features it would
+    remove. Ask them before you replace.
 
     Every feature must be the kind's geometry (lines for boundary, inflow and
     culvert; polygons for friction, rainfall, building and mesh_region); a
@@ -881,14 +964,40 @@ async def write_input_layer(
             "writing a layer in a tool call. Nothing was sent. Ask the person to upload the layer in their "
             f"browser: call request_input_upload(project_id={project_id}, kind={kind!r}) for the upload link and give it to them."
         )
-    body, status_code = await client.post(
-        INLINE_WRITE_PATH.format(project_id=project_id),
-        json={"kind": kind, "features": features, "authored_method": method},
-        raise_for_status=False,
-    )
+    payload: dict = {"kind": kind, "features": features, "authored_method": method}
+    cited = _clean_sources(sources)  # TASK-4088: before any request
+    if cited:
+        payload["sources"] = cited
+    mode = (mode or "").strip().lower()
+    if mode:
+        if mode not in ("append", "replace"):
+            raise ToolError("mode must be 'append' or 'replace' (or empty: Hydrata chooses)")
+        payload["mode"] = mode
+    if replace_existing:
+        payload["replace_existing"] = True
+    if target is not None and target != "":
+        payload["target"] = target
+    if replace_shared:
+        payload["replace_shared"] = True
+    try:
+        body, status_code = await client.post(
+            INLINE_WRITE_PATH.format(project_id=project_id), json=payload, raise_for_status=False
+        )
+    except HydrataAPIError as exc:
+        if exc.code != "UPSTREAM_TIMEOUT":
+            raise
+        # Full review 03-11-26 (MCP-7): the backend may have committed the write after the client gave up; a
+        # blind retry of an append would land the features twice.
+        raise HydrataAPIError(
+            f"The {kind} write timed out but may have landed: call read_input_layer({project_id}, '{kind}') "
+            "before writing again, so nothing is appended twice.",
+            code="UPSTREAM_TIMEOUT",
+        ) from exc
     if status_code >= 400:
         detail = body.get("detail") if isinstance(body, dict) else None
         code = body.get("error_code") if isinstance(body, dict) and isinstance(body.get("error_code"), str) else None
+        if code == "SHARED_ROW_REFUSED" and isinstance(detail, str):
+            detail = _data(detail)  # it names the scenarios (people's text)
         # TASK-4081: carry the upstream status so a 5xx is recorded broken, a 4xx refused.
         raise HydrataAPIError(
             f"Hydrata refused the {kind} layer ({status_code}): {detail or body}", status=status_code, code=code
@@ -896,17 +1005,91 @@ async def write_input_layer(
     result = dict(body) if isinstance(body, dict) else {"body": body}
     result["outcome"] = "written"
     result["http_status"] = status_code
+    if cited:
+        result["sources"] = cited  # TASK-4088
     if deprecation:
         result["deprecation"] = deprecation
     alternate = result.get("dataset_alternate")
     label = kind.replace("_", " ")
     summary = await _layer_summary(alternate)
     summary.update(kind=kind, row_id=result.get("row_id"), feature_count=result.get("feature_count"))
-    say = (
-        f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
-        f"confirm it is the right {label}, in the right place; review it there."
-    )
+    sharing = [sc for sc in (result.get("shared_by_scenarios") or []) if isinstance(sc, dict)]
+    share_note = ""
+    if sharing:
+        # Full review 03-11-26 (MCP-1): a targeted write that reused an existing row changes that row for every
+        # scenario on it exactly as a default-row write does: the note is said whatever `target` was.
+        names = ", ".join(f"#{sc.get('id')} {_data(str(sc.get('name')))}" for sc in sharing)
+        share_note = (
+            f" This row is shared: scenario(s) {names} use it and now point at the new content "
+            "(rebuild them before running)."
+        )
+    if result.get("targeted_row") and not result.get("created_row"):
+        share_note = (
+            f" The target named the existing row #{result.get('row_id')} {_data(str(result.get('row_title')))}, "
+            "which was reused."
+        ) + share_note
+    elif result.get("created_row") and target not in (None, ""):
+        share_note = (
+            " It is a new row attached to no scenario yet: attach it to the scenario it is for with update_scenario."
+        )
+    if result.get("mode") == "append":
+        added = len(result.get("appended_fids") or [])
+        say = (
+            f"Added {added} to the {label} layer beside the {result.get('kept_features')} already there "
+            f"({result.get('feature_count')} in all). The layer is unreviewed as a whole until the person "
+            "reviews it: open the link and check the new one is in the right place."
+        ) + share_note
+    else:
+        say = (
+            f"{label.capitalize()} written ({result.get('feature_count')} features). Open the link and "
+            f"confirm it is the right {label}, in the right place; review it there."
+        ) + share_note
     return json.dumps(await _hand_back(result, project_id, summary, say, panel="inputs", layer=alternate), indent=2)
+
+
+@_tool("read_input_layer")
+async def read_input_layer(
+    project_id: Annotated[int, "The project ID"],
+    kind: Annotated[
+        str,
+        "Which input: boundary, friction, inflow, rainfall, building, mesh_region or culvert.",
+    ],
+    row_id: Annotated[
+        int | None,
+        "The input row's id (from list_inputs). Leave empty for the project's default row of that kind.",
+    ] = None,
+) -> str:
+    """Read the features of a project input layer: GeoJSON in EPSG:4326 with each feature's `id` (fid),
+    its attributes and its `author` (`person`, or the agent grant and client that wrote it).
+
+    Read a layer before you write to it. A person may have drawn features in
+    the map that you cannot otherwise see; write_input_layer then ADDS to the
+    layer rather than replacing it. Read-only.
+    """
+    kind = kind.strip().lower().replace("-", "_")
+    if kind in LEGACY_INPUT_LAYER_KINDS:
+        kind = LEGACY_INPUT_LAYER_KINDS[kind]
+    if kind in UNSUPPORTED_INPUT_LAYER_KINDS or kind not in INLINE_LAYER_KINDS:
+        raise ToolError(f"kind {kind!r} is not one of {', '.join(INLINE_LAYER_KINDS)}")
+    tail = f"{row_id}/" if row_id is not None else ""
+    body = await client.get(READ_FEATURES_PATH.format(project_id=project_id, kind=kind, tail=tail))
+    result = dict(body) if isinstance(body, dict) else {"body": body}
+    features = result.get("features") or []
+    result["feature_count"] = len(features)
+    result["person_features"] = sum(1 for f in features if (f.get("author") or {}).get("type") == "person")
+    if len(features) > READ_MAX_FEATURES:
+        # Full review 03-11-26 (MCP-12): a person-uploaded building or friction layer can hold tens of thousands
+        # of polygons; the first READ_MAX_FEATURES come back with the truncation stated, never silently.
+        result["features"] = features[:READ_MAX_FEATURES]
+        result["truncated"] = True
+        result["say_to_user"] = (
+            f"This layer holds {len(features)} features; only the first {READ_MAX_FEATURES} are shown here. "
+            "The counts above cover the whole layer. Open it in the map to see all of it."
+        )
+    return json.dumps(result, indent=2)
+
+
+READ_MAX_FEATURES = 1000  # full review 03-11-26 (MCP-12): the most features read_input_layer returns in one call
 
 
 UPLOAD_PAGE_LIMIT_MB = 100  # the importer's per-file cap (dataset_upload_size)
@@ -1047,6 +1230,8 @@ async def list_inputs(
             }
             if "authored_method" in row:  # TASK-4055: how an agent made it (null = nobody said)
                 entry["authored_method"] = row.get("authored_method")
+            if "sources" in row:  # TASK-4088: the documents it cites (null = none)
+                entry["sources"] = row.get("sources")
             # TASK-3749: never a /gs/ WFS count (refused for every agent key since
             # TASK-3728). Every wrapper serializer carries has_features (friction
             # and building TASK-3603, inflow TASK-3487); absent = unknown.
@@ -1105,6 +1290,8 @@ async def list_time_series(
             )
             if "authored_method" in row:  # TASK-4055
                 series[-1]["authored_method"] = row.get("authored_method")
+            if "sources" in row:  # TASK-4088
+                series[-1]["sources"] = row.get("sources")
         if not isinstance(page, dict) or not page.get("next"):
             break
         params = dict(params, page=params["page"] + 1)

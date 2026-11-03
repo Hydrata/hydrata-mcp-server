@@ -100,10 +100,15 @@ DATA_TEXT_KEYS = frozenset(
         "error_message",
         "user_message",
         "cloudwatch_log_tail",
+        # full review 03-11-26 (MCP-3): the levels-datum mismatch sentence embeds the person's datum label
+        "levels_datum_mismatch",
     }
 )
 # Keys holding a VERBATIM third-party record: every string inside is data.
-DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config"})
+# TASK-4088: `sources` is the agent's own citation list (title, url, locator): every string in it is data.
+# Full review 03-11-26 (MCP-2, MCP-3): a feature's `properties` are the person's attribute values (any column
+# name), and `levels_datum` carries the label they typed and their username.
+DATA_RECORD_KEYS = frozenset({"execution", "simple_view_config", "sources", "properties", "levels_datum"})
 
 
 def _is_wrapped(text: str) -> bool:
@@ -188,17 +193,33 @@ mcp = FastMCP(
         "If no source covers the site, the user uploads their own DEM in the project map; "
         "you cannot move file bytes (presign_terrain_upload and finalize_terrain_upload are "
         "for a client that can). Ask the user which height datum their levels are in, and "
-        "pass the answer as vertical_datum_declared. Never relay the datum Hydrata inferred "
-        "as fact. "
+        "pass the answer as levels_datum on create_terrain_from_source (it is required): that is the "
+        "datum of the person's levels, a project fact. vertical_datum_declared stays the terrain's own "
+        "datum (an uploaded DEM's, on finalize_terrain_upload); never put the person's levels there. "
+        "Never relay the datum Hydrata inferred as fact. When get_terrain or get_project reports a "
+        "levels datum mismatch, relay it. "
+        "To place a culvert, inflow or boundary on the ground, sample_terrain the points or terrain_profile "
+        "the line first; the lowest point on a profile across a channel is the invert candidate. "
+        "ASK BEFORE YOU BUILD: before you write any input or build, ask the user which approach they want, "
+        "rain-on-grid (rain falls on the whole model domain) or an inflow hydrograph at a place they name, and "
+        "if they say 'hydrograph' ask whether they mean an inflow hydrograph that drives the model or the flow "
+        "hydrograph they want out of the results; do not choose for them. Ask the datum of their levels, as "
+        "above. Before the build, tell them the losses you applied and the basis of each rainfall series "
+        "(excess or gross): rain-on-grid takes initial and continuing losses only and never a runoff "
+        "coefficient, and say where the design depth came from or that it is unverified. "
         "INPUTS: call describe_input_kinds for the formats. Send vector inputs (boundary, "
         "friction, inflow, rainfall, building, mesh_region, culvert) inline with "
         "write_input_layer. For a file above the inline cap, call request_input_upload and "
         "give the user the link, so they drop the file in their browser. "
         "The design storm, the catchment and the mesh region are supplied by you or the user. "
         "Say how you made them with authored_method. "
+        "SOURCES: when an input comes from a document (a flood study, a gauge record, a BoM page), pass "
+        "sources=[{title, url, locator}] beside authored_method so the engineer can click through to it. "
         "TIME SERIES: create_time_series for each rain gauge or hydrograph; fix mistakes with "
         "update_time_series or delete_time_series. Rainfall must be rainfall AFTER losses "
-        "(rainfall excess), because the simulation applies no losses. "
+        "(rainfall excess), because the simulation applies no losses: state the basis of every "
+        "rainfall series with rainfall_basis, `excess` for what you write (rain after losses), "
+        "`gross` only for rain before losses (a design storm), so nobody takes losses off twice. "
         "THE HUMAN REVIEWS: every tool that changes something returns `ui_url` (a "
         "link that opens the project map on the thing that changed), a `summary` of "
         "numbers the engineer can check, and `say_to_user` (what to tell them). Relay "
@@ -233,6 +254,33 @@ mcp = FastMCP(
         "engineer's reason (ask for it, never invent one) or includes it again; "
         "set_comparison_tolerance saves the project's default tolerance (an Editor's choice: "
         "to try another, pass tolerance to get_observation_comparison instead). "
+        "WORKING BESIDE THE PERSON: read the layer first (read_input_layer) and add to what the person "
+        "drew (write_input_layer appends by default when the layer holds their features); ask before any "
+        "replace, because a replace removes their features from the layer. "
+        "KEEP SCENARIO NAMES TRUE: when you change a scenario's resolution or duration (or what its name "
+        "describes), rename it in the same step with update_scenario; a copy of a scenario "
+        "(clone_scenario) is for a variant, and neither tool builds or runs anything. A copy of a scenario gets "
+        "its own input row: write the changed input with write_input_layer target='<title>' and attach that "
+        "row to the copy, so the original scenario's inputs stay as they ran. "
+        "MONEY: say one price. Before a build it is `quote_estimate` (always an estimate); after it, the run's `quote`. "
+        "Above 100,000 triangles build_scenario refuses and gives you the number and the price: relay the number "
+        "and the price and get the user's yes before confirm=true (confirm=true is a rule for you, not a click "
+        "the user makes). "
+        "FOLLOWING A RUN: get_run_status returns say_to_user (stage, percent, time left); relay it to the "
+        "person after every poll, never poll silently. To follow a run from chat call get_run_status with "
+        "wait_seconds=180: the wait happens inside the call (it returns early when the status, phase or "
+        "progress moves), so never sleep between calls; post one line after each call; after about 10 "
+        "minutes in one turn stop and tell the person to ask you for status. You cannot watch a run "
+        "between turns, so when you start a run say up front how the person will hear: "
+        "Hydrata emails them when it completes or fails, or they can ask you to check. If the run's estimate "
+        "is under about 10 minutes, keep polling and report completion in the same turn. "
+        "FLOW ACROSS A LINE: get_flow_hydrograph(run_id, line) integrates depth times velocity normal to a "
+        "drawn line from the run's playback store: relay the peak, its time, the volume, the sign convention "
+        "and the mass-balance line; it is not a gauge reading. The browser's Profile panel has a Flow tab that "
+        "draws the same hydrograph for a line the person draws; there is no other results hydrograph screen, so "
+        "never promise one, and never promise an output or a screen that no tool here produces. "
+        "PERMISSIONS: say once, at the start, that claude.ai will ask to allow each Hydrata tool the first time it "
+        "is used, and that Always allow saves the interruptions. "
         "WHEN NO TOOL CAN DO IT: say so plainly, then call suggest_capability once so the Hydrata team "
         "hears about it; do not work around the gap." + (DATA_INSTRUCTIONS if config.data_envelope else "")
     ),
@@ -255,8 +303,13 @@ TOOL_ANNOTATIONS = {
     "get_scenario": ("Get a scenario's state, inputs and price", True, False, True),
     "get_run_status": ("Poll a run's status", True, False, True),
     "get_run": ("Get a run's full record", True, False, True),
+    # TASK-4032: a POST that only reads the playback store.
+    "get_flow_hydrograph": ("Flow across a line for a run", True, False, True),
     "list_runs": ("List a project's runs", True, False, True),
     "get_terrain": ("Wait for a terrain import", True, False, True),
+    # TASK-4108: read the ground (point heights; a profile along a line) before placing a structure on it.
+    "sample_terrain": ("Read ground levels at points", True, False, True),
+    "terrain_profile": ("Read the ground along a line", True, False, True),
     # TASK-4059: Hydrata's own terrain sources (GA 5 m, Copernicus), listed then fetched.
     "list_terrain_sources": ("List the terrain Hydrata can fetch for a site", True, False, True),
     "create_terrain_from_source": ("Fetch terrain from a Hydrata source", False, False, False),
@@ -276,6 +329,9 @@ TOOL_ANNOTATIONS = {
     "delete_time_series": ("Delete a time series", False, True, True),
     "attach_input_layer": ("Attach an uploaded layer as a project input", False, False, False),
     # TASK-4052: writes the layer's features straight into the project (replaces the kind's layer).
+    "read_input_layer": ("Read the features of a project input layer", True, False, True),
+    "update_scenario": ("Edit a scenario's name, size or attached inputs", False, False, True),
+    "clone_scenario": ("Copy a scenario (no run, no build)", False, False, False),
     "write_input_layer": ("Write a project input layer from GeoJSON", False, False, False),
     "request_input_upload": ("Get a browser upload link for a big input layer", True, False, True),
     "create_scenario": ("Create a draft scenario", False, False, False),

@@ -4,15 +4,17 @@ import json
 from http import HTTPStatus
 from typing import Annotated
 
-from ._common import _tool, client
+from ._common import _data, _tool, client
 from ._helpers import (
     INPUT_REVIEW_REFUSALS,
     _elide_presigned,
     _hand_back,
     _input_review_hand_back,
+    _money,
     _poll_until,
     _post_result,
     _project_base_map,
+    _run_quote_words,
     _status_of,
     _ui_origin,
     _ui_url,
@@ -44,7 +46,11 @@ async def start_simulation(
     The scenario must be in 'built' status. Returns 202 with the new run.
     The run transitions through: built → queued → computing → processing → complete.
 
-    After starting, poll get_run_status to track progress. Returns 409
+    After starting, tell the person how they will hear about the end (`say_to_user` says it:
+    you cannot watch the run after your reply; Hydrata emails them when it completes or
+    fails). If the run is estimated at under about 10 minutes, keep following it with
+    get_run_status(wait_seconds=180) and report the completion yourself in the same turn.
+    Poll get_run_status to track progress. Returns 409
     if the scenario is not in the correct state. The returned run record has
     its presigned `s3_*_url` links elided (6-hour capabilities).
 
@@ -54,6 +60,13 @@ async def start_simulation(
     A run built from inputs other than the ones reviewed now answers
     `outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with
     rebuild=true, then start it again.
+
+    HOW THE RUN IS PAID (TASK-4101): a started run's answer carries `quote` (what the
+    user is charged; `0.00` inside the daily free band), `quote_list_price` (the run's
+    real price, the same figure the map and billing show) and `paid_by` (`free_band` or
+    `credit`), and `say_to_user` states them. Say that figure, never another: the only
+    price you can quote is `quote` / `quote_list_price` (built run) or `quote_estimate`
+    (before a build, always called an estimate).
 
     SPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not
     fit your agent key's monthly spend limit (default $0), or that Hydrata
@@ -89,6 +102,17 @@ async def start_simulation(
     # `_post_result` (presign_terrain_upload shares it and must keep its URL).
     result = json.loads(_post_result(_elide_presigned(body), status_code))
     run_id = result.get("id")
+    # TASK-4101 (D24/D34): say how the run is paid and the quote, the SAME figure as the pane chip and the
+    # billing record. Hydrata starts a run (202) only when it fits the free band (quote 0.00, the real price
+    # is quote_list_price) or is charged to the person's credit (quote > 0); a run it cannot start is a
+    # refusal above, never this answer.
+    quote, list_price = result.get("quote"), result.get("quote_list_price")
+    paid_by = "unknown" if _money(quote) is None else ("free_band" if _money(quote) == 0 else "credit")
+    paid_words = {
+        "free_band": "it is free, inside the daily free band",
+        "credit": "it is charged to the user's compute credit",
+        "unknown": "its price is not available",
+    }[paid_by]
     await _hand_back(
         result,
         result.get("project"),
@@ -97,14 +121,22 @@ async def start_simulation(
             "scenario_id": scenario_id,
             "status": result.get("status"),
             "compute_backend": result.get("compute_backend"),
-            "vcpu_hours_estimate": result.get("vcpu_hours_estimate"),
+            "quote": quote,
+            "quote_list_price": list_price,
+            "paid_by": paid_by,
         },
-        f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}). "
-        "Open the link to watch it; the results appear on the map when it completes.",
+        f"Run {run_id} has started for scenario {scenario_id} ({result.get('status')}): {paid_words}; "
+        f"the run's price is {_run_quote_words(quote, list_price)}. "
+        f"{CANNOT_WATCH_WORDS} Open the link to watch it live; the results appear on the map when it completes.",
         run=run_id,
     )
     return json.dumps(result, indent=2)
 
+
+# TASK-4105 (D36): a connector agent cannot act after its reply, so the start message says how the person hears.
+CANNOT_WATCH_WORDS = (
+    "I can't watch it after this reply: Hydrata will email you when it is done, or ask me to check on it."
+)
 
 # TASK-3214 (W2a, epic 3200, D27) — run consent. Hydrata (not this server)
 # decides whether an agent may spend: over the key's monthly limit, or for a
@@ -165,8 +197,8 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
             result,
             project_id,
             {"run_id": run_id, "scenario_id": scenario_id, "status": run_status, "quoted_cost_usd": cost},
-            f"The user gave consent{price}: run {run_id} has started ({run_status}). Open the link to watch "
-            "it; the results appear on the map when it completes.",
+            f"The user gave consent{price}: run {run_id} has started ({run_status}). {CANNOT_WATCH_WORDS} "
+            "Open the link to watch it live; the results appear on the map when it completes.",
             run=run_id,
         )
         return result
@@ -211,25 +243,123 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
 # ---------------------------------------------------------------------------
 # Tool 5: get_run_status
 # ---------------------------------------------------------------------------
+RUN_WAIT_MAX_SECONDS = 180  # TASK-4063's proven ceiling (nginx /mcp/ 300 s; a 180 s call survived claude.ai)
+RUN_TERMINAL_STATUSES = ("complete", "error", "cancelled")
+RUN_WAIT_PROGRESS_POINTS = 5.0  # a long-poll returns early when progress moves this far
+RUN_WAIT_POLL_INTERVAL_SECONDS = 5.0
+
+
+def _run_moved(first: dict, now: dict) -> bool:
+    """True when status, phase or progress (by >= 5 points) differs from the first read."""
+    if now.get("status") != first.get("status") or now.get("phase") != first.get("phase"):
+        return True
+    a, b = first.get("progress_pct"), now.get("progress_pct")
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(b - a) >= RUN_WAIT_PROGRESS_POINTS
+    return False
+
+
 @_tool("get_run_status")
 async def get_run_status(
     run_id: Annotated[int, "The run ID"],
+    wait_seconds: Annotated[
+        int,
+        "Wait up to this many seconds for the run to move before answering (max 180, "
+        "the proven ceiling; larger values are clamped). Returns early when the status, "
+        "the phase or the progress (by 5 points) changes. Default 0: answer at once.",
+    ] = 0,
 ) -> str:
-    """Lightweight status check for a simulation run (fast, <50ms).
+    """Status of a simulation run, optionally waiting for it to move.
 
-    Use this for polling instead of get_run. Returns only: id, status,
-    `phase`, progress_pct (0-100), eta_seconds, error_message, and
-    compute_backend.
+    Use this instead of get_run. Returns: id, status, `phase`, status_detail,
+    progress_pct (0-100), eta_seconds, error_message, compute_backend, and
+    `say_to_user`.
+
+    FOLLOWING A RUN FROM CHAT: call with wait_seconds=180. The call returns as soon
+    as the status, phase or progress (5 points) changes, or after 180 s, whichever is
+    first. Then RELAY `say_to_user` to the person (one short line after every call) and call
+    again. Do not sleep or wait yourself between calls: the wait happens inside this
+    call. After about 10 minutes of this in one turn, stop and tell the person to ask
+    you for the status: you cannot watch the run between their messages, and Hydrata
+    emails them when it finishes.
 
     `phase` is never empty: it is `status`, except `preparing_inputs` while a
     `computing` run has no progress yet (it is downloading its input package
     and building the domain — minutes on a big model; this is NOT a stall).
-    Poll every 5-10 seconds. Terminal states: complete, error, cancelled.
+    Terminal states: complete, error, cancelled. A waiting call returns at once
+    on a terminal state.
     """
-    data = await client.get(f"/runs/{run_id}/status/")
+
+    async def fetch():
+        record = await client.get(f"/runs/{run_id}/status/")
+        if isinstance(record, dict):
+            record = dict(record, phase=_run_phase(record))
+        return record
+
+    wait = max(0, min(int(wait_seconds), RUN_WAIT_MAX_SECONDS))
+    first: dict = {}
+
+    def settled(record) -> bool:
+        if not isinstance(record, dict):
+            return True
+        if not first:
+            first.update(record)
+        if record.get("status") in RUN_TERMINAL_STATUSES:
+            return True
+        return _run_moved(first, record)
+
+    data, polls, elapsed, timed_out = await _poll_until(fetch, settled, wait, RUN_WAIT_POLL_INTERVAL_SECONDS)
     if isinstance(data, dict):
-        data = dict(data, phase=_run_phase(data))
+        data["say_to_user"] = _run_status_line(data)
+        if wait:
+            data["waited_seconds"] = elapsed
+            data["timed_out"] = timed_out
+            if data.get("status") not in RUN_TERMINAL_STATUSES:
+                data["next_step"] = (
+                    "Relay say_to_user now, then call get_run_status again with wait_seconds=180. "
+                    "After about 10 minutes in this turn, stop and tell the person to ask you for the status."
+                )
     return json.dumps(_elide_presigned(data), indent=2)
+
+
+def _eta_words(eta_seconds) -> str | None:
+    """'about 12 min' / 'under a minute' / 'about 2 h 5 min' from a seconds count, or None."""
+    if not isinstance(eta_seconds, (int, float)) or isinstance(eta_seconds, bool) or eta_seconds < 0:
+        return None
+    minutes = round(eta_seconds / 60)
+    if minutes < 1:
+        return "under a minute"
+    if minutes < 60:
+        return f"about {minutes} min"
+    hours, rest = divmod(minutes, 60)
+    return f"about {hours} h {rest} min" if rest else f"about {hours} h"
+
+
+def _run_status_line(record: dict) -> str:
+    """TASK-4098 — the one-liner the agent relays after every poll: stage, percent, time left."""
+    run_id = record.get("id")
+    label = f"Run {run_id}" if run_id is not None else "The run"
+    phase = record.get("phase") or _run_phase(record)
+    detail = record.get("status_detail")
+    suffix = f" ({detail})" if detail else ""
+    if phase == "complete":
+        return f"{label} is complete. Ask me for the results, or open it in the map."
+    if phase == "error":
+        message = _data(record.get("error_message"))  # ANUGA quotes layer content (MCP-3): data, not instructions
+        return f"{label} failed" + (f": {message}" if message else ".") + " Ask me before retrying."
+    if phase == "cancelled":
+        return f"{label} was cancelled."
+    if phase == "preparing_inputs":
+        return (
+            f"{label} is preparing its inputs (downloading the input package and building the "
+            f"domain; this takes a few minutes and is not a stall){suffix}."
+        )
+    pct = record.get("progress_pct")
+    if phase == "computing" and isinstance(pct, (int, float)):
+        eta = _eta_words(record.get("eta_seconds"))
+        tail = f", {eta} left" if eta else ", time left not yet estimated"
+        return f"{label} is computing: {pct:.0f}% done{tail}{suffix}."
+    return f"{label} is {phase.replace('_', ' ')}{suffix}."
 
 
 def _run_phase(status_record: dict) -> str:
@@ -242,11 +372,18 @@ def _run_phase(status_record: dict) -> str:
     return status
 
 
+SWW_UNREADABLE_WORDS = (
+    "The time series storage refused the read, so Hydrata cannot tell whether it is kept. "
+    "This is a fault on Hydrata's side: ask the operator."
+)
+
+
 async def _sww_summary(run_id, run) -> dict:
     """`{state, size_bytes, ui_url}` for a run's full time series (TASK-4062).
 
     Only those keys are copied from the API answer, so a download link could
-    never ride along. Best effort: a failed lookup gives `state: null` and a
+    never ride along. When (and only when) the state is `unreadable` the API's
+    `error_code` and `detail` are copied too (TASK-4161): the plain words for why there is no download. Best effort: a failed lookup gives `state: null` and a
     short `error`, never a failed get_run.
     """
     summary: dict = {"state": None, "size_bytes": None, "ui_url": None}
@@ -255,6 +392,10 @@ async def _sww_summary(run_id, run) -> dict:
         if isinstance(body, dict):
             summary["state"] = body.get("state")
             summary["size_bytes"] = body.get("size_bytes")
+            if body.get("state") == "unreadable":
+                summary["error_code"] = body.get("error_code")
+                # The status route carries error_code only; the words are composed here when it sends none.
+                summary["detail"] = body.get("detail") or SWW_UNREADABLE_WORDS
     except Exception as exc:
         summary["error"] = f"could not check the time series: {exc}"
         return summary
@@ -285,15 +426,128 @@ async def get_run(
     `gn_layer_*` entries (published WMS layers on the project's map).
 
     `sww` reports the run's full time series (the raw ANUGA output): `state`
-    (available, not_kept, archived or restoring), `size_bytes`, and a `ui_url`
+    (available, not_kept, archived, restoring or unreadable), `size_bytes`, and a `ui_url`
     to the Results panel where the person downloads it (or requests a restore
     of an archived one and is emailed when it is ready). The download link
-    itself is never returned.
+    itself is never returned. `unreadable` means the storage refused the read:
+    there is no download to offer, so tell the person and ask them to ask the
+    operator; `sww.error_code` and `sww.detail` carry the reason in words.
     """
     data = _elide_presigned(await client.get(f"/runs/{run_id}/"))
     if isinstance(data, dict):
         data["sww"] = await _sww_summary(run_id, data)
     return json.dumps(data, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4032: get_flow_hydrograph
+# ---------------------------------------------------------------------------
+FLOW_HYDROGRAPH_CLIENT_TIMEOUT_S = 75.0  # the backend budget (30 s) covers the discharge read only (MCP-4)
+
+
+def _flow_say(data: dict) -> str:
+    """One or two sentences for the person: peak, time, volume, sign, mass balance."""
+    peak_s = float(data.get("peak_time_s") or 0.0)
+    hours, rest = divmod(int(round(peak_s)), 3600)
+    clock = f"{hours}:{rest // 60:02d}"
+    first = (
+        f"Across that line the flow peaks at {data.get('peak_m3s', 0.0):.2f} m3/s at {clock} into the run "
+        f"(to the nearest {data.get('frame_spacing_s') or 0:.0f} s frame), and {data.get('volume_m3', 0.0):,.0f} m3 "
+        f"crosses in total. {data.get('sign_convention', '')}"
+    )
+    mb = data.get("mass_balance") or {}
+    if mb.get("rain_in_m3") is None:
+        second = f"Mass balance: {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model; rain and inflow could not be read."
+    else:
+        second = (
+            f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
+            f"went in, {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about "
+            f"{mb.get('out_by_difference_m3') or 0:,.0f} m3 left by the open boundaries (by difference; "
+            "boundary flux is not integrated)."
+        )
+    # Full review 03-11-26 (MCP-5): a dry line, a peak on the first or last frame and a coarsened spacing change
+    # what the numbers mean; the per-frame caveat is implicit in "to the nearest frame".
+    notes = [
+        w.strip().rstrip(".")
+        for w in (data.get("warnings") or [])
+        if isinstance(w, str) and w.strip() and not w.startswith("the peak is resolved to the nearest frame")
+    ]
+    third = (" Note: " + "; ".join(notes) + ".") if notes else ""
+    return f"{first} {second}{third}"
+
+
+@_tool("get_flow_hydrograph")
+async def get_flow_hydrograph(
+    run_id: Annotated[int, "The run ID"],
+    line: Annotated[
+        list[list[float]],
+        "The line to measure across, as [[lon, lat], [lon, lat], ...] in WGS84 (at least 2 points), "
+        "in the order drawn. Positive flow crosses from the line's left bank to its right bank.",
+    ],
+) -> str:
+    """Flow (Q) across a drawn line, at every frame of a completed run.
+
+    Integrates depth times velocity normal to the line from the run's playback store:
+    returns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`, `volume_m3`,
+    `sign_convention`, `frame_spacing_s`, `warnings` (the peak is resolved to the nearest
+    frame, so the true peak may fall between frames) and a `mass_balance` (rain and inflow
+    in, left in the model; outflow is by difference, open-boundary flux is not integrated).
+    Relay `say_to_user`. This is the model's flow, not a gauge reading.
+
+    A run with no playback store answers outcome `no_playback_store`; a bad line answers
+    `bad_line` with the reason.
+    """
+    # Full review 03-11-26 (MCP-4): the backend's 30 s budget covers the discharge read only; the store open and
+    # the mass balance sit outside it, so the client waits longer than the budget, and a 504
+    # FLOW_HYDROGRAPH_TIMEOUT is handed back with its words instead of becoming a generic server error.
+    body, status_code = await client.post(
+        f"/runs/{run_id}/flow-hydrograph/",
+        json={"line": line},
+        raise_for_status=False,
+        relay_statuses=(HTTPStatus.GATEWAY_TIMEOUT,),
+        timeout=FLOW_HYDROGRAPH_CLIENT_TIMEOUT_S,
+    )
+    code = body.get("error_code") if isinstance(body, dict) else None
+    if status_code == HTTPStatus.NOT_FOUND and code == "NO_PLAYBACK_STORE":
+        return json.dumps(
+            {
+                "outcome": "no_playback_store",
+                "run_id": run_id,
+                "say_to_user": f"Run {run_id} has no playback store, so the flow across a line cannot be read "
+                "(it may not have finished, or it predates playback stores).",
+            },
+            indent=2,
+        )
+    if status_code == HTTPStatus.NOT_FOUND:
+        # MCP-8: a run that does not exist, or that this key cannot read, is not "no playback store".
+        raise HydrataAPIError(f"Run {run_id} was not found, or you cannot read it.", status=status_code, code=code)
+    if status_code == HTTPStatus.GATEWAY_TIMEOUT:
+        detail = body.get("detail") if isinstance(body, dict) else None
+        return json.dumps(
+            {
+                "outcome": "too_slow",
+                "run_id": run_id,
+                "detail": detail,
+                "say_to_user": (detail or "The flow hydrograph took longer than its time budget.")
+                + " Draw a shorter line, or one that crosses fewer cells, and ask again; do not repeat the same line.",
+            },
+            indent=2,
+        )
+    if status_code == HTTPStatus.BAD_REQUEST:
+        reason = (body.get("detail") or body.get("error")) if isinstance(body, dict) else None
+        return json.dumps(
+            {
+                "outcome": "bad_line",
+                "run_id": run_id,
+                "error": reason,
+                "say_to_user": f"That line cannot be used: {reason or 'it is not a [[lon, lat], ...] line'}.",
+            },
+            indent=2,
+        )
+    if status_code >= 400 or not isinstance(body, dict):
+        raise HydrataAPIError(str(body)[:300], status=status_code)
+    body["say_to_user"] = _flow_say(body)
+    return json.dumps(body, indent=2)
 
 
 # ---------------------------------------------------------------------------
