@@ -32,6 +32,7 @@ import re
 import sys
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import parse_qs
@@ -81,6 +82,7 @@ _LOG_ONLY_LINE = re.compile(r"\n\s*For further information visit \S+")
 class CallState:
     request_id: str
     actor: dict | None = None
+    replied: bool = False  # Django answered at least once (with or without an actor header)
     # Mutable on purpose: the tool may run in a child task with a COPY of the context,
     # but it shares this object, so the actor noted in client._send reaches the record.
     replies: list = field(default_factory=list)
@@ -126,7 +128,10 @@ def parse_actor(header: str | None) -> dict | None:
 def note_reply(resp: httpx.Response) -> None:
     """Called for every Django reply: the FIRST reply that carries an actor header wins."""
     state = _state.get()
-    if state is None or state.actor is not None:
+    if state is None:
+        return
+    state.replied = True
+    if state.actor is not None:
         return
     actor = parse_actor(resp.headers.get(ACTOR_HEADER))
     if actor:
@@ -323,8 +328,17 @@ def build_record(
 ) -> dict:
     actor = state.actor
     caller = credential_identity(authorization)
+    digest = ACTOR_CACHE.digest(authorization)
+    source = "django"
     if actor:
-        identity = {**actor, "identity_source": "django", "identity": f"user:{actor['user_id']}"}
+        ACTOR_CACHE.remember(digest, actor)
+    elif state.replied:
+        ACTOR_CACHE.forget(digest)  # Django answered without an actor: revoked or expired, stop attributing
+    else:
+        actor = ACTOR_CACHE.lookup(digest)
+        source = "credential_cache"
+    if actor:
+        identity = {**actor, "identity_source": source, "identity": f"user:{actor['user_id']}"}
     else:
         identity = {
             "user_id": None,
@@ -393,6 +407,51 @@ _GEOMETRY_TYPES = frozenset(
     {"Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon", "GeometryCollection"}
 )
 REDACTED = "<redacted>"
+
+
+ACTOR_CACHE_MAX = 5000  # bound on remembered credentials; the oldest is evicted first
+
+
+class ActorCache:
+    """The user Django last verified for a credential, for calls rejected before Django (TASK-4172).
+
+    Keyed by the sha256 of the FULL bearer token, never the ``sub`` fingerprint: this server verifies
+    no signature, so a forged token with a known ``sub`` must miss. Only the digest is held (never the
+    token) and it is never emitted. Per-process, like ``Sampler``: hydrata-mcp runs one worker.
+    """
+
+    def __init__(self, maximum: int = ACTOR_CACHE_MAX) -> None:
+        self._max = maximum
+        self._by_digest: OrderedDict[str, dict] = OrderedDict()
+
+    @staticmethod
+    def digest(authorization: str | None) -> str | None:
+        token = (authorization or "").strip().partition(" ")[2].strip()
+        return hashlib.sha256(token.encode()).hexdigest() if token else None
+
+    def remember(self, digest: str | None, actor: dict) -> None:
+        if not digest:
+            return
+        self._by_digest[digest] = dict(actor)
+        self._by_digest.move_to_end(digest)
+        while len(self._by_digest) > self._max:
+            self._by_digest.popitem(last=False)
+
+    def lookup(self, digest: str | None) -> dict | None:
+        if not digest or digest not in self._by_digest:
+            return None
+        self._by_digest.move_to_end(digest)
+        return dict(self._by_digest[digest])
+
+    def forget(self, digest: str | None) -> None:
+        if digest:
+            self._by_digest.pop(digest, None)
+
+    def clear(self) -> None:
+        self._by_digest.clear()
+
+
+ACTOR_CACHE = ActorCache()
 
 
 def _utc_day() -> str:
