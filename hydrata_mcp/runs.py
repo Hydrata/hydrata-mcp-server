@@ -462,15 +462,17 @@ def _flow_say(data: dict) -> str:
         second = (
             f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
             f"went in, {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about "
-            f"{mb.get('out_by_difference_m3') or 0:,.0f} m3 left by the open boundaries (by difference; "
-            "boundary flux is not integrated)."
+            f"{mb.get('out_by_difference_m3') or 0:,.0f} m3 left through the model's open edges (rain + inflow "
+            "minus the water left in the model; it is not measured at the edge)."
         )
     # Full review 03-11-26 (MCP-5): a dry line, a peak on the first or last frame and a coarsened spacing change
-    # what the numbers mean; the per-frame caveat is implicit in "to the nearest frame".
+    # what the numbers mean; the per-frame caveat is implicit in "to the nearest frame". TASK-4187: dropped by
+    # prefix, the plain-word caveat AND the old one (a hydrata not yet shipped), so neither is relayed twice.
+    peak_caveat = ("Results are saved", "the peak is resolved to the nearest frame")
     notes = [
         w.strip().rstrip(".")
         for w in (data.get("warnings") or [])
-        if isinstance(w, str) and w.strip() and not w.startswith("the peak is resolved to the nearest frame")
+        if isinstance(w, str) and w.strip() and not w.startswith(peak_caveat)
     ]
     third = (" Note: " + "; ".join(notes) + ".") if notes else ""
     return f"{first} {second}{third}"
