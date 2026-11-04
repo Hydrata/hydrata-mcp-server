@@ -47,7 +47,10 @@ def _flow(**kw):
         "volume_m3": 0.0,
         "sign_convention": "Positive flow crosses the line from its LEFT bank to its RIGHT bank.",
         "frame_spacing_s": 60.0,
-        "warnings": ["the peak is resolved to the nearest frame (+-frame_spacing_s/2)"],
+        "warnings": [
+            "Results are saved every 60 s, so the true peak may fall up to 30 s either side of the time shown "
+            "and may be slightly higher."
+        ],
         "mass_balance": {"rain_in_m3": None, "left_in_model_m3": 1.0},
     }
     body.update(kw)
@@ -158,7 +161,8 @@ async def test_full_review_the_levels_label_and_declarer_are_data(_server):
 @respx.mock
 async def test_full_review_flow_hydrograph_relays_the_dry_line_and_edge_peak_warnings(_server):
     warnings = [
-        "the peak is resolved to the nearest frame (+-frame_spacing_s/2); the true peak may fall between frames",
+        "Results are saved every 60 s, so the true peak may fall up to 30 s either side of the time shown "
+        "and may be slightly higher.",
         "the line touches no wet triangle: the flow is zero",
         "the peak is the first or last frame, so the true peak may lie outside the stored run",
     ]
@@ -166,7 +170,7 @@ async def test_full_review_flow_hydrograph_relays_the_dry_line_and_edge_peak_war
     say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
     note = say.split("Note: ")[1]
     assert "the line touches no wet triangle: the flow is zero" in note and "first or last frame" in note
-    assert "nearest frame (+-" not in note
+    assert "Results are saved" not in note  # TASK-4187: the plain-word per-frame caveat is implicit
 
 
 @respx.mock

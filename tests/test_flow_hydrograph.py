@@ -11,6 +11,17 @@ from tests.helpers import BASE
 pytestmark = pytest.mark.asyncio
 
 LINE = [[149.12, -35.28], [149.13, -35.28]]
+# TASK-4187: the backend's plain-word peak caveat and outflow note (hydrata gn_anuga.flow_hydrograph)
+NEW_PEAK = (
+    "Results are saved every 60 s, so the true peak may fall up to 30 s either side of the time shown "
+    "and may be slightly higher."
+)
+OLD_PEAK = "the peak is resolved to the nearest frame (+-frame_spacing_s/2); the true peak may fall between frames"
+OUTFLOW_NOTE = (
+    "the water that left through the model's open edges is rain + inflow minus the water left in the model; "
+    "it is not measured at the edge"
+)
+DRY = "the line touches no wet triangle: the flow is zero"
 
 
 def _answer(**kw):
@@ -24,13 +35,13 @@ def _answer(**kw):
         "volume_m3": 900.0,
         "sign_convention": "Positive flow crosses the line from its LEFT bank to its RIGHT bank.",
         "frame_spacing_s": 60.0,
-        "warnings": ["the peak is resolved to the nearest frame"],
+        "warnings": [NEW_PEAK],
         "mass_balance": {
             "rain_in_m3": 1000.0,
             "inflow_in_m3": 200.0,
             "left_in_model_m3": 700.0,
             "out_by_difference_m3": 500.0,
-            "note": "outflow is by difference: open-boundary flux is not integrated",
+            "note": OUTFLOW_NOTE,
         },
     }
     body.update(kw)
@@ -52,6 +63,39 @@ class TestFlowHydrograph:
         assert "12.30 m3/s" in say and "1:35" in say and "900 m3" in say
         assert "LEFT bank to its RIGHT bank" in say
         assert "1,000 m3 of rain" in say and "700 m3 is left in the model" in say and "500 m3 left" in say
+
+    @respx.mock
+    async def test_say_to_user_drops_the_new_peak_caveat_from_the_note(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(
+            return_value=httpx.Response(200, json=_answer(warnings=[NEW_PEAK, DRY]))
+        )
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        note = say.split("Note: ")[1]
+        assert DRY in note and "Results are saved" not in say
+
+    @respx.mock
+    async def test_say_to_user_drops_the_old_peak_caveat_from_the_note(self, _server):
+        """A hydrata that still sends the old caveat (MCP shipped first) relays no duplicate either."""
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(
+            return_value=httpx.Response(200, json=_answer(warnings=[OLD_PEAK, DRY]))
+        )
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        note = say.split("Note: ")[1]
+        assert DRY in note and "nearest frame (+-" not in say and "frame_spacing_s" not in say
+
+    @respx.mock
+    async def test_say_to_user_has_no_note_when_the_peak_caveat_is_the_only_warning(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=_answer()))
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        assert "Note:" not in say
+
+    @respx.mock
+    async def test_say_to_user_names_the_outflow_in_plain_words(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=_answer()))
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        assert "500 m3 left through the model's open edges" in say
+        assert "rain + inflow minus the water left in the model; it is not measured at the edge" in say
+        assert "boundary flux" not in say and "by difference" not in say
 
     @respx.mock
     async def test_unreadable_rain_still_gives_a_mass_balance_sentence(self, _server):
