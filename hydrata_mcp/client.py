@@ -1,6 +1,9 @@
 """Async HTTP client wrapper for Hydrata REST API."""
 
+import math
+import time
 import uuid
+from contextvars import ContextVar
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from urllib.parse import urlsplit
@@ -51,6 +54,76 @@ def session_header_value() -> str:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mcp-session:{candidate}"))
 
 
+# ---------------------------------------------------------------------------
+# TASK-4204 (epic 4117 W7h) — a sign-in token that ages out during a long call.
+#
+# A tool call keeps the bearer it started with. A wait of minutes (get_run_status wait_seconds, a terrain
+# import poll) can outlive a WorkOS access token, and Django then refuses the next poll. So every wait stops
+# TOKEN_EXPIRY_MARGIN_SECONDS before the token's ``exp`` and returns the tool's normal resumable "still
+# waiting, call again" result; the next call carries the client's refreshed token. The ``exp`` is read
+# UNVERIFIED and used for timing ONLY, never for an auth decision: Django stays the only verifier. A
+# credential with no readable ``exp`` (an hk_ agent key, a non-JWT) is not capped.
+# If Django still answers 401 AGENT_TOKEN_EXPIRED, the registered tool returns token_expired_result():
+# resumable, "call the same tool again", never "reconnect" (that text is Django's AGENT_KEY_INVALID only).
+# ---------------------------------------------------------------------------
+TOKEN_EXPIRED = "AGENT_TOKEN_EXPIRED"
+TOKEN_EXPIRY_MARGIN_SECONDS = 20
+_UNREAD = object()
+_call_token_exp: ContextVar = ContextVar("hydrata_call_token_exp", default=_UNREAD)
+
+
+def bearer_exp(authorization: str | None) -> float | None:
+    """The ``exp`` of a ``Bearer <JWT>`` header, read without verification; None when there is none to read."""
+    token = (authorization or "").strip().partition(" ")[2].strip()
+    if token.count(".") != 2:
+        return None
+    exp = telemetry._jwt_claims(token).get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+        return None
+    return exp
+
+
+def _caller_authorization() -> str | None:
+    return get_http_headers(include={"authorization"}).get("authorization")
+
+
+def note_call_token():
+    """At the start of a tool call: remember its bearer's ``exp``. Returns the ContextVar token to reset with."""
+    return _call_token_exp.set(bearer_exp(_caller_authorization()))
+
+
+def forget_call_token(token) -> None:
+    _call_token_exp.reset(token)
+
+
+def token_wait_budget() -> float | None:
+    """Seconds a wait may still run before this call's token is too close to its ``exp``; None = no cap."""
+    exp = _call_token_exp.get()
+    if exp is _UNREAD:  # a direct call outside a registered tool (tests): read the header now
+        exp = bearer_exp(_caller_authorization())
+    return None if exp is None else exp - time.time() - TOKEN_EXPIRY_MARGIN_SECONDS
+
+
+TOKEN_EXPIRED_NEXT_STEP = (
+    "Your sign-in token expired during this call. Nothing was revoked and the connection is still live. "
+    "Do NOT ask the person to reconnect. Call the same tool again with the same arguments: your client sends "
+    "a fresh token. If this tool writes, read first (read_input_layer, list_inputs, get_scenario, get_run_status) "
+    "whether part of it already landed, so nothing is done twice."
+)
+
+
+def token_expired_result(exc: "HydrataAPIError") -> dict:
+    """The resumable result a tool returns when Django answered 401 AGENT_TOKEN_EXPIRED."""
+    return {
+        "outcome": "token_expired",
+        "error_code": TOKEN_EXPIRED,
+        "retryable": True,
+        "http_status": 401,
+        "detail": str(exc),
+        "next_step": TOKEN_EXPIRED_NEXT_STEP,
+    }
+
+
 class HydrataAPIError(Exception):
     """Raised when the Hydrata API is unreachable or returns an error.
 
@@ -95,6 +168,11 @@ def _error_code(resp: httpx.Response) -> str | None:
         return None
     code = body.get("error_code") if isinstance(body, dict) else None
     return code if isinstance(code, str) else None
+
+
+def _is_token_expired(resp: httpx.Response) -> bool:
+    """TASK-4204: Django's 401 AGENT_TOKEN_EXPIRED. Never data a tool reads: always raised, whatever the flag."""
+    return resp.status_code == 401 and _error_code(resp) == TOKEN_EXPIRED
 
 
 def _is_agent_paused(resp: httpx.Response) -> bool:
@@ -162,7 +240,7 @@ class HydrataClient:
             # TASK-3961: joins the Django AgentActionLog row, the nginx line and the call record.
             telemetry.REQUEST_ID_HEADER: telemetry.current_request_id(),
         }
-        auth = get_http_headers(include={"authorization"}).get("authorization")
+        auth = _caller_authorization()
         if auth:
             headers["Authorization"] = auth
         if self._api_host:
@@ -199,7 +277,11 @@ class HydrataClient:
             telemetry.note_reply(resp)  # Django's X-Hydrata-Actor, on any status that carries it
             # Full review 03-11-26 (MCP-4): a 5xx named in ``relay_statuses`` is handed back with its body (the
             # 504 FLOW_HYDROGRAPH_TIMEOUT carries "try a shorter line"); every other 5xx is still an error.
-            if raise_for_status or (resp.is_server_error and resp.status_code not in relay_statuses):
+            if (
+                raise_for_status
+                or (resp.is_server_error and resp.status_code not in relay_statuses)
+                or _is_token_expired(resp)
+            ):
                 resp.raise_for_status()
         except httpx.ConnectError:
             raise HydrataAPIError(

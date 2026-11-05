@@ -12,7 +12,14 @@ from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
 from mcp_types import Icon, ToolAnnotations
 
-from .client import HydrataClient
+from .client import (
+    TOKEN_EXPIRED,
+    HydrataAPIError,
+    HydrataClient,
+    forget_call_token,
+    note_call_token,
+    token_expired_result,
+)
 from .config import Config
 from .telemetry import ToolCallRecorder
 
@@ -377,6 +384,11 @@ def _structured_result(text: str) -> ToolResult:
     )
 
 
+def token_expired(exc: HydrataAPIError) -> bool:
+    """TASK-4204: Django refused the call's token for its age only (401 AGENT_TOKEN_EXPIRED): resumable."""
+    return exc.status == 401 and exc.code == TOKEN_EXPIRED
+
+
 def _tool(name: str):
     """`@mcp.tool` with this tool's annotations (TOOL_ANNOTATIONS is the one table).
 
@@ -401,8 +413,18 @@ def _tool(name: str):
     def decorate(fn):
         @functools.wraps(fn)
         async def registered(*args, **kwargs):
+            # TASK-4204: the bearer's exp, read once at the start of the call, caps every wait in it.
+            call_token = note_call_token()
+            try:
+                text = await fn(*args, **kwargs)
+            except HydrataAPIError as exc:
+                if not token_expired(exc):
+                    raise
+                text = json.dumps(token_expired_result(exc), indent=2)
+            finally:
+                forget_call_token(call_token)
             # TASK-3511: people's text is enveloped HERE, where the agent reads it.
-            return _structured_result(_envelope_text(await fn(*args, **kwargs)))
+            return _structured_result(_envelope_text(text))
 
         register(registered)
         return fn

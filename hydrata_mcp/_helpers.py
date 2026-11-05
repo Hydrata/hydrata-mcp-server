@@ -9,6 +9,7 @@ from urllib.parse import quote, urlencode
 from fastmcp.exceptions import ToolError
 
 from ._common import _data, client, config
+from .client import token_wait_budget
 
 
 def _post_result(body, status_code: int) -> str:
@@ -154,8 +155,14 @@ async def _poll_until(fetch, is_terminal, timeout_seconds, poll_interval_seconds
     read wins over the bound. The sleep is min(interval, remaining) — the W1a
     round-1 sweep's Tier-A finding: an uncapped interval longer than what was
     left overshot the bound (and prod's 300 s proxy cut).
+    TASK-4204: the bound is also capped at the caller's token ``exp`` minus 20 s (client.token_wait_budget), so
+    a long wait ends with the same resumable `timed_out` answer before the token ages out.
     """
     timeout_seconds = max(0, min(int(timeout_seconds), POLL_MAX_TIMEOUT_SECONDS))
+    # TASK-4204: never wait past the caller's token (exp - 20 s). Already spent: one read, no wait.
+    token_budget = token_wait_budget()
+    if token_budget is not None:
+        timeout_seconds = max(0.0, min(timeout_seconds, token_budget))
     poll_interval_seconds = max(0.0, float(poll_interval_seconds))
     started = time.monotonic()
     polls = 0
