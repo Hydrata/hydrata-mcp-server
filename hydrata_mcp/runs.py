@@ -587,6 +587,21 @@ async def _run_has_culverts(run_id) -> bool | None:
 FLOW_HYDROGRAPH_CLIENT_TIMEOUT_S = 75.0  # the backend budget (30 s) covers the discharge read only (MCP-4)
 
 
+#: W8 fold review: the start of hydrata's open-boundary warning (gn_anuga.flow_hydrograph.open_boundary_warning).
+OPEN_BOUNDARY_WARNING_MARK = "more water is in the model at the end than rain and inflow put in"
+#: hydrata's OPEN_BOUNDARY_NOISE / OPEN_BOUNDARY_NOISE_FLOOR_M3: a shortfall under this is not warned about there.
+ACCOUNTING_NOISE_SHARE, ACCOUNTING_NOISE_FLOOR_M3 = 0.05, 1.0
+
+
+def _served_open_boundary_warning(data: dict) -> bool:
+    return any(isinstance(w, str) and OPEN_BOUNDARY_WARNING_MARK in w for w in (data.get("warnings") or []))
+
+
+def _accounting_noise_m3(mb: dict) -> float:
+    went_in = (mb.get("rain_in_m3") or 0) + (mb.get("inflow_in_m3") or 0)
+    return max(ACCOUNTING_NOISE_SHARE * went_in, ACCOUNTING_NOISE_FLOOR_M3)
+
+
 def _flow_say(data: dict) -> str:
     """One or two sentences for the person: peak, time, volume, sign, mass balance."""
     clock = _clock(data.get("peak_time_s"))
@@ -605,20 +620,33 @@ def _flow_say(data: dict) -> str:
         first += f" Largest flow each way: {most_in:.2f} m3/s left to right and {abs(most_out):.2f} m3/s right to left."
     mb = data.get("mass_balance") or {}
     out = mb.get("out_by_difference_m3")
+    went_in = (
+        f"Mass balance: {mb.get('rain_in_m3') or 0:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of "
+        f"inflow went in"
+    )
     if mb.get("rain_in_m3") is None:
         second = f"Mass balance: {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model; rain and inflow could not be read."
+    elif _served_open_boundary_warning(data):
+        # W8 fold review: hydrata's relayed warning names the shortfall and its likely cause; the figures only here,
+        # so the person does not hear the same sentence twice.
+        second = f"{went_in} and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model."
+    elif isinstance(out, (int, float)) and out < 0 and -out <= _accounting_noise_m3(mb):
+        # W8 fold review: a shortfall hydrata does not warn about is its accounting's own error; never "about 0 m3".
+        small = f"{-out:,.1f}" if -out < 10 else f"{-out:,.0f}"
+        second = (
+            f"{went_in} and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so the balance agrees "
+            f"to within rounding (the water left is {small} m3 more than went in)."
+        )
     elif isinstance(out, (int, float)) and out < 0:
         # TASK-4290 (run 1613): more water is left than went in, so it came IN; never "-3,681,512 m3 left".
         second = (
-            f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
-            f"went in and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about {-out:,.0f} m3 "
+            f"{went_in} and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about {-out:,.0f} m3 "
             "more is in the model than rain and inflow put in (rain + inflow minus the water left in the model; "
             "it is not measured at the edge)."
         )
     else:
         second = (
-            f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
-            f"went in, {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about "
+            f"{went_in}, {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about "
             f"{mb.get('out_by_difference_m3') or 0:,.0f} m3 left through the model's open edges (rain + inflow "
             "minus the water left in the model; it is not measured at the edge)."
         )
