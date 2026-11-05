@@ -44,14 +44,21 @@ async def create_project(
     name: Annotated[str, "Project name"],
     projection: Annotated[
         str,
-        "Working CRS as an EPSG string, normally the UTM zone of the site, e.g. 'EPSG:32756' (WGS 84 / UTM 56S)",
+        "Working CRS as an EPSG string. Hydrata accepts three families only: WGS84 UTM (EPSG:32601-32660 north, "
+        "EPSG:32701-32760 south), GDA94 MGA (EPSG:28348-28358) and GDA2020 MGA (EPSG:7846-7859); national grids "
+        "(British National Grid, US State Plane) are not supported yet. If the person's own data (survey, DEM, "
+        "drawings) is in an MGA zone, use that MGA code (e.g. 'EPSG:7856', GDA2020 / MGA zone 56); otherwise use "
+        "the WGS84 UTM zone of the site (e.g. 'EPSG:32756', WGS 84 / UTM 56S). If they mention their own data "
+        "but not its grid, ask them before you create the project.",
     ],
 ) -> str:
     """Create a new ANUGA project. Returns the project record including its id, base_map and ui_url.
 
     The caller's own account becomes the owner. `projection` is the projected
-    CRS every scenario in the project is meshed and run in — pick the UTM zone
-    covering the site. The project's map is created alongside it; `ui_url`
+    CRS every scenario in the project is meshed and run in: a WGS84 UTM, GDA94
+    MGA or GDA2020 MGA code (any other grid is refused). Use the person's MGA
+    zone when their own survey, DEM or drawings are in it, otherwise the site's
+    WGS84 UTM zone; ask when it is unclear. The project's map is created alongside it; `ui_url`
     opens it — give it to the user. A project you create is unpublished
     (`is_published: false`): only its owner and members can see it until the
     user presses Publish in its Sharing panel in the browser — you cannot

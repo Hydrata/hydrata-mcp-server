@@ -357,7 +357,7 @@
       "readOnlyHint": false,
       "title": "Create a project"
     },
-    "description": "Create a new ANUGA project. Returns the project record including its id, base_map and ui_url.\n\nThe caller's own account becomes the owner. `projection` is the projected\nCRS every scenario in the project is meshed and run in — pick the UTM zone\ncovering the site. The project's map is created alongside it; `ui_url`\nopens it — give it to the user. A project you create is unpublished\n(`is_published: false`): only its owner and members can see it until the\nuser presses Publish in its Sharing panel in the browser — you cannot\npublish it. Next step for a new project: presign_terrain_upload.",
+    "description": "Create a new ANUGA project. Returns the project record including its id, base_map and ui_url.\n\nThe caller's own account becomes the owner. `projection` is the projected\nCRS every scenario in the project is meshed and run in: a WGS84 UTM, GDA94\nMGA or GDA2020 MGA code (any other grid is refused). Use the person's MGA\nzone when their own survey, DEM or drawings are in it, otherwise the site's\nWGS84 UTM zone; ask when it is unclear. The project's map is created alongside it; `ui_url`\nopens it — give it to the user. A project you create is unpublished\n(`is_published: false`): only its owner and members can see it until the\nuser presses Publish in its Sharing panel in the browser — you cannot\npublish it. Next step for a new project: presign_terrain_upload.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -366,7 +366,7 @@
           "type": "string"
         },
         "projection": {
-          "description": "Working CRS as an EPSG string, normally the UTM zone of the site, e.g. 'EPSG:32756' (WGS 84 / UTM 56S)",
+          "description": "Working CRS as an EPSG string. Hydrata accepts three families only: WGS84 UTM (EPSG:32601-32660 north, EPSG:32701-32760 south), GDA94 MGA (EPSG:28348-28358) and GDA2020 MGA (EPSG:7846-7859); national grids (British National Grid, US State Plane) are not supported yet. If the person's own data (survey, DEM, drawings) is in an MGA zone, use that MGA code (e.g. 'EPSG:7856', GDA2020 / MGA zone 56); otherwise use the WGS84 UTM zone of the site (e.g. 'EPSG:32756', WGS 84 / UTM 56S). If they mention their own data but not its grid, ask them before you create the project.",
           "type": "string"
         }
       },

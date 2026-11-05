@@ -29,6 +29,17 @@ DEM_SIZE = 31_833_087
 
 
 class TestCreateProjectTool:
+    async def test_projection_description_names_the_three_families_and_the_mga_rule(self, _server):
+        """TASK-4283 (grill Q4): the server accepts WGS84 UTM, GDA94 MGA and GDA2020 MGA only; the agent uses the
+        person's MGA zone when their own data is in it, otherwise the site's UTM zone, and asks when unclear."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
+        tool = {t["name"]: t for t in _parse(resp)["result"]["tools"]}["create_project"]
+        text = tool["inputSchema"]["properties"]["projection"]["description"] + " " + tool["description"]
+        for needle in ("WGS84 UTM", "GDA94 MGA", "GDA2020 MGA", "EPSG:283", "EPSG:78", "not supported"):
+            assert needle in text, needle
+        assert "MGA zone" in text and "survey" in text and "ask" in text
+
     @respx.mock
     async def test_create_project_posts_name_projection_and_forwards_the_key(self, _server):
         route = respx.post(f"{BASE}/projects/").mock(
