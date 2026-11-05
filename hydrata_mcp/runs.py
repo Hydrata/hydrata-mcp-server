@@ -617,7 +617,7 @@ def _flow_say(data: dict) -> str:
     # hydrata that predates the fields: no sentence is invented).
     most_in, most_out = data.get("max_positive_m3s"), data.get("max_negative_m3s")
     if isinstance(most_in, (int, float)) and isinstance(most_out, (int, float)):
-        first += f" Largest flow each way: {most_in:.2f} m3/s left to right and {abs(most_out):.2f} m3/s right to left."
+        first += f" Largest flow each way: {most_in:.2f} m3/s left bank to right bank and {abs(most_out):.2f} m3/s right bank to left bank."
     mb = data.get("mass_balance") or {}
     out = mb.get("out_by_difference_m3")
     went_in = (

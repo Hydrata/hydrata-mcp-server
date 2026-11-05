@@ -236,7 +236,7 @@ class TestOpenBoundaryAndPeakEachWay:
     async def test_say_names_the_largest_flow_each_way(self, _server):
         respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=self._run_1613()))
         say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
-        assert "Largest flow each way: 0.00 m3/s left to right and 0.09 m3/s right to left." in say
+        assert "Largest flow each way: 0.00 m3/s left bank to right bank and 0.09 m3/s right bank to left bank." in say
 
     @respx.mock
     async def test_a_hydrata_without_the_new_fields_gets_no_each_way_sentence(self, _server):
