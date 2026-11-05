@@ -583,9 +583,12 @@ FLOW_HYDROGRAPH_CLIENT_TIMEOUT_S = 75.0  # the backend budget (30 s) covers the 
 def _flow_say(data: dict) -> str:
     """One or two sentences for the person: peak, time, volume, sign, mass balance."""
     clock = _clock(data.get("peak_time_s"))
+    # TASK-4203 (ex-4196): a one-frame store has no spacing (null): never "(to the nearest 0 s frame)".
+    spacing = data.get("frame_spacing_s")
+    frame = f"{spacing:.0f} s frame" if isinstance(spacing, (int, float)) and spacing > 0 else "saved frame"
     first = (
         f"Across that line the flow peaks at {data.get('peak_m3s', 0.0):.2f} m3/s at {clock} into the run "
-        f"(to the nearest {data.get('frame_spacing_s') or 0:.0f} s frame), and {data.get('volume_m3', 0.0):,.0f} m3 "
+        f"(to the nearest {frame}), and {data.get('volume_m3', 0.0):,.0f} m3 "
         f"crosses in total. {data.get('sign_convention', '')}"
     )
     mb = data.get("mass_balance") or {}

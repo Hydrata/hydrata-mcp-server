@@ -127,3 +127,22 @@ class TestFlowHydrograph:
         tools = {t.name: t for t in await _server.mcp.list_tools()}
         ann = tools["get_flow_hydrograph"].annotations
         assert ann.read_only_hint is True and ann.destructive_hint is False
+
+
+class TestOneFrameStoreWording:
+    """TASK-4203 (ex-4196): a one-frame store has no frame spacing (null): never '(to the nearest 0 s frame)'."""
+
+    @pytest.mark.parametrize("spacing", [None, 0, 0.0])
+    @respx.mock
+    async def test_no_frame_spacing_says_the_nearest_saved_frame_never_0_s(self, _server, spacing):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(
+            return_value=httpx.Response(200, json=_answer(frame_spacing_s=spacing, time_s=[0.0], q_m3s=[0.0]))
+        )
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        assert "0 s frame" not in say and "(to the nearest saved frame)" in say
+
+    @respx.mock
+    async def test_a_frame_spacing_is_still_named_in_seconds(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=_answer()))
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        assert "(to the nearest 60 s frame)" in say
