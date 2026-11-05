@@ -93,6 +93,7 @@ DATA_TEXT_KEYS = frozenset(
         "created_by_username",
         "archived_by_username",
         "grant",
+        "by",
         "client",
         # how an agent says it made an input (free text it wrote)
         "authored_method",
