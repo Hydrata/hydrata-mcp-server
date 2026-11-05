@@ -1,6 +1,5 @@
 """Hydrata MCP Server — 29 hand-crafted tools for ANUGA flood simulation."""
 
-import base64
 import hashlib
 import json
 import re
@@ -14,6 +13,7 @@ from starlette.responses import Response
 
 from ._common import config, mcp
 from ._helpers import _ui_origin
+from .client import bearer_exp
 
 # Importing a tool-family module registers its tools on `mcp` (their `@_tool`
 # decorators run at import), so THIS ORDER IS THE tools/list ORDER: keep it
@@ -91,14 +91,8 @@ def _connect_token_expired(value: str) -> bool:
     expired token only came back as a tool error inside a 200, so the client never
     refreshed. A payload without a readable numeric ``exp`` is left to Django.
     """
-    token = value.strip().partition(" ")[2].strip()
-    try:
-        segment = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-        exp = claims["exp"]
-    except (IndexError, KeyError, TypeError, ValueError):
-        return False
-    return isinstance(exp, (int, float)) and not isinstance(exp, bool) and exp <= time.time()
+    exp = bearer_exp(value)  # TASK-4204: the one unverified exp reader (it also caps every wait)
+    return exp is not None and exp <= time.time()
 
 
 # TASK-4177 — what an allowlisted catalog crawler may do with no credential: the

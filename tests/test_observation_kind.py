@@ -386,6 +386,47 @@ class TestTowradgiRoundTrip:
         assert data["not_sent_count"] == 1 and "were not added" in data["say_to_user"]
 
     @respx.mock
+    async def test_token_expired_mid_batch_add_observations_names_the_resume_index(self, _server):
+        table = FakeLayerTable()
+        _mock_table(table)
+        calls = []
+        expired = {"detail": "make the same call again", "error_code": "AGENT_TOKEN_EXPIRED"}
+
+        def create(request):
+            calls.append(1)
+            if len(calls) == 3:
+                return httpx.Response(401, json=expired)
+            return table.create(request)
+
+        respx.post(OBSERVATIONS).mock(side_effect=create)
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "add_observations", {"project_id": 42, "layer_id": 239, "observations": _towradgi_marks()[:5]}
+            )
+        )
+        assert len(calls) == 3
+        assert data["error_code"] == "AGENT_TOKEN_EXPIRED" and data["retryable"] is True
+        assert data["created_count"] == 2 and data["stopped_at_index"] == 2
+        assert "ONLY the rows from index 2" in data["next_step"] and "NOT be sent again" in data["next_step"]
+
+    @respx.mock
+    async def test_token_expired_in_the_layer_poll_never_says_to_create_the_layer_again(self, _server):
+        _mock_project()
+        respx.post(LAYERS).mock(return_value=httpx.Response(201, json=_layer(gn_layer=None)))
+        respx.get(LAYER).mock(
+            return_value=httpx.Response(401, json={"detail": "again", "error_code": "AGENT_TOKEN_EXPIRED"})
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server,
+                "create_observation_layer",
+                {"project_id": 42, "title": "Survey 1998", "poll_interval_seconds": 0},
+            )
+        )
+        assert data["error_code"] == "AGENT_TOKEN_EXPIRED" and data["layer_id"] == 239
+        assert "do NOT call create_observation_layer again" in data["next_step"]
+
+    @respx.mock
     async def test_list_observations_without_layer_lists_the_project_layers(self, _server):
         respx.get(LAYERS).mock(return_value=httpx.Response(200, json=[_layer(), _layer(gn_layer=None, id=240)]))
         data = _tool_json(await _call_as_caller(_server, "list_observations", {"project_id": 42}))
