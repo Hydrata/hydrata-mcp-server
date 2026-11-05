@@ -68,3 +68,16 @@ async def test_sources_help_limits_match_the_validator_at_its_edges(_server):
     ):
         with pytest.raises(ToolError):
             _clean_sources(bad)
+
+
+# TASK-4294: the engine (run_anuga run_utils._merge_timeseries) holds each rainfall / flow value until the next
+# row (a step, no interpolation), so the help says so and agents stop inventing 1-second step rows.
+@pytest.mark.parametrize("tool_name", ["create_time_series", "update_time_series"])
+async def test_time_series_data_help_states_the_engine_step_rule(_server, tool_name):
+    help_text = " ".join(_argument_help((await _tools(_server))[tool_name], "data").split())
+    assert "each value holds from its timestamp until the next row's" in help_text
+    assert "no straight line between rows" in help_text
+    assert "ONE row per interval, at its START" in help_text
+    assert "end with a 0 row at the end of the last interval" in help_text
+    assert "never add a row just before the next one" in help_text
+    assert "A stage series is the exception" in help_text

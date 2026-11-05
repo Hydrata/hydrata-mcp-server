@@ -150,6 +150,19 @@ def _validate_row_data(data) -> int:
     return len(data["rowData"])
 
 
+# TASK-4294: how the engine reads the rows. run_anuga (run_utils._merge_timeseries) forward-fills each rainfall
+# or inflow value on a per-second grid until the next row (a step, never interpolated); a rainfall's last row lasts
+# one more interval, an inflow's holds to the end of the run. A stage (tide) boundary is the one series it
+# interpolates (run_utils.build_time_boundary_function, numpy.interp).
+SERIES_ROWS_RULE = (
+    " How the simulation reads the rows: for rainfall and flow, each value holds from its timestamp until the next "
+    "row's (a step: no straight line between rows), so send ONE row per interval, at its START (e.g. every 5 "
+    "minutes), and end with a 0 row at the end of the last interval; never add a row just before the next one, it "
+    "changes nothing. Rainfall values are rates (mm/hr): the depth of an interval is rate x its length. Use "
+    "whole-second timestamps. A stage series is the exception: the level goes in a straight line between rows."
+)
+
+
 # ---------------------------------------------------------------------------
 # Tool 14: create_time_series
 # ---------------------------------------------------------------------------
@@ -165,7 +178,7 @@ async def create_time_series(
         dict,
         'The rows: {"rowData": [{"timestamp": "1998-08-17T00:00:00", "value": 1.5}, '
         "...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. "
-        "Validated here before anything is sent.",
+        "Validated here before anything is sent." + SERIES_ROWS_RULE,
     ],
     description: Annotated[str, "Free-text description (optional)"] = "",
     series_type: Annotated[
@@ -324,7 +337,7 @@ async def update_time_series(
         dict | None,
         'Replacement rows: {"rowData": [{"timestamp": "<ISO 8601>", "value": <number>}, ...]}. '
         "Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow "
-        "values and an all-zero rain or flow series.",
+        "values and an all-zero rain or flow series." + SERIES_ROWS_RULE,
     ] = None,
     description: Annotated[str, "New description"] = "",
     units: Annotated[str, "New units (must match the series_type, as in create_time_series)"] = "",

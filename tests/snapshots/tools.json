@@ -620,7 +620,7 @@
       "properties": {
         "data": {
           "additionalProperties": true,
-          "description": "The rows: {\"rowData\": [{\"timestamp\": \"1998-08-17T00:00:00\", \"value\": 1.5}, ...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. Validated here before anything is sent.",
+          "description": "The rows: {\"rowData\": [{\"timestamp\": \"1998-08-17T00:00:00\", \"value\": 1.5}, ...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. Validated here before anything is sent. How the simulation reads the rows: for rainfall and flow, each value holds from its timestamp until the next row's (a step: no straight line between rows), so send ONE row per interval, at its START (e.g. every 5 minutes), and end with a 0 row at the end of the last interval; never add a row just before the next one, it changes nothing. Rainfall values are rates (mm/hr): the depth of an interval is rate x its length. Use whole-second timestamps. A stage series is the exception: the level goes in a straight line between rows.",
           "type": "object"
         },
         "description": {
@@ -1904,7 +1904,7 @@
             }
           ],
           "default": null,
-          "description": "Replacement rows: {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", \"value\": <number>}, ...]}. Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow values and an all-zero rain or flow series."
+          "description": "Replacement rows: {\"rowData\": [{\"timestamp\": \"<ISO 8601>\", \"value\": <number>}, ...]}. Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow values and an all-zero rain or flow series. How the simulation reads the rows: for rainfall and flow, each value holds from its timestamp until the next row's (a step: no straight line between rows), so send ONE row per interval, at its START (e.g. every 5 minutes), and end with a 0 row at the end of the last interval; never add a row just before the next one, it changes nothing. Rainfall values are rates (mm/hr): the depth of an interval is rate x its length. Use whole-second timestamps. A stage series is the exception: the level goes in a straight line between rows."
         },
         "description": {
           "default": "",
