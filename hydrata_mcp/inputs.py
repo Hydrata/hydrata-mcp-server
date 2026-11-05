@@ -618,8 +618,8 @@ async def attach_input_layer(
     it in the map; say in say_to_user that the inflow is unreviewed and where
     they check or draw it.
 
-    Refused, with no request made: kind `breakline` — no REST create path
-    exists for it at HEAD, so attaching one would only
+    Refused, with no request made: kind `breakline` — Hydrata has no way to
+    create a breakline layer, so attaching one would only
     pretend. Also refused without a request: an execution_id that is not the
     UUID the upload returned.
     One GeoJSON per kind: all of a kind's features travel in that one file. A

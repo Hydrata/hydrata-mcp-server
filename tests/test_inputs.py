@@ -669,7 +669,10 @@ class TestAttachInputLayerTool:
         attach = tools["attach_input_layer"]["description"]
         assert "not conveyed" not in attach
         assert "conveys flow through each culvert" in attach
-        assert "exists for it at HEAD, so attaching one would only" in attach and "TASK-" not in attach  # TASK-4289
+        # TASK-4289 (+ W8 fold review): the refusal's plain words, no task id and no "REST create path at HEAD".
+        flat = " ".join(attach.split())
+        assert "Hydrata has no way to create a breakline layer" in flat and "TASK-" not in attach
+        assert "REST create path" not in flat and "at HEAD" not in flat
         assert "base_file" in attach  # the curl recipe the agent runs itself
         # TASK-4064: a shell-less connector agent is sent to the inline / link paths first.
         assert "write_input_layer" in attach and "request_input_upload" in attach
