@@ -5,9 +5,9 @@ from typing import Annotated
 
 from fastmcp.exceptions import ToolError
 
-from ._common import _data, _tool, client
+from ._common import _data, _tool, client, token_expired
 from ._helpers import _alternate, _elide_presigned, _hand_back, _poll_until, _post_result
-from .client import HydrataAPIError
+from .client import HydrataAPIError, token_expired_result
 
 # ---------------------------------------------------------------------------
 # TASK-3812 (W1, epic 3801) — flood observations.
@@ -153,7 +153,25 @@ async def create_observation_layer(
             timeout_seconds,
             poll_interval_seconds,
         )
-    except (HydrataAPIError, ToolError) as exc:
+    except HydrataAPIError as exc:
+        if token_expired(exc):
+            # TASK-4204: the layer EXISTS. The wrapper's generic "call the same tool again" would make a second one.
+            return json.dumps(
+                {
+                    **token_expired_result(exc),
+                    "layer_id": layer_id,
+                    "next_step": (
+                        f"Your sign-in token expired while waiting for the new layer. Nothing was revoked; do NOT "
+                        f"ask the person to reconnect. The flood observation layer WAS created (layer_id {layer_id}): "
+                        "do NOT call create_observation_layer again. Call add_observations with this layer_id "
+                        "(it says if the map layer is still being made) or list_observations to check it."
+                    ),
+                },
+                indent=2,
+            )
+        detail, polls, elapsed, timed_out = _observation_layer_entry(body), 0, 0.0, False
+        poll_error = str(exc)
+    except ToolError as exc:
         # The layer already exists: a failed poll must not hide its id (a re-call
         # would make a second layer). Report what the POST answered instead.
         detail, polls, elapsed, timed_out = _observation_layer_entry(body), 0, 0.0, False
@@ -299,6 +317,26 @@ async def add_observations(
         try:
             answer, status_code = await client.post(path, json=body, raise_for_status=False)
         except HydrataAPIError as exc:
+            if token_expired(exc):
+                # TASK-4204: stop; rows before this index landed. Resend ONLY the rest, never the whole batch.
+                return json.dumps(
+                    {
+                        **token_expired_result(exc),
+                        "layer_id": layer_id,
+                        "created_count": len(created),
+                        "rejected_count": len(rejected),
+                        "created": created,
+                        "rejected": rejected,
+                        "stopped_at_index": index,
+                        "next_step": (
+                            f"Your sign-in token expired mid-batch. Nothing was revoked; do NOT ask the person to "
+                            f"reconnect. {len(created)} observation(s) were already created (rows before index "
+                            f"{index}) and must NOT be sent again. Call add_observations again with ONLY the rows "
+                            f"from index {index} on (observations[{index}:])."
+                        ),
+                    },
+                    indent=2,
+                )
             # A 5xx / timeout mid-batch: keep what already landed (a whole-call error
             # would invite a re-send that duplicates every created observation).
             stopped = {"index": index, "name": row.get("name"), "http_status": None, "error": str(exc)}

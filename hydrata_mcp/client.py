@@ -78,9 +78,12 @@ def bearer_exp(authorization: str | None) -> float | None:
     if token.count(".") != 2:
         return None
     exp = telemetry._jwt_claims(token).get("exp")
-    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp):
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
         return None
-    return exp
+    try:
+        return exp if math.isfinite(exp) else None
+    except OverflowError:  # a huge int (1e400 digits) cannot become a float: not a usable exp
+        return None
 
 
 def _caller_authorization() -> str | None:

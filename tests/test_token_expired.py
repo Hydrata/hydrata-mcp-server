@@ -148,6 +148,8 @@ class TestWaitCap:
         assert bearer_exp(_jwt(exp=1234)) == 1234
         for value in (None, "", CALLER_KEY, "Bearer a.b.c", "Bearer not-a-jwt", _jwt(exp="x"), _jwt(exp=float("nan"))):
             assert bearer_exp(value) is None
+        payload = base64.urlsafe_b64encode(b'{"exp": 1' + b"0" * 400 + b"}").decode().rstrip("=")
+        assert bearer_exp(f"Bearer {_b64({'alg': 'RS256'})}.{payload}.c2ln") is None
 
 
 # ---------------------------------------------------------------------------
