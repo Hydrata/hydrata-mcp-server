@@ -159,34 +159,27 @@ class TestWaitCap:
         # The transport reads exp unverified and knows nothing of the grant: it must not vouch for it (D72).
         assert "Nothing was revoked" not in message and "still live" not in message
 
-    @pytest.mark.parametrize("age", [10, 600, 3590], ids=["10s", "10min", "just-inside-1h"])
+    @pytest.mark.parametrize(
+        "age", [10, 600, 3590, 3610, 2 * 3600, 365 * 86400], ids=["10s", "10min", "59min", "61min", "2h", "1y"]
+    )
     @respx.mock
-    async def test_token_expired_within_the_hour_is_the_transport_401_the_client_refreshes_on(
+    async def test_an_expired_connect_token_of_any_age_is_the_transport_401_the_client_refreshes_on(
         self, connect_server, age
     ):
-        """TASK-4223 review fix (D72): a recently expired connect token still gets 401 invalid_token at the transport,
-        so the OAuth client refreshes it; nothing reaches Django."""
+        """TASK-4223 review round 2: an expired connect token gets 401 invalid_token at the transport whatever its age,
+        so the OAuth client refreshes (a chat resumed hours later must not be told to reconnect); nothing reaches
+        Django, and the text vouches for nothing about the grant. D72's 1 h window is Django's AGENT_TOKEN_EXPIRED."""
         upstream = respx.route().mock(return_value=httpx.Response(200, json={}))
         resp = await _call(connect_server, _jwt(exp=int(time.time()) - age), "list_projects", {})
         assert resp.status_code == 401 and not upstream.calls
         assert 'error="invalid_token"' in resp.headers["www-authenticate"]
-        assert "has expired: refresh it" in resp.json()["error"]["message"]
-
-    @pytest.mark.parametrize("age", [3610, 2 * 3600, 365 * 86400], ids=["just-outside-1h", "2h", "1y"])
-    @respx.mock
-    async def test_token_expired_over_an_hour_ago_takes_the_normal_path_and_django_answers(self, connect_server, age):
-        """TASK-4223 review fix (D72): past hydrata's 1 h window the transport says nothing of its own; the request
-        goes the way an unexpired bearer goes and Django's AGENT_KEY_INVALID body is relayed byte for byte."""
-        token = _jwt(exp=int(time.time()) - age)
-        upstream = respx.get(f"{BASE}/projects/").mock(
-            return_value=httpx.Response(401, json={"detail": REVOKED_DETAIL, "error_code": "AGENT_KEY_INVALID"})
+        message = resp.json()["error"]["message"]
+        assert "has expired: refresh it" in message
+        assert (
+            "connect again" not in message.lower()
+            and "still live" not in message
+            and "Nothing was revoked" not in message
         )
-        resp = await _call(connect_server, token, "list_projects", {})
-        assert resp.status_code == 200, resp.text
-        assert upstream.calls and upstream.calls[0].request.headers["authorization"] == token
-        text = _tool_error_text(_parse(resp)["result"])
-        assert "AGENT_KEY_INVALID" in text and REVOKED_DETAIL in text
-        assert "has expired: refresh it" not in text and "AGENT_TOKEN_EXPIRED" not in text
 
     @respx.mock
     async def test_token_expired_check_leaves_a_token_with_no_exp_to_django_unchanged(self, connect_server):

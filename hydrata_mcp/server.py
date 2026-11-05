@@ -84,22 +84,18 @@ def _resource_metadata_url() -> str:
     return f"{parts.scheme}://{parts.netloc}/.well-known/oauth-protected-resource{parts.path}"
 
 
-#: TASK-4223 (D72): equal to hydrata's apps/agents/oauth.py EXPIRED_TOKEN_WINDOW_SECONDS. Only a connect token
-#: that expired within this many seconds gets the transport's expiry refusal; an older one goes the way an
-#: unexpired bearer goes, so Django answers it (AGENT_KEY_INVALID, byte for byte) and its holder learns nothing.
-EXPIRED_TOKEN_WINDOW_SECONDS = 60 * 60
-
-
 def _connect_token_expired(value: str) -> bool:
-    """True when a connect-flow token's ``exp`` passed within the last hour (read unverified; RFC 6750 §3.1).
+    """True when a connect-flow token's ``exp`` has passed, however long ago (read unverified; RFC 6750 §3.1).
 
     An OAuth client refreshes on a 401 ``invalid_token``; forwarded to Django, an
     expired token only came back as a tool error inside a 200, so the client never
-    refreshed. A payload without a readable numeric ``exp``, or one that expired more
-    than ``EXPIRED_TOKEN_WINDOW_SECONDS`` ago, is left to Django (TASK-4223, D72).
+    refreshed. That holds for a token that expired hours ago too (a chat picked up
+    after an idle gap), so there is no age window here: D72's 1 h window governs
+    only Django's AGENT_TOKEN_EXPIRED code. The refusal text says nothing about the
+    grant (TASK-4223). A payload without a readable numeric ``exp`` is left to Django.
     """
     exp = bearer_exp(value)  # TASK-4204: the one unverified exp reader (it also caps every wait)
-    return exp is not None and 0 <= time.time() - exp <= EXPIRED_TOKEN_WINDOW_SECONDS
+    return exp is not None and exp <= time.time()
 
 
 # TASK-4177 — what an allowlisted catalog crawler may do with no credential: the
