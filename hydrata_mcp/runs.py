@@ -598,9 +598,23 @@ def _flow_say(data: dict) -> str:
         f"(to the nearest {frame}), and {data.get('volume_m3', 0.0):,.0f} m3 "
         f"crosses in total. {data.get('sign_convention', '')}"
     )
+    # TASK-4290: hydrata's largest flow each way, so a negative peak is not read as the flood peak (absent on a
+    # hydrata that predates the fields: no sentence is invented).
+    most_in, most_out = data.get("max_positive_m3s"), data.get("max_negative_m3s")
+    if isinstance(most_in, (int, float)) and isinstance(most_out, (int, float)):
+        first += f" Largest flow each way: {most_in:.2f} m3/s left to right and {abs(most_out):.2f} m3/s right to left."
     mb = data.get("mass_balance") or {}
+    out = mb.get("out_by_difference_m3")
     if mb.get("rain_in_m3") is None:
         second = f"Mass balance: {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model; rain and inflow could not be read."
+    elif isinstance(out, (int, float)) and out < 0:
+        # TASK-4290 (run 1613): more water is left than went in, so it came IN; never "-3,681,512 m3 left".
+        second = (
+            f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
+            f"went in and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about {-out:,.0f} m3 "
+            "more is in the model than rain and inflow put in (rain + inflow minus the water left in the model; "
+            "it is not measured at the edge)."
+        )
     else:
         second = (
             f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
@@ -633,11 +647,15 @@ async def get_flow_hydrograph(
     """Flow (Q) across a drawn line, at every frame of a completed run.
 
     Integrates depth times velocity normal to the line from the run's playback store:
-    returns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`, `volume_m3`,
-    `sign_convention`, `frame_spacing_s`, `warnings` (the peak is resolved to the nearest
-    frame, so the true peak may fall between frames) and a `mass_balance` (rain and inflow
-    in, left in the model; outflow is by difference, open-boundary flux is not integrated).
-    Relay `say_to_user`. This is the model's flow, not a gauge reading.
+    returns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`,
+    `max_positive_m3s` and `max_negative_m3s` (the largest flow each way, so a
+    negative peak is not read as the flood peak), `volume_m3`, `sign_convention`,
+    `frame_spacing_s`, `warnings` (the peak is resolved to the nearest frame, so the
+    true peak may fall between frames) and a `mass_balance` (rain and inflow in, left
+    in the model; outflow is by difference, open-boundary flux is not integrated).
+    When more water is left in the model than rain and inflow put in, `warnings` says
+    so: it usually came in through an open boundary; relay it. Relay `say_to_user`.
+    This is the model's flow, not a gauge reading.
 
     A run with no playback store answers outcome `no_playback_store`; a bad line answers
     `bad_line` with the reason.

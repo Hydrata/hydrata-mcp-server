@@ -146,3 +146,74 @@ class TestOneFrameStoreWording:
         respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=_answer()))
         say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
         assert "(to the nearest 60 s frame)" in say
+
+
+class TestOpenBoundaryAndPeakEachWay:
+    """TASK-4290 (MCP half): run 1613's shape - an all-Transmissive outline let ~3.7M m3 IN, and the peak was negative.
+
+    The open-boundary warning and the two new fields are hydrata's (gn_anuga.flow_hydrograph); the MCP passes the
+    fields through and relays the warning as served, and its own mass-balance sentence must not contradict it.
+    """
+
+    OPEN_BOUNDARY = (
+        "about 3,681,512 m3 more water is in the model at the end than rain and inflow put in: it most likely "
+        "came in through an open (Transmissive) boundary, or was in the model at the start. A catchment outline "
+        "is normally Reflective, with an open segment only at the outlet."
+    )
+    MB_1613 = {
+        "rain_in_m3": 1409595.0,
+        "inflow_in_m3": 0.0,
+        "left_in_model_m3": 5091107.0,
+        "out_by_difference_m3": -3681512.0,
+        "note": "the water that crossed the model's open edges is rain + inflow minus the water left in the model",
+    }
+
+    def _run_1613(self, **kw):
+        return _answer(
+            q_m3s=[0.0, -0.087, -0.02],
+            peak_m3s=-0.087,
+            max_positive_m3s=0.0,
+            max_negative_m3s=-0.087,
+            warnings=[NEW_PEAK, self.OPEN_BOUNDARY],
+            mass_balance=self.MB_1613,
+            **kw,
+        )
+
+    @respx.mock
+    async def test_max_positive_and_max_negative_pass_through(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=self._run_1613()))
+        data = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))
+        assert data["max_positive_m3s"] == 0.0 and data["max_negative_m3s"] == -0.087
+
+    @respx.mock
+    async def test_the_open_boundary_warning_is_relayed_as_served(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=self._run_1613()))
+        data = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))
+        assert self.OPEN_BOUNDARY in data["warnings"]
+        assert self.OPEN_BOUNDARY.rstrip(".") in data["say_to_user"]
+
+    @respx.mock
+    async def test_a_negative_out_by_difference_is_said_to_have_come_in_never_left(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=self._run_1613()))
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        assert "-3,681,512 m3 left" not in say and "left through the model's open edges" not in say
+        assert "about 3,681,512 m3 more is in the model than rain and inflow put in" in say
+
+    @respx.mock
+    async def test_say_names_the_largest_flow_each_way(self, _server):
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=self._run_1613()))
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        assert "Largest flow each way: 0.00 m3/s left to right and 0.09 m3/s right to left." in say
+
+    @respx.mock
+    async def test_a_hydrata_without_the_new_fields_gets_no_each_way_sentence(self, _server):
+        """MCP shipped before hydrata: no max fields, no invented sentence."""
+        respx.post(f"{BASE}/runs/9/flow-hydrograph/").mock(return_value=httpx.Response(200, json=_answer()))
+        say = json.loads(await _server.get_flow_hydrograph(run_id=9, line=LINE))["say_to_user"]
+        assert "Largest flow each way" not in say and "500 m3 left through the model's open edges" in say
+
+    async def test_the_description_names_the_new_fields(self, _server):
+        tools = {t.name: t for t in await _server.mcp.list_tools()}
+        description = " ".join(tools["get_flow_hydrograph"].description.split())
+        assert "max_positive_m3s" in description and "max_negative_m3s" in description
+        assert "open boundary" in description
