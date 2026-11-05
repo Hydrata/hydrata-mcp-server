@@ -683,6 +683,18 @@ class TestAttachInputLayerTool:
         series_props = tools["create_time_series"]["inputSchema"]["properties"]
         assert "series_type" in series_props and "units" in series_props
 
+    async def test_hold_last_value_help_states_how_the_engine_reads_the_last_row(self, _server):
+        """TASK-4294 (W8 fold review): run_anuga holds a rainfall's last row for one more interval and then 0
+        (zero_after_last_block), and an inflow's last value to the end of the run; never 'held after it ends'."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        for name in ("create_time_series", "update_time_series"):
+            help_text = " ".join(tools[name]["inputSchema"]["properties"]["hold_last_value"]["description"].split())
+            assert "held after the series ends" not in help_text, name
+            assert "rainfall's last row rains for one more interval" in help_text, (name, help_text)
+            assert "then stops" in help_text and "inflow's last value is held to the end of the run" in help_text
+
 
 def _wrapper_rows(route):
     rows = {

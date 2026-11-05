@@ -630,7 +630,7 @@
         },
         "hold_last_value": {
           "default": false,
-          "description": "Set true ONLY when the last value is meant to be held after the series ends. A hydrograph or hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end the series with a 0 row instead, unless holding is really intended.",
+          "description": "Set true ONLY when you mean the last value not to be 0. How the simulation reads the last row: a rainfall's last row rains for one more interval (as long as the step before it) and then stops at 0; an inflow's last value is held to the end of the run. A hydrograph or hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end the series with a 0 row instead, unless holding is really intended.",
           "type": "boolean"
         },
         "location_name": {
@@ -1921,7 +1921,7 @@
             }
           ],
           "default": null,
-          "description": "Set true only when the last value is meant to be held"
+          "description": "Set true only when you mean the last value not to be 0. How the simulation reads the last row: a rainfall's last row rains for one more interval (as long as the step before it) and then stops at 0; an inflow's last value is held to the end of the run."
         },
         "method": {
           "default": "",

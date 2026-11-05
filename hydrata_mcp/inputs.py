@@ -164,6 +164,14 @@ SERIES_ROWS_RULE = (
 )
 
 
+#: TASK-4294 (W8 fold review): how run_anuga reads a series' last row (run_utils._merge_timeseries:
+#: zero_after_last_block for rainfall only; an inflow line keeps its last value).
+HOLD_LAST_VALUE_RULE = (
+    "How the simulation reads the last row: a rainfall's last row rains for one more interval (as long as the "
+    "step before it) and then stops at 0; an inflow's last value is held to the end of the run."
+)
+
+
 # ---------------------------------------------------------------------------
 # Tool 14: create_time_series
 # ---------------------------------------------------------------------------
@@ -200,7 +208,7 @@ async def create_time_series(
     timezone: Annotated[str, "IANA timezone of the timestamps (default 'UTC'), e.g. 'Australia/Sydney'"] = "UTC",
     hold_last_value: Annotated[
         bool,
-        "Set true ONLY when the last value is meant to be held after the series ends. A hydrograph or "
+        "Set true ONLY when you mean the last value not to be 0. " + HOLD_LAST_VALUE_RULE + " A hydrograph or "
         "hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end "
         "the series with a 0 row instead, unless holding is really intended.",
     ] = False,
@@ -343,7 +351,9 @@ async def update_time_series(
     description: Annotated[str, "New description"] = "",
     units: Annotated[str, "New units (must match the series_type, as in create_time_series)"] = "",
     series_type: Annotated[str, "New series_type: hyetograph, hydrograph, stage or generic"] = "",
-    hold_last_value: Annotated[bool | None, "Set true only when the last value is meant to be held"] = None,
+    hold_last_value: Annotated[
+        bool | None, "Set true only when you mean the last value not to be 0. " + HOLD_LAST_VALUE_RULE
+    ] = None,
     method: Annotated[str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
     rainfall_basis: Annotated[
         str,
