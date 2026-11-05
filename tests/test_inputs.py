@@ -422,7 +422,7 @@ class TestAttachInputLayerTool:
         if kind == "breakline":
             text = _tool_error_text(result)
             assert not status_route.called
-            assert "TASK-3040" in text
+            assert "no way to create a breakline layer" in text and "TASK-" not in text  # TASK-4289
             assert kind in text
         else:
             data = _tool_json(result)

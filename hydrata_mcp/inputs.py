@@ -108,10 +108,11 @@ LEGACY_DEFAULT_TITLES = {"building": ("Structure 01",)}
 # rather than pretending the layer landed. Culverts left this set in TASK-3641
 # (epic 3585 W2b): the culvert route, Scenario.culvert and the package key exist.
 UNSUPPORTED_INPUT_LAYER_KINDS = frozenset({"breakline"})
+# TASK-4289: the refusal text carries no internal task id (TASK-3040 AC6 retired the UI surface; the model +
+# Scenario FK stay dormant).
 UNSUPPORTED_INPUT_LAYER_REASON = (
-    "no REST create path exists for breaklines at HEAD (TASK-3040 AC6 "
-    "retired the UI surface; the model + Scenario FK stay dormant) — attaching "
-    "one would only pretend the layer landed"
+    "Hydrata has no way to create a breakline layer (neither the API nor the map can add one), so "
+    "attaching one would only pretend the layer landed"
 )
 # GeoNode ExecutionRequest statuses (geonode/resource/models.py:29-32).
 EXECUTION_TERMINAL_STATUSES = frozenset({"finished", "failed"})
@@ -647,7 +648,7 @@ async def attach_input_layer(
     if kind not in INPUT_LAYER_ROUTES:
         raise ToolError(
             f"kind {kind!r} is not one of {', '.join(INPUT_LAYER_ROUTES)} "
-            "(breakline is refused: no REST create path at HEAD, TASK-3040 AC6)"
+            "(breakline is refused: Hydrata has no way to create a breakline layer)"
         )
     route = INPUT_LAYER_ROUTES[kind]
     # The one free-form path segment a tool interpolates into a URL — and on

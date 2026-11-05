@@ -81,3 +81,15 @@ async def test_time_series_data_help_states_the_engine_step_rule(_server, tool_n
     assert "end with a 0 row at the end of the last interval" in help_text
     assert "never add a row just before the next one" in help_text
     assert "A stage series is the exception" in help_text
+
+
+# TASK-4289 AC3: the two breakline refusal texts carry no internal task id.
+async def test_breakline_refusals_carry_no_internal_task_id(_server):
+    from fastmcp.exceptions import ToolError
+
+    from hydrata_mcp.inputs import UNSUPPORTED_INPUT_LAYER_REASON
+
+    assert "TASK-" not in UNSUPPORTED_INPUT_LAYER_REASON
+    with pytest.raises(ToolError) as refused:
+        await _server.attach_input_layer(project_id=42, kind="not-a-kind", execution_id="x")
+    assert "breakline is refused" in str(refused.value) and "TASK-" not in str(refused.value)
