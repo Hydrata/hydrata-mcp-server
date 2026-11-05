@@ -388,6 +388,12 @@ async def create_scenario(
 ) -> str:
     """Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.
 
+    ASK FIRST: before you write any input, ask the person which approach they
+    want (rain-on-grid, or an inflow hydrograph at a place they name), whether
+    by 'hydrograph' they mean an inflow that drives the model or the flow they
+    want out of the results, and for their design rainfall and losses; do not
+    choose or source these yourself unless they ask you to.
+
     POSTs /projects/<id>/scenarios/ with the write fields, then GETs the
     scenario detail — the create response carries NO estimate; the detail's
     `mesh_triangle_count_estimate` (+ `_breakdown`) does. Returns a compact

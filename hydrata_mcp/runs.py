@@ -42,6 +42,10 @@ async def start_simulation(
 ) -> str:
     """Start a flood simulation run for a built scenario.
 
+    WAIT FOR THE GO-AHEAD: this spends compute, so before you call it give the
+    person the ui_url and WAIT for their explicit go-ahead to start the run;
+    reviewed inputs are not a go-ahead, and never start a run on your own say-so.
+
     Needs a launch-level agent key (a run spends compute); a read or draft key
     gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the
     site's Agent keys page (/agents/).

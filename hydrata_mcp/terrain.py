@@ -485,7 +485,8 @@ async def list_terrain_sources(
 ) -> str:
     """List the terrain Hydrata can fetch for a site, finest resolution first.
 
-    Ask this BEFORE fetching or uploading your own DEM. Each source row has `key`,
+    Never fetch terrain from outside Hydrata (another DEM service or download)
+    where a Hydrata source covers the site: call this first. Each source row has `key`,
     `name`, `resolution_m`, `coverage_pct` (share of your box it has data for),
     `cap` (`state` ok | too_large, the area and the maximum, and a plain `message`
     when too large), `vertical_datum`, `credit` and `licence`. Only sources with some
@@ -558,6 +559,9 @@ async def create_terrain_from_source(
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
     """Have Hydrata fetch a terrain from one of its own sources, then wait for the import (like get_terrain).
+
+    Never fetch terrain from outside Hydrata where a Hydrata source covers the site;
+    if none does, the person uploads their own DEM in the project map.
 
     Use a `key` from list_terrain_sources. Hydrata fetches, reprojects and publishes the
     DEM and seeds the project's default input rows; the DEM's datum is stamped by the source.

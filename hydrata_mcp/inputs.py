@@ -204,6 +204,12 @@ async def create_time_series(
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
 
+    ASK FIRST: before you write any input, ask the person which approach they
+    want (rain-on-grid, or an inflow hydrograph at a place they name), whether
+    by 'hydrograph' they mean an inflow that drives the model or the flow they
+    want out of the results, and for their design rainfall and losses; do not
+    choose or source these yourself unless they ask you to.
+
     POSTs /projects/<id>/time-series/ with `series_type` and `units` as
     top-level fields. `series_type` is checked against the four choices and
     `data` against the {"rowData": [{timestamp, value}, ...]} shape before any
@@ -911,6 +917,12 @@ async def write_input_layer(
     ] = False,
 ) -> str:
     """Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.
+
+    ASK FIRST: before you write any input, ask the person which approach they
+    want (rain-on-grid, or an inflow hydrograph at a place they name), whether
+    by 'hydrograph' they mean an inflow that drives the model or the flow they
+    want out of the results, and for their design rainfall and losses; do not
+    choose or source these yourself unless they ask you to.
 
     No file, no key, no upload: the features go in `features`. Hydrata
     converts them into the project's grid and puts them in the project's
