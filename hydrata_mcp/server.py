@@ -246,7 +246,11 @@ class RequireAuth:
             )
         elif needs_auth and _is_connect_token(auths[0]) and _connect_token_expired(auths[0]):
             token_error = "invalid_token"
-            refusal = "The access token has expired: refresh it, or connect again from your AI assistant."
+            # TASK-4223: an expiry, not a revocation: never 'connect again' (only Django's AGENT_KEY_INVALID says that).
+            refusal = (
+                "The access token has expired: refresh it and send the request again. "
+                "Nothing was revoked and the connection is still live."
+            )
 
         if refusal:
             payload = json.dumps(

@@ -142,6 +142,26 @@ POLL_DEFAULT_TIMEOUT_SECONDS = 180
 POLL_MAX_TIMEOUT_SECONDS = 200
 
 
+def _token_cap_spent() -> bool:
+    """TASK-4223: True when this call's token is already within the 20 s margin of its ``exp``.
+
+    A wait then does one read and no wait, and the same call made again at once would carry the same token
+    and do the same: a waiting tool's next_step must not invite an instant identical call.
+    """
+    budget = token_wait_budget()
+    return budget is not None and budget <= 0
+
+
+# TASK-4223: the next_step of a wait the token cap cut to one read (worded like TOKEN_EXPIRED_NEXT_STEP).
+TOKEN_REFRESH_NEXT_STEP = (
+    "Your sign-in token is about to be refreshed, so this call could not wait. Nothing was revoked and the "
+    "connection is still live: do NOT ask the person to reconnect. Relay say_to_user now. Do not call {tool} "
+    "again straight away (the same call now would return at once in the same way): call it again after the "
+    "person's next message, or after a pause of about 30 seconds if you can pause, when your client sends a "
+    "fresh token."
+)
+
+
 def _status_of(record) -> str | None:
     """`status` of an API record, or None when it is not a dict."""
     return record.get("status") if isinstance(record, dict) else None

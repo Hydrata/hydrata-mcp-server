@@ -7,6 +7,7 @@ from typing import Annotated
 from ._common import _data, _tool, client
 from ._helpers import (
     INPUT_REVIEW_REFUSALS,
+    TOKEN_REFRESH_NEXT_STEP,
     _elide_presigned,
     _hand_back,
     _input_review_hand_back,
@@ -16,6 +17,7 @@ from ._helpers import (
     _project_base_map,
     _run_quote_words,
     _status_of,
+    _token_cap_spent,
     _ui_origin,
     _ui_url,
 )
@@ -281,7 +283,8 @@ async def get_run_status(
     again. Do not sleep or wait yourself between calls: the wait happens inside this
     call. After about 10 minutes of this in one turn, stop and tell the person to ask
     you for the status: you cannot watch the run between their messages, and Hydrata
-    emails them when it finishes.
+    emails them when it finishes. If the answer has `token_refresh_pending: true`, your sign-in
+    is being refreshed: do not call again at once, follow `next_step`.
 
     `phase` is never empty: it is `status`, except `preparing_inputs` while a
     `computing` run has no progress yet (it is downloading its input package
@@ -308,13 +311,17 @@ async def get_run_status(
             return True
         return _run_moved(first, record)
 
+    cap_spent = bool(wait) and _token_cap_spent()  # TASK-4223: read BEFORE the poll (the poll takes time)
     data, polls, elapsed, timed_out = await _poll_until(fetch, settled, wait, RUN_WAIT_POLL_INTERVAL_SECONDS)
     if isinstance(data, dict):
         data["say_to_user"] = _run_status_line(data)
         if wait:
             data["waited_seconds"] = elapsed
             data["timed_out"] = timed_out
-            if data.get("status") not in RUN_TERMINAL_STATUSES:
+            if data.get("status") not in RUN_TERMINAL_STATUSES and cap_spent and timed_out:
+                data["token_refresh_pending"] = True
+                data["next_step"] = TOKEN_REFRESH_NEXT_STEP.format(tool="get_run_status")
+            elif data.get("status") not in RUN_TERMINAL_STATUSES:
                 data["next_step"] = (
                     "Relay say_to_user now, then call get_run_status again with wait_seconds=180. "
                     "After about 10 minutes in this turn, stop and tell the person to ask you for the status."
