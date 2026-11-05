@@ -669,7 +669,7 @@ class TestAttachInputLayerTool:
         attach = tools["attach_input_layer"]["description"]
         assert "not conveyed" not in attach
         assert "conveys flow through each culvert" in attach
-        assert "TASK-3040" in attach
+        assert "exists for it at HEAD, so attaching one would only" in attach and "TASK-" not in attach  # TASK-4289
         assert "base_file" in attach  # the curl recipe the agent runs itself
         # TASK-4064: a shell-less connector agent is sent to the inline / link paths first.
         assert "write_input_layer" in attach and "request_input_upload" in attach

@@ -382,7 +382,7 @@ async def create_scenario(
     description: Annotated[str, "Free-text description (optional)"] = "",
     structure: Annotated[
         int | None,
-        "Deprecated alias of `building` (TASK-3586); ignored when `building` is given.",
+        "Deprecated alias of `building`; ignored when `building` is given.",
     ] = None,
     sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
@@ -401,7 +401,7 @@ async def create_scenario(
     Units: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is
     a LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField
     default 100, not nullable; 0 makes the estimate None), and the estimate
-    prices both the same way (TASK-3186). The smallest value becomes the raster
+    prices both the same way. The smallest value becomes the raster
     cell size. A MeshRegion feature must carry `resolution_units = m` (features
     drawn in the map are marked automatically); an unmarked one makes the build
     answer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.
@@ -724,7 +724,7 @@ async def build_scenario(
     Units: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is
     a LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField
     default 100, not nullable; 0 makes the estimate None), and the estimate
-    prices both the same way (TASK-3186). The smallest value becomes the raster
+    prices both the same way. The smallest value becomes the raster
     cell size. A MeshRegion feature must carry `resolution_units = m` (features
     drawn in the map are marked automatically); an unmarked one makes the build
     answer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.

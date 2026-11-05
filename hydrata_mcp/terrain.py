@@ -153,14 +153,14 @@ async def finalize_terrain_upload(
     title: Annotated[str, "Terrain title (default: the filename without .tif)"] = "",
     vertical_datum_declared: Annotated[
         str,
-        "TASK-4061: the datum the user SAYS the heights are on: `ahd` (Australian Height "
+        "The datum the user SAYS the heights are on: `ahd` (Australian Height "
         "Datum), `orthometric_egm2008` or `ellipsoid`. Pass it only when the user told you; "
         "if they did not, ask them, do not guess. Stored as the terrain's declared datum, "
         "which beats Hydrata's own inference. Omit when unknown.",
     ] = "",
     levels_datum: Annotated[
         str,
-        "TASK-4118: the datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, "
+        "The datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, "
         "`NAVD88`, `Ordnance Datum Newlyn` or an EPSG vertical code (`EPSG:5711`). A project fact, "
         "separate from the terrain's own datum. Pass it when the user told you; if they did not, "
         "ask them, do not guess.",

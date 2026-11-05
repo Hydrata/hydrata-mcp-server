@@ -64,7 +64,7 @@ async def start_simulation(
     `outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with
     rebuild=true, then start it again.
 
-    HOW THE RUN IS PAID (TASK-4101): a started run's answer carries `quote` (what the
+    HOW THE RUN IS PAID: a started run's answer carries `quote` (what the
     user is charged; `0.00` inside the daily free band), `quote_list_price` (the run's
     real price, the same figure the map and billing show) and `paid_by` (`free_band` or
     `credit`), and `say_to_user` states them. Say that figure, never another: the only
