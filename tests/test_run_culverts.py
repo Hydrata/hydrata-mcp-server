@@ -213,3 +213,24 @@ class TestGetRunCulvertsRegistered:
         )
         note = json.loads(await _server.get_run(run_id=77))["culverts_note"]
         assert "500" in note and "Traceback" not in note
+
+
+class TestCulvertMetricsOddValues:
+    @pytest.mark.parametrize("when", [None, "late", True])
+    @respx.mock
+    async def test_run_culverts_a_peak_with_no_usable_time_never_says_0_00_and_never_crashes(self, _server, when):
+        _mock_run()
+        row = _c1_row(has_timeseries=False)
+        row["metrics"]["peak_q_time_s"] = when
+        respx.get(f"{BASE}/runs/77/structure-results/").mock(return_value=httpx.Response(200, json=[row]))
+        data = json.loads(await _server.get_run(run_id=77))
+        assert data["culverts"][0]["peak_q_m3s"] == 0.497 and data["culverts"][0]["peak_q_time_s"] == when
+        assert "peak 0.50 m3/s" in data["culverts_note"] and "0:00" not in data["culverts_note"]
+
+    @respx.mock
+    async def test_run_culverts_a_row_with_no_peak_says_so_and_invents_no_number(self, _server):
+        _mock_run()
+        row = _c1_row(has_timeseries=False, metrics={"warnings": []})
+        respx.get(f"{BASE}/runs/77/structure-results/").mock(return_value=httpx.Response(200, json=[row]))
+        data = json.loads(await _server.get_run(run_id=77))
+        assert data["culverts"][0]["peak_q_m3s"] is None and "recorded no peak flow" in data["culverts_note"]

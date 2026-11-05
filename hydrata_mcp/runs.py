@@ -528,7 +528,10 @@ def _culvert_line(culvert: dict) -> str:
     peak = culvert.get("peak_q_m3s")
     if not isinstance(peak, (int, float)) or isinstance(peak, bool):
         return f"{label}: the run recorded no peak flow."
-    words = f"{label}: peak {peak:.2f} m3/s at {_clock(culvert.get('peak_q_time_s'))} into the run"
+    when = culvert.get("peak_q_time_s")
+    words = f"{label}: peak {peak:.2f} m3/s"
+    if isinstance(when, (int, float)) and not isinstance(when, bool):  # no time: say none, never "0:00"
+        words += f" at {_clock(when)} into the run"
     volume = culvert.get("volume_m3")
     if isinstance(volume, (int, float)):
         words += f", {volume:,.0f} m3 through the barrel in total"
