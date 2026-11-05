@@ -84,15 +84,22 @@ def _resource_metadata_url() -> str:
     return f"{parts.scheme}://{parts.netloc}/.well-known/oauth-protected-resource{parts.path}"
 
 
+#: TASK-4223 (D72): equal to hydrata's apps/agents/oauth.py EXPIRED_TOKEN_WINDOW_SECONDS. Only a connect token
+#: that expired within this many seconds gets the transport's expiry refusal; an older one goes the way an
+#: unexpired bearer goes, so Django answers it (AGENT_KEY_INVALID, byte for byte) and its holder learns nothing.
+EXPIRED_TOKEN_WINDOW_SECONDS = 60 * 60
+
+
 def _connect_token_expired(value: str) -> bool:
-    """True when a connect-flow token's ``exp`` has passed (read unverified; RFC 6750 §3.1).
+    """True when a connect-flow token's ``exp`` passed within the last hour (read unverified; RFC 6750 §3.1).
 
     An OAuth client refreshes on a 401 ``invalid_token``; forwarded to Django, an
     expired token only came back as a tool error inside a 200, so the client never
-    refreshed. A payload without a readable numeric ``exp`` is left to Django.
+    refreshed. A payload without a readable numeric ``exp``, or one that expired more
+    than ``EXPIRED_TOKEN_WINDOW_SECONDS`` ago, is left to Django (TASK-4223, D72).
     """
     exp = bearer_exp(value)  # TASK-4204: the one unverified exp reader (it also caps every wait)
-    return exp is not None and exp <= time.time()
+    return exp is not None and 0 <= time.time() - exp <= EXPIRED_TOKEN_WINDOW_SECONDS
 
 
 # TASK-4177 — what an allowlisted catalog crawler may do with no credential: the
@@ -247,10 +254,8 @@ class RequireAuth:
         elif needs_auth and _is_connect_token(auths[0]) and _connect_token_expired(auths[0]):
             token_error = "invalid_token"
             # TASK-4223: an expiry, not a revocation: never 'connect again' (only Django's AGENT_KEY_INVALID says that).
-            refusal = (
-                "The access token has expired: refresh it and send the request again. "
-                "Nothing was revoked and the connection is still live."
-            )
+            # exp is read unverified and the grant is never looked at here, so say nothing about the connection.
+            refusal = "The access token has expired: refresh it and send the request again."
 
         if refusal:
             payload = json.dumps(
