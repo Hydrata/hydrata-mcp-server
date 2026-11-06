@@ -44,14 +44,21 @@ async def create_project(
     name: Annotated[str, "Project name"],
     projection: Annotated[
         str,
-        "Working CRS as an EPSG string, normally the UTM zone of the site, e.g. 'EPSG:32756' (WGS 84 / UTM 56S)",
+        "Working CRS as an EPSG string. Hydrata accepts three families only: WGS84 UTM (EPSG:32601-32660 north, "
+        "EPSG:32701-32760 south), GDA94 MGA (EPSG:28348-28358) and GDA2020 MGA (EPSG:7846-7859); national grids "
+        "(British National Grid, US State Plane) are not supported yet. If the person's own data (survey, DEM, "
+        "drawings) is in an MGA zone, use that MGA code (e.g. 'EPSG:7856', GDA2020 / MGA zone 56); otherwise use "
+        "the WGS84 UTM zone of the site (e.g. 'EPSG:32756', WGS 84 / UTM 56S). If they mention their own data "
+        "but not its grid, ask them before you create the project.",
     ],
 ) -> str:
     """Create a new ANUGA project. Returns the project record including its id, base_map and ui_url.
 
     The caller's own account becomes the owner. `projection` is the projected
-    CRS every scenario in the project is meshed and run in — pick the UTM zone
-    covering the site. The project's map is created alongside it; `ui_url`
+    CRS every scenario in the project is meshed and run in: a WGS84 UTM, GDA94
+    MGA or GDA2020 MGA code (any other grid is refused). Use the person's MGA
+    zone when their own survey, DEM or drawings are in it, otherwise the site's
+    WGS84 UTM zone; ask when it is unclear. The project's map is created alongside it; `ui_url`
     opens it — give it to the user. A project you create is unpublished
     (`is_published: false`): only its owner and members can see it until the
     user presses Publish in its Sharing panel in the browser — you cannot
@@ -153,14 +160,14 @@ async def finalize_terrain_upload(
     title: Annotated[str, "Terrain title (default: the filename without .tif)"] = "",
     vertical_datum_declared: Annotated[
         str,
-        "TASK-4061: the datum the user SAYS the heights are on: `ahd` (Australian Height "
+        "The datum the user SAYS the heights are on: `ahd` (Australian Height "
         "Datum), `orthometric_egm2008` or `ellipsoid`. Pass it only when the user told you; "
         "if they did not, ask them, do not guess. Stored as the terrain's declared datum, "
         "which beats Hydrata's own inference. Omit when unknown.",
     ] = "",
     levels_datum: Annotated[
         str,
-        "TASK-4118: the datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, "
+        "The datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, "
         "`NAVD88`, `Ordnance Datum Newlyn` or an EPSG vertical code (`EPSG:5711`). A project fact, "
         "separate from the terrain's own datum. Pass it when the user told you; if they did not, "
         "ask them, do not guess.",
@@ -485,7 +492,8 @@ async def list_terrain_sources(
 ) -> str:
     """List the terrain Hydrata can fetch for a site, finest resolution first.
 
-    Ask this BEFORE fetching or uploading your own DEM. Each source row has `key`,
+    Never fetch terrain from outside Hydrata (another DEM service or download)
+    where a Hydrata source covers the site: call this first. Each source row has `key`,
     `name`, `resolution_m`, `coverage_pct` (share of your box it has data for),
     `cap` (`state` ok | too_large, the area and the maximum, and a plain `message`
     when too large), `vertical_datum`, `credit` and `licence`. Only sources with some
@@ -558,6 +566,9 @@ async def create_terrain_from_source(
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
     """Have Hydrata fetch a terrain from one of its own sources, then wait for the import (like get_terrain).
+
+    Never fetch terrain from outside Hydrata where a Hydrata source covers the site;
+    if none does, the person uploads their own DEM in the project map.
 
     Use a `key` from list_terrain_sources. Hydrata fetches, reprojects and publishes the
     DEM and seeds the project's default input rows; the DEM's datum is stamped by the source.

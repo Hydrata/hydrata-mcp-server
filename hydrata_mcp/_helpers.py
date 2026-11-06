@@ -142,6 +142,26 @@ POLL_DEFAULT_TIMEOUT_SECONDS = 180
 POLL_MAX_TIMEOUT_SECONDS = 200
 
 
+def _token_cap_spent() -> bool:
+    """TASK-4223: True when this call's token is already within the 20 s margin of its ``exp``.
+
+    A wait then does one read and no wait, and the same call made again at once would carry the same token
+    and do the same: a waiting tool's next_step must not invite an instant identical call.
+    """
+    budget = token_wait_budget()
+    return budget is not None and budget <= 0
+
+
+# TASK-4223: the next_step of a wait the token cap cut to one read (worded like TOKEN_EXPIRED_NEXT_STEP).
+TOKEN_REFRESH_NEXT_STEP = (
+    "Your sign-in token is about to be refreshed, so this call could not wait. Nothing was revoked and the "
+    "connection is still live: do NOT ask the person to reconnect. Relay say_to_user now. Do not call {tool} "
+    "again straight away (the same call now would return at once in the same way): call it again after the "
+    "person's next message, or after a pause of about 30 seconds if you can pause, when your client sends a "
+    "fresh token."
+)
+
+
 def _status_of(record) -> str | None:
     """`status` of an API record, or None when it is not a dict."""
     return record.get("status") if isinstance(record, dict) else None
@@ -335,13 +355,20 @@ async def _input_review_hand_back(result: dict, project_id, scenario_id) -> dict
 # ---------------------------------------------------------------------------
 # TASK-4088 (epic 4117 W6) - sources: the documents an input comes from.
 # ---------------------------------------------------------------------------
-SOURCES_ARGUMENT_HELP = (
-    "TASK-4088: the documents this came from, so the engineer can click through to them: a list of "
-    "{title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: "
-    "'https://...', locator: 'Table 5-2'}]. title and an http(s) url are required; locator (a page or table) "
-    "is optional. At most 20. Pass it beside the method whenever you cite a document."
-)
 SOURCES_MAX = 20
+SOURCE_TITLE_MAX = 200
+SOURCE_URL_MAX = 2000  # Hydrata's own limit (apps/agents/provenance.py SOURCE_URL_MAX)
+SOURCE_LOCATOR_MAX = 100
+# TASK-4289: the help names every limit _clean_sources enforces, so an agent never learns one by failing.
+SOURCES_ARGUMENT_HELP = (
+    "The documents this came from, so the engineer can click through to them: a list of "
+    "{title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: "
+    "'https://...', locator: 'Table 5-2'}]. Limits: "
+    f"title (1-{SOURCE_TITLE_MAX} characters) and url (http or https, at most {SOURCE_URL_MAX} characters) "
+    f"are required; locator (a page or table, e.g. 'p. 42' or 'Table 5-2') is optional, at most "
+    f"{SOURCE_LOCATOR_MAX} characters. At most {SOURCES_MAX} entries. "
+    "Pass it beside the method whenever you cite a document."
+)
 
 
 def _clean_sources(sources) -> list[dict] | None:
@@ -358,14 +385,22 @@ def _clean_sources(sources) -> list[dict] | None:
         if not isinstance(entry, dict):
             raise ToolError(f"{label} must be an object with title and url. Nothing was sent.")
         title, url, locator = entry.get("title"), entry.get("url"), entry.get("locator")
-        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200:
-            raise ToolError(f"{label}.title is required (1-200 characters). Nothing was sent.")
-        if not isinstance(url, str) or not re.match(r"^https?://[^\s/]+", url.strip()):
-            raise ToolError(f"{label}.url must be an http or https link. Nothing was sent.")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > SOURCE_TITLE_MAX:
+            raise ToolError(f"{label}.title is required (1-{SOURCE_TITLE_MAX} characters). Nothing was sent.")
+        if (
+            not isinstance(url, str)
+            or not re.match(r"^https?://[^\s/]+", url.strip())
+            or len(url.strip()) > SOURCE_URL_MAX
+        ):
+            raise ToolError(
+                f"{label}.url must be an http or https link (at most {SOURCE_URL_MAX} characters). Nothing was sent."
+            )
         item = {"title": title.strip(), "url": url.strip()}
         if locator is not None:
-            if not isinstance(locator, str) or len(locator.strip()) > 100:
-                raise ToolError(f"{label}.locator must be text of at most 100 characters. Nothing was sent.")
+            if not isinstance(locator, str) or len(locator.strip()) > SOURCE_LOCATOR_MAX:
+                raise ToolError(
+                    f"{label}.locator must be text of at most {SOURCE_LOCATOR_MAX} characters. Nothing was sent."
+                )
             if locator.strip():
                 item["locator"] = locator.strip()
         clean.append(item)

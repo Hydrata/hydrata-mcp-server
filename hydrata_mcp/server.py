@@ -85,11 +85,14 @@ def _resource_metadata_url() -> str:
 
 
 def _connect_token_expired(value: str) -> bool:
-    """True when a connect-flow token's ``exp`` has passed (read unverified; RFC 6750 §3.1).
+    """True when a connect-flow token's ``exp`` has passed, however long ago (read unverified; RFC 6750 §3.1).
 
     An OAuth client refreshes on a 401 ``invalid_token``; forwarded to Django, an
     expired token only came back as a tool error inside a 200, so the client never
-    refreshed. A payload without a readable numeric ``exp`` is left to Django.
+    refreshed. That holds for a token that expired hours ago too (a chat picked up
+    after an idle gap), so there is no age window here: D72's 1 h window governs
+    only Django's AGENT_TOKEN_EXPIRED code. The refusal text says nothing about the
+    grant (TASK-4223). A payload without a readable numeric ``exp`` is left to Django.
     """
     exp = bearer_exp(value)  # TASK-4204: the one unverified exp reader (it also caps every wait)
     return exp is not None and exp <= time.time()
@@ -246,7 +249,9 @@ class RequireAuth:
             )
         elif needs_auth and _is_connect_token(auths[0]) and _connect_token_expired(auths[0]):
             token_error = "invalid_token"
-            refusal = "The access token has expired: refresh it, or connect again from your AI assistant."
+            # TASK-4223: an expiry, not a revocation: never 'connect again' (only Django's AGENT_KEY_INVALID says that).
+            # exp is read unverified and the grant is never looked at here, so say nothing about the connection.
+            refusal = "The access token has expired: refresh it and send the request again."
 
         if refusal:
             payload = json.dumps(

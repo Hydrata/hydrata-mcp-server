@@ -1,5 +1,6 @@
 """Run tools: start, poll, read, cancel, retry and list simulation runs."""
 
+import asyncio
 import json
 from http import HTTPStatus
 from typing import Annotated
@@ -7,6 +8,7 @@ from typing import Annotated
 from ._common import _data, _tool, client
 from ._helpers import (
     INPUT_REVIEW_REFUSALS,
+    TOKEN_REFRESH_NEXT_STEP,
     _elide_presigned,
     _hand_back,
     _input_review_hand_back,
@@ -16,6 +18,7 @@ from ._helpers import (
     _project_base_map,
     _run_quote_words,
     _status_of,
+    _token_cap_spent,
     _ui_origin,
     _ui_url,
 )
@@ -39,6 +42,10 @@ async def start_simulation(
 ) -> str:
     """Start a flood simulation run for a built scenario.
 
+    WAIT FOR THE GO-AHEAD: this spends compute, so before you call it give the
+    person the ui_url and WAIT for their explicit go-ahead to start the run;
+    reviewed inputs are not a go-ahead, and never start a run on your own say-so.
+
     Needs a launch-level agent key (a run spends compute); a read or draft key
     gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the
     site's Agent keys page (/agents/).
@@ -61,7 +68,7 @@ async def start_simulation(
     `outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with
     rebuild=true, then start it again.
 
-    HOW THE RUN IS PAID (TASK-4101): a started run's answer carries `quote` (what the
+    HOW THE RUN IS PAID: a started run's answer carries `quote` (what the
     user is charged; `0.00` inside the daily free band), `quote_list_price` (the run's
     real price, the same figure the map and billing show) and `paid_by` (`free_band` or
     `credit`), and `say_to_user` states them. Say that figure, never another: the only
@@ -281,7 +288,8 @@ async def get_run_status(
     again. Do not sleep or wait yourself between calls: the wait happens inside this
     call. After about 10 minutes of this in one turn, stop and tell the person to ask
     you for the status: you cannot watch the run between their messages, and Hydrata
-    emails them when it finishes.
+    emails them when it finishes. If the answer has `token_refresh_pending: true`, your sign-in
+    is being refreshed: do not call again at once, follow `next_step`.
 
     `phase` is never empty: it is `status`, except `preparing_inputs` while a
     `computing` run has no progress yet (it is downloading its input package
@@ -308,13 +316,17 @@ async def get_run_status(
             return True
         return _run_moved(first, record)
 
+    cap_spent = bool(wait) and _token_cap_spent()  # TASK-4223: read BEFORE the poll (the poll takes time)
     data, polls, elapsed, timed_out = await _poll_until(fetch, settled, wait, RUN_WAIT_POLL_INTERVAL_SECONDS)
     if isinstance(data, dict):
         data["say_to_user"] = _run_status_line(data)
         if wait:
             data["waited_seconds"] = elapsed
             data["timed_out"] = timed_out
-            if data.get("status") not in RUN_TERMINAL_STATUSES:
+            if data.get("status") not in RUN_TERMINAL_STATUSES and cap_spent and timed_out:
+                data["token_refresh_pending"] = True
+                data["next_step"] = TOKEN_REFRESH_NEXT_STEP.format(tool="get_run_status")
+            elif data.get("status") not in RUN_TERMINAL_STATUSES:
                 data["next_step"] = (
                     "Relay say_to_user now, then call get_run_status again with wait_seconds=180. "
                     "After about 10 minutes in this turn, stop and tell the person to ask you for the status."
@@ -432,11 +444,141 @@ async def get_run(
     itself is never returned. `unreadable` means the storage refused the read:
     there is no download to offer, so tell the person and ask them to ask the
     operator; `sww.error_code` and `sww.detail` carry the reason in words.
+
+    CULVERTS (a complete run): `culverts` lists the flow the model moved THROUGH each
+    culvert's barrel: `name`, `feature_id`, `peak_q_m3s` and `peak_q_time_s` (seconds
+    into the run), `volume_m3` (net volume through the barrel; null when the run kept
+    no series), `warnings` (e.g. a mesh too coarse at the culvert), `has_timeseries`.
+    `culvert_sign_convention` gives the sign once: positive flow runs from the
+    culvert's Inlet to its Outlet. Relay `culverts_note`. This is the culvert's
+    flow; get_flow_hydrograph on a line drawn along a culvert measures the flow
+    ACROSS that line, a different number, so quote `culverts` for a culvert.
+    `culverts: []` means the run modelled no culvert (say so; never invent a
+    number). When the culvert results cannot be read, `culverts` is absent and
+    `culverts_note` says so; the rest of the run record is still good.
     """
     data = _elide_presigned(await client.get(f"/runs/{run_id}/"))
     if isinstance(data, dict):
         data["sww"] = await _sww_summary(run_id, data)
+        if data.get("status") == "complete":
+            data.update(await _culvert_summary(run_id))
     return json.dumps(data, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4282 (epic 4117 W8, D68): the flow through each culvert's barrel, from hydrata's EXISTING
+# GET runs/<id>/structure-results/ (StructureResultSerializerV2) and .../<row id>/timeseries/.
+# ---------------------------------------------------------------------------
+CULVERT_KIND = "culvert"
+CULVERT_SIGN_RULE = "Positive flow runs from the culvert's Inlet to its Outlet."
+CULVERT_SERIES_READS_MAX = 20  # a volume costs one series read per culvert; past this many, volume_m3 is null
+NOT_THE_BARREL_WORDS = (
+    "If this line follows a culvert, this is the flow across your line, not the flow through the culvert "
+    "barrel: see get_run's `culverts` for the flow through the barrel."
+)
+
+
+def _clock(seconds) -> str:
+    """'h:mm' into the run, to the minute below (2916.5 s -> '0:48')."""
+    hours, rest = divmod(int(round(float(seconds or 0.0))), 3600)
+    return f"{hours}:{rest // 60:02d}"
+
+
+def _net_volume_m3(series) -> float | None:
+    """Signed trapezoid of q_m3s over time_s (a step with a null end is skipped); None with no usable step."""
+    if not isinstance(series, dict):
+        return None
+    times, flows = series.get("time_s") or [], series.get("q_m3s") or []
+    total, used = 0.0, False
+    for (t0, q0), (t1, q1) in zip(zip(times, flows), zip(times[1:], flows[1:])):
+        if None in (t0, q0, t1, q1):
+            continue
+        total += (t1 - t0) * (q0 + q1) / 2.0
+        used = True
+    return round(total, 1) if used else None
+
+
+async def _culvert_rows(run_id) -> list[dict]:
+    """The run's culvert rows (kind == culvert). Raises when the endpoint cannot be read."""
+    rows = await client.get(f"/runs/{run_id}/structure-results/")
+    if not isinstance(rows, list):
+        raise HydrataAPIError("structure results are not a list")
+    return [row for row in rows if isinstance(row, dict) and row.get("kind") == CULVERT_KIND]
+
+
+async def _culvert_entry(run_id, row: dict, read_series: bool) -> dict:
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    volume = metrics.get("volume_m3")
+    if volume is None and read_series and row.get("has_timeseries") and row.get("id") is not None:
+        try:
+            body = await client.get(f"/runs/{run_id}/structure-results/{row['id']}/timeseries/")
+            volume = _net_volume_m3(body.get("series") if isinstance(body, dict) else None)
+        except Exception:
+            volume = None  # best effort: the peak still stands
+    return {
+        "name": row.get("name"),
+        "feature_id": row.get("feature_id"),
+        "peak_q_m3s": metrics.get("peak_q_m3s"),
+        "peak_q_time_s": metrics.get("peak_q_time_s"),
+        "volume_m3": volume,
+        # the engine quotes the culvert's name (layer content, MCP-3): data, not instructions
+        "warnings": [_data(w) for w in (metrics.get("warnings") or []) if isinstance(w, str)],
+        "has_timeseries": bool(row.get("has_timeseries")),
+    }
+
+
+def _culvert_line(culvert: dict) -> str:
+    label = _data(culvert.get("name")) or f"culvert {culvert.get('feature_id')}"
+    peak = culvert.get("peak_q_m3s")
+    if not isinstance(peak, (int, float)) or isinstance(peak, bool):
+        return f"{label}: the run recorded no peak flow."
+    when = culvert.get("peak_q_time_s")
+    words = f"{label}: peak {peak:.2f} m3/s"
+    if isinstance(when, (int, float)) and not isinstance(when, bool):  # no time: say none, never "0:00"
+        words += f" at {_clock(when)} into the run"
+    volume = culvert.get("volume_m3")
+    if isinstance(volume, (int, float)):
+        words += f", {volume:,.0f} m3 through the barrel in total"
+    elif not culvert.get("has_timeseries"):
+        words += " (this run kept no time series for the culvert, so there is no volume)"
+    if culvert.get("warnings"):
+        words += f" ({len(culvert['warnings'])} warning(s): read `warnings`)"
+    return words + "."
+
+
+async def _culvert_summary(run_id) -> dict:
+    """`culverts` + `culvert_sign_convention` + `culverts_note` for a complete run; best effort, never fails get_run."""
+    try:
+        rows = await _culvert_rows(run_id)
+    except Exception as exc:
+        status = getattr(exc, "status", None)
+        why = f"Hydrata answered {status}" if status else "the request failed"
+        return {
+            "culverts_note": f"The culvert results for run {run_id} could not be read ({why}), so they are left "
+            "out; the rest of the run record is good. Do not quote get_flow_hydrograph as a culvert's flow."
+        }
+    if not rows:
+        return {
+            "culverts": [],
+            "culverts_note": f"Run {run_id} modelled no culverts, so there is no flow through a culvert to report.",
+        }
+    culverts = list(
+        await asyncio.gather(*(_culvert_entry(run_id, row, i < CULVERT_SERIES_READS_MAX) for i, row in enumerate(rows)))
+    )
+    note = (
+        "Flow through each culvert's barrel, as the model computed it. "
+        + " ".join(_culvert_line(c) for c in culverts)
+        + f" {CULVERT_SIGN_RULE} This is not the flow across a line drawn along the culvert (get_flow_hydrograph)."
+    )
+    return {"culverts": culverts, "culvert_sign_convention": CULVERT_SIGN_RULE, "culverts_note": note}
+
+
+async def _run_has_culverts(run_id) -> bool | None:
+    """True/False when the run's culvert rows can be read; None when they cannot."""
+    try:
+        return bool(await _culvert_rows(run_id))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -445,23 +587,66 @@ async def get_run(
 FLOW_HYDROGRAPH_CLIENT_TIMEOUT_S = 75.0  # the backend budget (30 s) covers the discharge read only (MCP-4)
 
 
+#: W8 fold review: the start of hydrata's open-boundary warning (gn_anuga.flow_hydrograph.open_boundary_warning).
+OPEN_BOUNDARY_WARNING_MARK = "more water is in the model at the end than rain and inflow put in"
+#: hydrata's OPEN_BOUNDARY_NOISE / OPEN_BOUNDARY_NOISE_FLOOR_M3: a shortfall under this is not warned about there.
+ACCOUNTING_NOISE_SHARE, ACCOUNTING_NOISE_FLOOR_M3 = 0.05, 1.0
+
+
+def _served_open_boundary_warning(data: dict) -> bool:
+    return any(isinstance(w, str) and OPEN_BOUNDARY_WARNING_MARK in w for w in (data.get("warnings") or []))
+
+
+def _accounting_noise_m3(mb: dict) -> float:
+    went_in = (mb.get("rain_in_m3") or 0) + (mb.get("inflow_in_m3") or 0)
+    return max(ACCOUNTING_NOISE_SHARE * went_in, ACCOUNTING_NOISE_FLOOR_M3)
+
+
 def _flow_say(data: dict) -> str:
     """One or two sentences for the person: peak, time, volume, sign, mass balance."""
-    peak_s = float(data.get("peak_time_s") or 0.0)
-    hours, rest = divmod(int(round(peak_s)), 3600)
-    clock = f"{hours}:{rest // 60:02d}"
+    clock = _clock(data.get("peak_time_s"))
+    # TASK-4203 (ex-4196): a one-frame store has no spacing (null): never "(to the nearest 0 s frame)".
+    spacing = data.get("frame_spacing_s")
+    frame = f"{spacing:.0f} s frame" if isinstance(spacing, (int, float)) and spacing > 0 else "saved frame"
     first = (
         f"Across that line the flow peaks at {data.get('peak_m3s', 0.0):.2f} m3/s at {clock} into the run "
-        f"(to the nearest {data.get('frame_spacing_s') or 0:.0f} s frame), and {data.get('volume_m3', 0.0):,.0f} m3 "
+        f"(to the nearest {frame}), and {data.get('volume_m3', 0.0):,.0f} m3 "
         f"crosses in total. {data.get('sign_convention', '')}"
     )
+    # TASK-4290: hydrata's largest flow each way, so a negative peak is not read as the flood peak (absent on a
+    # hydrata that predates the fields: no sentence is invented).
+    most_in, most_out = data.get("max_positive_m3s"), data.get("max_negative_m3s")
+    if isinstance(most_in, (int, float)) and isinstance(most_out, (int, float)):
+        first += f" Largest flow each way: {most_in:.2f} m3/s left bank to right bank and {abs(most_out):.2f} m3/s right bank to left bank."
     mb = data.get("mass_balance") or {}
+    out = mb.get("out_by_difference_m3")
+    went_in = (
+        f"Mass balance: {mb.get('rain_in_m3') or 0:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of "
+        f"inflow went in"
+    )
     if mb.get("rain_in_m3") is None:
         second = f"Mass balance: {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model; rain and inflow could not be read."
+    elif _served_open_boundary_warning(data):
+        # W8 fold review: hydrata's relayed warning names the shortfall and its likely cause; the figures only here,
+        # so the person does not hear the same sentence twice.
+        second = f"{went_in} and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model."
+    elif isinstance(out, (int, float)) and out < 0 and -out <= _accounting_noise_m3(mb):
+        # W8 fold review: a shortfall hydrata does not warn about is its accounting's own error; never "about 0 m3".
+        small = f"{-out:,.1f}" if -out < 10 else f"{-out:,.0f}"
+        second = (
+            f"{went_in} and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so the balance agrees "
+            f"to within rounding (the water left is {small} m3 more than went in)."
+        )
+    elif isinstance(out, (int, float)) and out < 0:
+        # TASK-4290 (run 1613): more water is left than went in, so it came IN; never "-3,681,512 m3 left".
+        second = (
+            f"{went_in} and {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about {-out:,.0f} m3 "
+            "more is in the model than rain and inflow put in (rain + inflow minus the water left in the model; "
+            "it is not measured at the edge)."
+        )
     else:
         second = (
-            f"Mass balance: {mb['rain_in_m3']:,.0f} m3 of rain and {mb.get('inflow_in_m3') or 0:,.0f} m3 of inflow "
-            f"went in, {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about "
+            f"{went_in}, {mb.get('left_in_model_m3', 0.0):,.0f} m3 is left in the model, so about "
             f"{mb.get('out_by_difference_m3') or 0:,.0f} m3 left through the model's open edges (rain + inflow "
             "minus the water left in the model; it is not measured at the edge)."
         )
@@ -490,11 +675,15 @@ async def get_flow_hydrograph(
     """Flow (Q) across a drawn line, at every frame of a completed run.
 
     Integrates depth times velocity normal to the line from the run's playback store:
-    returns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`, `volume_m3`,
-    `sign_convention`, `frame_spacing_s`, `warnings` (the peak is resolved to the nearest
-    frame, so the true peak may fall between frames) and a `mass_balance` (rain and inflow
-    in, left in the model; outflow is by difference, open-boundary flux is not integrated).
-    Relay `say_to_user`. This is the model's flow, not a gauge reading.
+    returns `time_s` and `q_m3s` per frame, `peak_m3s` and `peak_time_s`,
+    `max_positive_m3s` and `max_negative_m3s` (the largest flow each way, so a
+    negative peak is not read as the flood peak), `volume_m3`, `sign_convention`,
+    `frame_spacing_s`, `warnings` (the peak is resolved to the nearest frame, so the
+    true peak may fall between frames) and a `mass_balance` (rain and inflow in, left
+    in the model; outflow is by difference, open-boundary flux is not integrated).
+    When more water is left in the model than rain and inflow put in, `warnings` says
+    so: it usually came in through an open boundary; relay it. Relay `say_to_user`.
+    This is the model's flow, not a gauge reading.
 
     A run with no playback store answers outcome `no_playback_store`; a bad line answers
     `bad_line` with the reason.
@@ -549,6 +738,10 @@ async def get_flow_hydrograph(
     if status_code >= 400 or not isinstance(body, dict):
         raise HydrataAPIError(str(body)[:300], status=status_code)
     body["say_to_user"] = _flow_say(body)
+    # TASK-4282: whether THIS line follows a culvert is not known cheaply (it would need the scenario's culvert
+    # geometry); a run that modelled a culvert (or whose culverts cannot be read) gets the conditional sentence.
+    if await _run_has_culverts(run_id) is not False:
+        body["say_to_user"] += f" {NOT_THE_BARREL_WORDS}"
     return json.dumps(body, indent=2)
 
 

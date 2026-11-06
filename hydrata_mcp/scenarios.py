@@ -382,11 +382,17 @@ async def create_scenario(
     description: Annotated[str, "Free-text description (optional)"] = "",
     structure: Annotated[
         int | None,
-        "Deprecated alias of `building` (TASK-3586); ignored when `building` is given.",
+        "Deprecated alias of `building`; ignored when `building` is given.",
     ] = None,
     sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
     """Create a DRAFT scenario (no build, no run) and report its mesh-triangle estimate.
+
+    ASK FIRST: before you write any input, ask the person which approach they
+    want (rain-on-grid, or an inflow hydrograph at a place they name), whether
+    by 'hydrograph' they mean an inflow that drives the model or the flow they
+    want out of the results, and for their design rainfall and losses; do not
+    choose or source these yourself unless they ask you to.
 
     POSTs /projects/<id>/scenarios/ with the write fields, then GETs the
     scenario detail — the create response carries NO estimate; the detail's
@@ -401,7 +407,7 @@ async def create_scenario(
     Units: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is
     a LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField
     default 100, not nullable; 0 makes the estimate None), and the estimate
-    prices both the same way (TASK-3186). The smallest value becomes the raster
+    prices both the same way. The smallest value becomes the raster
     cell size. A MeshRegion feature must carry `resolution_units = m` (features
     drawn in the map are marked automatically); an unmarked one makes the build
     answer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.
@@ -724,7 +730,7 @@ async def build_scenario(
     Units: `resolution` — on the SCENARIO and on every MeshRegion FEATURE — is
     a LENGTH in metres; ANUGA maximum_triangle_area = resolution²/2 (FloatField
     default 100, not nullable; 0 makes the estimate None), and the estimate
-    prices both the same way (TASK-3186). The smallest value becomes the raster
+    prices both the same way. The smallest value becomes the raster
     cell size. A MeshRegion feature must carry `resolution_units = m` (features
     drawn in the map are marked automatically); an unmarked one makes the build
     answer 422 MESH_REGION_UNITS_UNMARKED, naming the conversion an operator runs.

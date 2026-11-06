@@ -422,7 +422,7 @@ class TestAttachInputLayerTool:
         if kind == "breakline":
             text = _tool_error_text(result)
             assert not status_route.called
-            assert "TASK-3040" in text
+            assert "no way to create a breakline layer" in text and "TASK-" not in text  # TASK-4289
             assert kind in text
         else:
             data = _tool_json(result)
@@ -669,7 +669,10 @@ class TestAttachInputLayerTool:
         attach = tools["attach_input_layer"]["description"]
         assert "not conveyed" not in attach
         assert "conveys flow through each culvert" in attach
-        assert "TASK-3040" in attach
+        # TASK-4289 (+ W8 fold review): the refusal's plain words, no task id and no "REST create path at HEAD".
+        flat = " ".join(attach.split())
+        assert "Hydrata has no way to create a breakline layer" in flat and "TASK-" not in attach
+        assert "REST create path" not in flat and "at HEAD" not in flat
         assert "base_file" in attach  # the curl recipe the agent runs itself
         # TASK-4064: a shell-less connector agent is sent to the inline / link paths first.
         assert "write_input_layer" in attach and "request_input_upload" in attach
@@ -679,6 +682,18 @@ class TestAttachInputLayerTool:
                 assert forbidden not in props, (name, forbidden)
         series_props = tools["create_time_series"]["inputSchema"]["properties"]
         assert "series_type" in series_props and "units" in series_props
+
+    async def test_hold_last_value_help_states_how_the_engine_reads_the_last_row(self, _server):
+        """TASK-4294 (W8 fold review): run_anuga holds a rainfall's last row for one more interval and then 0
+        (zero_after_last_block), and an inflow's last value to the end of the run; never 'held after it ends'."""
+        async with _asgi_client(_server) as c:
+            resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
+        tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
+        for name in ("create_time_series", "update_time_series"):
+            help_text = " ".join(tools[name]["inputSchema"]["properties"]["hold_last_value"]["description"].split())
+            assert "held after the series ends" not in help_text, name
+            assert "rainfall's last row rains for one more interval" in help_text, (name, help_text)
+            assert "then stops" in help_text and "inflow's last value is held to the end of the run" in help_text
 
 
 def _wrapper_rows(route):

@@ -116,6 +116,79 @@ class TestWaitCap:
         assert data["timed_out"] is True and data["waited_seconds"] == 0.0 and "next_step" in data
 
     @respx.mock
+    async def test_token_expired_cap_already_spent_next_step_does_not_invite_an_instant_recall(
+        self, connect_server, fake_clock
+    ):
+        """TASK-4223 AC1: the same call made at once would carry the same nearly-expired token and do the same
+        zero-wait read, so the hand-back says to call again after the person's next message (or a pause)."""
+        respx.get(f"{BASE}/runs/9/status/").mock(return_value=_computing())
+        data = _tool_json(
+            await _result(
+                connect_server, _jwt(exp=int(time.time()) + 10), "get_run_status", {"run_id": 9, "wait_seconds": 180}
+            )
+        )
+        step = data["next_step"]
+        assert "call get_run_status again with wait_seconds=180" not in step
+        assert "Do not call get_run_status again straight away" in step
+        assert "next message" in step and "30 seconds" in step
+        assert "reconnect" in step and "connect again" not in step.lower()
+        assert data["token_refresh_pending"] is True
+
+    @respx.mock
+    async def test_token_expired_cap_partly_spent_keeps_the_normal_call_again_wording(self, connect_server, fake_clock):
+        respx.get(f"{BASE}/runs/9/status/").mock(return_value=_computing())
+        data = _tool_json(
+            await _result(
+                connect_server, _jwt(exp=int(time.time()) + 60), "get_run_status", {"run_id": 9, "wait_seconds": 180}
+            )
+        )
+        assert "call get_run_status again with wait_seconds=180" in data["next_step"]
+        assert "token_refresh_pending" not in data
+
+    @respx.mock
+    async def test_token_expired_transport_refusal_never_says_connect_again(self, connect_server):
+        """TASK-4223 AC2: an already-expired connect token is refused at the transport with 401 invalid_token so the
+        client refreshes; the words must not read like a revocation (only Django's AGENT_KEY_INVALID may)."""
+        upstream = respx.route().mock(return_value=httpx.Response(200, json={}))
+        resp = await _call(connect_server, _jwt(exp=int(time.time()) - 10), "list_projects", {})
+        assert resp.status_code == 401 and not upstream.calls
+        assert 'error="invalid_token"' in resp.headers["www-authenticate"]
+        message = resp.json()["error"]["message"]
+        assert "connect again" not in message.lower() and "revoked on" not in message
+        assert "expired" in message and "refresh" in message
+        # The transport reads exp unverified and knows nothing of the grant: it must not vouch for it (D72).
+        assert "Nothing was revoked" not in message and "still live" not in message
+
+    @pytest.mark.parametrize(
+        "age", [10, 600, 3590, 3610, 2 * 3600, 365 * 86400], ids=["10s", "10min", "59min", "61min", "2h", "1y"]
+    )
+    @respx.mock
+    async def test_an_expired_connect_token_of_any_age_is_the_transport_401_the_client_refreshes_on(
+        self, connect_server, age
+    ):
+        """TASK-4223 review round 2: an expired connect token gets 401 invalid_token at the transport whatever its age,
+        so the OAuth client refreshes (a chat resumed hours later must not be told to reconnect); nothing reaches
+        Django, and the text vouches for nothing about the grant. D72's 1 h window is Django's AGENT_TOKEN_EXPIRED."""
+        upstream = respx.route().mock(return_value=httpx.Response(200, json={}))
+        resp = await _call(connect_server, _jwt(exp=int(time.time()) - age), "list_projects", {})
+        assert resp.status_code == 401 and not upstream.calls
+        assert 'error="invalid_token"' in resp.headers["www-authenticate"]
+        message = resp.json()["error"]["message"]
+        assert "has expired: refresh it" in message
+        assert (
+            "connect again" not in message.lower()
+            and "still live" not in message
+            and "Nothing was revoked" not in message
+        )
+
+    @respx.mock
+    async def test_token_expired_check_leaves_a_token_with_no_exp_to_django_unchanged(self, connect_server):
+        token = _jwt()
+        upstream = respx.get(f"{BASE}/projects/").mock(return_value=httpx.Response(200, json={"results": []}))
+        resp = await _call(connect_server, token, "list_projects", {})
+        assert resp.status_code == 200 and upstream.calls[0].request.headers["authorization"] == token
+
+    @respx.mock
     async def test_token_expired_cap_also_bounds_the_terrain_import_poll(self, connect_server, fake_clock):
         respx.get(f"{BASE}/projects/7/terrain/").mock(
             return_value=httpx.Response(200, json={"count": 1, "results": [{"id": 3, "status": "importing"}]})

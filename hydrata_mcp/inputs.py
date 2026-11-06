@@ -108,10 +108,11 @@ LEGACY_DEFAULT_TITLES = {"building": ("Structure 01",)}
 # rather than pretending the layer landed. Culverts left this set in TASK-3641
 # (epic 3585 W2b): the culvert route, Scenario.culvert and the package key exist.
 UNSUPPORTED_INPUT_LAYER_KINDS = frozenset({"breakline"})
+# TASK-4289: the refusal text carries no internal task id (TASK-3040 AC6 retired the UI surface; the model +
+# Scenario FK stay dormant).
 UNSUPPORTED_INPUT_LAYER_REASON = (
-    "no REST create path exists for breaklines at HEAD (TASK-3040 AC6 "
-    "retired the UI surface; the model + Scenario FK stay dormant) — attaching "
-    "one would only pretend the layer landed"
+    "Hydrata has no way to create a breakline layer (neither the API nor the map can add one), so "
+    "attaching one would only pretend the layer landed"
 )
 # GeoNode ExecutionRequest statuses (geonode/resource/models.py:29-32).
 EXECUTION_TERMINAL_STATUSES = frozenset({"finished", "failed"})
@@ -150,6 +151,27 @@ def _validate_row_data(data) -> int:
     return len(data["rowData"])
 
 
+# TASK-4294: how the engine reads the rows. run_anuga (run_utils._merge_timeseries) forward-fills each rainfall
+# or inflow value on a per-second grid until the next row (a step, never interpolated); a rainfall's last row lasts
+# one more interval, an inflow's holds to the end of the run. A stage (tide) boundary is the one series it
+# interpolates (run_utils.build_time_boundary_function, numpy.interp).
+SERIES_ROWS_RULE = (
+    " How the simulation reads the rows: for rainfall and flow, each value holds from its timestamp until the next "
+    "row's (a step: no straight line between rows), so send ONE row per interval, at its START (e.g. every 5 "
+    "minutes), and end with a 0 row at the end of the last interval; never add a row just before the next one, it "
+    "changes nothing. Rainfall values are rates (mm/hr): the depth of an interval is rate x its length. Use "
+    "whole-second timestamps. A stage series is the exception: the level goes in a straight line between rows."
+)
+
+
+#: TASK-4294 (W8 fold review): how run_anuga reads a series' last row (run_utils._merge_timeseries:
+#: zero_after_last_block for rainfall only; an inflow line keeps its last value).
+HOLD_LAST_VALUE_RULE = (
+    "How the simulation reads the last row: a rainfall's last row rains for one more interval (as long as the "
+    "step before it) and then stops at 0; an inflow's last value is held to the end of the run."
+)
+
+
 # ---------------------------------------------------------------------------
 # Tool 14: create_time_series
 # ---------------------------------------------------------------------------
@@ -165,7 +187,7 @@ async def create_time_series(
         dict,
         'The rows: {"rowData": [{"timestamp": "1998-08-17T00:00:00", "value": 1.5}, '
         "...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. "
-        "Validated here before anything is sent.",
+        "Validated here before anything is sent." + SERIES_ROWS_RULE,
     ],
     description: Annotated[str, "Free-text description (optional)"] = "",
     series_type: Annotated[
@@ -186,7 +208,7 @@ async def create_time_series(
     timezone: Annotated[str, "IANA timezone of the timestamps (default 'UTC'), e.g. 'Australia/Sydney'"] = "UTC",
     hold_last_value: Annotated[
         bool,
-        "Set true ONLY when the last value is meant to be held after the series ends. A hydrograph or "
+        "Set true ONLY when you mean the last value not to be 0. " + HOLD_LAST_VALUE_RULE + " A hydrograph or "
         "hyetograph whose last value is not 0 is refused (TRAILING_VALUE_HELD) unless this is true: end "
         "the series with a 0 row instead, unless holding is really intended.",
     ] = False,
@@ -203,6 +225,12 @@ async def create_time_series(
     sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
     """Create a time series (rain gauge, hydrograph, tide/stage) in a project.
+
+    ASK FIRST: before you write any input, ask the person which approach they
+    want (rain-on-grid, or an inflow hydrograph at a place they name), whether
+    by 'hydrograph' they mean an inflow that drives the model or the flow they
+    want out of the results, and for their design rainfall and losses; do not
+    choose or source these yourself unless they ask you to.
 
     POSTs /projects/<id>/time-series/ with `series_type` and `units` as
     top-level fields. `series_type` is checked against the four choices and
@@ -318,12 +346,14 @@ async def update_time_series(
         dict | None,
         'Replacement rows: {"rowData": [{"timestamp": "<ISO 8601>", "value": <number>}, ...]}. '
         "Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow "
-        "values and an all-zero rain or flow series.",
+        "values and an all-zero rain or flow series." + SERIES_ROWS_RULE,
     ] = None,
     description: Annotated[str, "New description"] = "",
     units: Annotated[str, "New units (must match the series_type, as in create_time_series)"] = "",
     series_type: Annotated[str, "New series_type: hyetograph, hydrograph, stage or generic"] = "",
-    hold_last_value: Annotated[bool | None, "Set true only when the last value is meant to be held"] = None,
+    hold_last_value: Annotated[
+        bool | None, "Set true only when you mean the last value not to be 0. " + HOLD_LAST_VALUE_RULE
+    ] = None,
     method: Annotated[str, "One short phrase saying how you got the new numbers. Replaces the earlier account."] = "",
     rainfall_basis: Annotated[
         str,
@@ -598,8 +628,8 @@ async def attach_input_layer(
     it in the map; say in say_to_user that the inflow is unreviewed and where
     they check or draw it.
 
-    Refused, with no request made: kind `breakline` — no REST create path
-    exists for it at HEAD (TASK-3040 AC6), so attaching one would only
+    Refused, with no request made: kind `breakline` — Hydrata has no way to
+    create a breakline layer, so attaching one would only
     pretend. Also refused without a request: an execution_id that is not the
     UUID the upload returned.
     One GeoJSON per kind: all of a kind's features travel in that one file. A
@@ -628,7 +658,7 @@ async def attach_input_layer(
     if kind not in INPUT_LAYER_ROUTES:
         raise ToolError(
             f"kind {kind!r} is not one of {', '.join(INPUT_LAYER_ROUTES)} "
-            "(breakline is refused: no REST create path at HEAD, TASK-3040 AC6)"
+            "(breakline is refused: Hydrata has no way to create a breakline layer)"
         )
     route = INPUT_LAYER_ROUTES[kind]
     # The one free-form path segment a tool interpolates into a URL — and on
@@ -911,6 +941,12 @@ async def write_input_layer(
     ] = False,
 ) -> str:
     """Write a project input layer (boundary, friction, inflow, rainfall, building, mesh_region or culvert) from GeoJSON you send in this call.
+
+    ASK FIRST: before you write any input, ask the person which approach they
+    want (rain-on-grid, or an inflow hydrograph at a place they name), whether
+    by 'hydrograph' they mean an inflow that drives the model or the flow they
+    want out of the results, and for their design rainfall and losses; do not
+    choose or source these yourself unless they ask you to.
 
     No file, no key, no upload: the features go in `features`. Hydrata
     converts them into the project's grid and puts them in the project's

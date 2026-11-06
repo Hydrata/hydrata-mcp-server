@@ -121,3 +121,51 @@ async def test_tool_hints_negative_control_a_mislabelled_tool_would_be_caught(_s
     assert tools["start_simulation"]["annotations"]["readOnlyHint"] is False  # as a SPENDS_COMPUTE member
     assert "start_simulation" not in READ_ONLY  # were it listed there, the read-only test would fail on this hint
     assert tools["get_run"]["annotations"]["readOnlyHint"] is True and "get_run" in READ_ONLY
+
+
+# ---------------------------------------------------------------------------
+# TASK-4288 (epic 4117 W8): the trust rules live in the tool descriptions too. ChatGPT (openai-mcp/1.0.0)
+# never passes the server instructions to its model, so a rule only the instructions carry is a rule it
+# never sees. Each tool that needs a rule carries it, in the LIVE tools/list.
+# ---------------------------------------------------------------------------
+ASK_APPROACH_PHRASES = (
+    "ask the person which approach they want",
+    "rain-on-grid",
+    "an inflow hydrograph at a place they name",
+    "by 'hydrograph' they mean an inflow that drives the model or the flow they want out of the results",
+    "their design rainfall and losses",
+    "do not choose or source these yourself",
+)
+NEVER_FETCH_TERRAIN = "Never fetch terrain from outside Hydrata"
+
+
+def _flat(text):
+    """A docstring wraps its lines; the agent reads the words."""
+    return " ".join(text.split())
+
+
+@pytest.mark.parametrize("name", ["write_input_layer", "create_time_series", "create_scenario"])
+async def test_tool_rules_input_writers_say_ask_the_approach_and_the_design_rainfall(_server, name):
+    description = _flat((await _tools(_server))[name]["description"])
+    missing = [phrase for phrase in ASK_APPROACH_PHRASES if phrase not in description]
+    assert not missing, (name, missing)
+
+
+async def test_tool_rules_start_simulation_says_give_the_link_and_wait_for_the_go_ahead(_server):
+    description = _flat((await _tools(_server))["start_simulation"]["description"])
+    assert "give the person the ui_url and WAIT for their explicit go-ahead" in description
+    assert "reviewed inputs are not a go-ahead" in description
+
+
+@pytest.mark.parametrize("name", ["list_terrain_sources", "create_terrain_from_source"])
+async def test_tool_rules_terrain_tools_say_never_fetch_your_own(_server, name):
+    description = _flat((await _tools(_server))[name]["description"])
+    assert NEVER_FETCH_TERRAIN in description and "where a Hydrata source covers the site" in description
+
+
+async def test_tool_rules_server_instructions_are_unchanged(_server):
+    """AC2: the rules were COPIED; the server instructions still carry them, word for word."""
+    instructions = _server.mcp.instructions
+    assert "TERRAIN: never fetch your own terrain where a platform source covers the area." in instructions
+    assert "ASK BEFORE YOU BUILD: before you write any input or build, ask the user which approach" in instructions
+    assert "WAIT for them to confirm they have reviewed the inputs in the map" in instructions
