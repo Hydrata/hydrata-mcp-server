@@ -199,7 +199,7 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
             "elapsed_seconds": elapsed,
         }
         project_id, _scenario = await _run_project_and_scenario(run_id, None)
-        price = f" for ${cost}" if cost is not None else ""
+        price = f" for US${cost}" if cost is not None else ""
         await _hand_back(
             result,
             project_id,
@@ -216,8 +216,8 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
         )
     else:
         say = (
-            f"This run is quoted at ${cost}, more than this agent key may spend without asking you "
-            f"(${refusal.get('month_to_date_usd')} of its ${refusal.get('monthly_cap_usd')} monthly limit "
+            f"This run is quoted at US${cost}, more than this agent key may spend without asking you "
+            f"(US${refusal.get('month_to_date_usd')} of its US${refusal.get('monthly_cap_usd')} monthly limit "
             f"used). To start it, open {consent_url} in your browser (signed in to Hydrata) and press the "
             "button. Nothing has started."
         )
