@@ -2,6 +2,7 @@
 
 import inspect
 import json
+import re
 
 import httpx
 import pytest
@@ -213,6 +214,18 @@ class TestStartSimulationConsent:
         assert data["consent_url"] in data["say_to_user"] and "$10.00" in data["say_to_user"]
         assert "start_simulation" in data["next_step"] and "get_run_status" in data["next_step"]
         assert status.call_count == 1  # default: one read, the link comes back at once
+
+    @respx.mock
+    async def test_consent_say_names_the_currency_us_dollars(self, _server):
+        """TASK-4218: Hydrata charges in USD; a bare "$10.00" reads as AUD to an
+        Australian. Every amount the agent is told to relay says US$."""
+        respx.post(f"{BASE}/scenarios/5/run/").mock(return_value=httpx.Response(409, json=CONSENT_409))
+        respx.get(f"{BASE}/runs/502/status/").mock(
+            return_value=httpx.Response(200, json={"id": 502, "status": "built"})
+        )
+        say = _tool_json(await _call_as_caller(_server, "start_simulation", {"scenario_id": 5}))["say_to_user"]
+        assert "US$10.00" in say and "US$45.00" in say and "US$50.00" in say
+        assert not re.search(r"(?<!US)\$\d", say), say
 
     @respx.mock
     async def test_consent_polls_until_the_person_presses_the_button(self, _server):
