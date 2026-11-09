@@ -244,3 +244,48 @@ class TestTimestampOffsetHelp:
                 await _call_as_caller(_server, "update_time_series", {"project_id": 42, "series_id": 77, "data": rows})
             )
         assert "MIXED_TIMESTAMP_FORMS" in text or "no time offset" in text
+
+
+class TestLastRowRule:
+    """TASK-4296 (epic 3754 W2): Hydrata's summary now counts a series' last row as run_anuga applies it
+    (run_utils._merge_timeseries: a rainfall's last row lasts one more interval then 0, an inflow's last value
+    is held to the run end). The hold_last_value help states the same rule, and the agent's sentence says when
+    a flow volume stops at the series' last row."""
+
+    async def test_hold_last_value_help_states_the_engine_last_row_rule(self, _server):
+        tools = await _registered_tools(_server)
+        for name in ("create_time_series", "update_time_series"):
+            help_text = " ".join(tools[name]["inputSchema"]["properties"]["hold_last_value"]["description"].split())
+            assert "a rainfall's last row rains for one more interval (as long as the step before it)" in help_text
+            assert "then stops at 0" in help_text
+            assert "an inflow's last value is held to the end of the run" in help_text
+
+    async def test_a_held_flow_volume_to_the_series_end_says_so(self, _server):
+        from hydrata_mcp.inputs import _series_sentence
+
+        result = {"series_type": "hydrograph", "name": "Held flow", "units": "m3/s", "hold_last_value": True}
+        summary = {
+            "peak_value": 2.0,
+            "peak_at": "2026-01-01T00:05:00+00:00",
+            "total": 300.0,
+            "total_units": "m3",
+            "total_to": "series_end",
+            "trailing_value": 2.0,
+        }
+        sentence = _series_sentence(result, summary)
+        assert "volume 300 m3 to the series' last row" in sentence
+        assert "keeps the last flow going to the end of the run" in sentence
+
+    @pytest.mark.parametrize(
+        "summary",
+        [
+            {"total": 300.0, "total_units": "m3", "total_to": "series_end", "trailing_value": 0.0},
+            {"total": 2100.0, "total_units": "m3", "total_to": "run_end", "trailing_value": 2.0},
+            {"total": 3.0, "total_units": "mm", "total_to": "rain_end", "trailing_value": 24.0},
+        ],
+    )
+    async def test_negative_control_no_note_when_nothing_is_held_past_the_total(self, _server, summary):
+        from hydrata_mcp.inputs import _series_sentence
+
+        sentence = _series_sentence({"series_type": "hydrograph", "name": "S"}, summary)
+        assert "series' last row" not in sentence
