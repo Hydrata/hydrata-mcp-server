@@ -126,8 +126,9 @@ def _validate_row_data(data) -> int:
     is not {"rowData": [...]}) is an UNHANDLED 500 whose body the client masks
     — the agent would see "server error" for a typo in one timestamp. The
     checks are exactly clean()'s: every row a dict with `timestamp` (ISO 8601
-    string, trailing Z tolerated) and `value` (float()-able). Rows are NOT
-    rewritten — clean() normalises them server-side.
+    string, with or without an offset) and `value` (float()-able). Rows are NOT
+    rewritten — clean() normalises them server-side (TASK-4295: a stamp with an
+    offset is stored as that instant in UTC).
     """
     if not isinstance(data, dict) or not isinstance(data.get("rowData"), list):
         raise ToolError(
@@ -164,6 +165,16 @@ SERIES_ROWS_RULE = (
 )
 
 
+#: TASK-4295 (epic 3754 W2): what a timestamp's offset means. Hydrata stores a stamp that carries 'Z' or +hh:mm as
+#: that instant in UTC (hydrology TimeSeries.clean) and refuses one write mixing the two forms
+#: (MIXED_TIMESTAMP_FORMS); a stamp with no offset stays a clock time in the series' timezone (TASK-3802).
+TIMESTAMP_OFFSET_RULE = (
+    " Time zones: a stamp with no offset is a wall clock in the series timezone; a stamp with Z or +hh:mm is "
+    "that instant, stored in UTC and shown in the series timezone; one series never mixes the two (Hydrata "
+    "refuses it with MIXED_TIMESTAMP_FORMS)."
+)
+
+
 #: TASK-4294 (W8 fold review): how run_anuga reads a series' last row (run_utils._merge_timeseries:
 #: zero_after_last_block for rainfall only; an inflow line keeps its last value).
 HOLD_LAST_VALUE_RULE = (
@@ -186,8 +197,8 @@ async def create_time_series(
     data: Annotated[
         dict,
         'The rows: {"rowData": [{"timestamp": "1998-08-17T00:00:00", "value": 1.5}, '
-        "...]}. Timestamps ISO 8601 (a trailing Z is tolerated), values numeric. "
-        "Validated here before anything is sent." + SERIES_ROWS_RULE,
+        "...]}. Timestamps ISO 8601, values numeric. "
+        "Validated here before anything is sent." + TIMESTAMP_OFFSET_RULE + SERIES_ROWS_RULE,
     ],
     description: Annotated[str, "Free-text description (optional)"] = "",
     series_type: Annotated[
@@ -205,7 +216,11 @@ async def create_time_series(
     ] = "",
     source: Annotated[str, "Where the data came from, e.g. a gauge id or agency (optional)"] = "",
     location_name: Annotated[str, "Human-readable location of the gauge (optional)"] = "",
-    timezone: Annotated[str, "IANA timezone of the timestamps (default 'UTC'), e.g. 'Australia/Sydney'"] = "UTC",
+    timezone: Annotated[
+        str,
+        "IANA timezone of the series (default 'UTC'), e.g. 'Australia/Sydney': the zone its stamps with no offset "
+        "are read in and its summary is shown in." + TIMESTAMP_OFFSET_RULE,
+    ] = "UTC",
     hold_last_value: Annotated[
         bool,
         "Set true ONLY when you mean the last value not to be 0. " + HOLD_LAST_VALUE_RULE + " A hydrograph or "
@@ -346,7 +361,7 @@ async def update_time_series(
         dict | None,
         'Replacement rows: {"rowData": [{"timestamp": "<ISO 8601>", "value": <number>}, ...]}. '
         "Validated here before anything is sent; Hydrata refuses fewer than 2 rows, negative rain or flow "
-        "values and an all-zero rain or flow series." + SERIES_ROWS_RULE,
+        "values and an all-zero rain or flow series." + TIMESTAMP_OFFSET_RULE + SERIES_ROWS_RULE,
     ] = None,
     description: Annotated[str, "New description"] = "",
     units: Annotated[str, "New units (must match the series_type, as in create_time_series)"] = "",
