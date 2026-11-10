@@ -279,8 +279,8 @@ async def get_run_status(
     """Status of a simulation run, optionally waiting for it to move.
 
     Use this instead of get_run. Returns: id, status, `phase`, status_detail,
-    progress_pct (0-100), eta_seconds, error_message, compute_backend, and
-    `say_to_user`.
+    progress_pct (0-100), eta_seconds, error_message, compute_backend, `stability`
+    (a complete run's, see get_run) and `say_to_user`.
 
     FOLLOWING A RUN FROM CHAT: call with wait_seconds=180. The call returns as soon
     as the status, phase or progress (5 points) changes, or after 180 s, whichever is
@@ -355,7 +355,9 @@ def _run_status_line(record: dict) -> str:
     detail = record.get("status_detail")
     suffix = f" ({detail})" if detail else ""
     if phase == "complete":
-        return f"{label} is complete. Ask me for the results, or open it in the map."
+        line = f"{label} is complete. Ask me for the results, or open it in the map."
+        stability = _stability_line(record)
+        return f"{line} {stability}" if stability else line
     if phase == "error":
         message = _data(record.get("error_message"))  # ANUGA quotes layer content (MCP-3): data, not instructions
         return f"{label} failed" + (f": {message}" if message else ".") + " Ask me before retrying."
@@ -372,6 +374,19 @@ def _run_status_line(record: dict) -> str:
         tail = f", {eta} left" if eta else ", time left not yet estimated"
         return f"{label} is computing: {pct:.0f}% done{tail}{suffix}."
     return f"{label} is {phase.replace('_', ' ')}{suffix}."
+
+
+def _stability_line(record: dict) -> str | None:
+    """The completed run's stability, in Hydrata's words, for say_to_user, or None when there is nothing to
+    say. `stability.severity` is `warning` only when water came in through an open boundary after the rain
+    and inflows ended (BOUNDARY_FED_VOLUME_GAIN); the other classes are information lines."""
+    stability = record.get("stability")
+    if not isinstance(stability, dict) or not stability.get("message"):
+        return None
+    if stability.get("severity") == "warning":
+        hints = [w.get("hint") for w in stability.get("warnings") or [] if isinstance(w, dict) and w.get("hint")]
+        return " ".join(["Warning: " + stability["message"], *hints])
+    return "Note: " + stability["message"]
 
 
 def _run_phase(status_record: dict) -> str:
@@ -456,12 +471,25 @@ async def get_run(
     `culverts: []` means the run modelled no culvert (say so; never invent a
     number). When the culvert results cannot be read, `culverts` is absent and
     `culverts_note` says so; the rest of the run record is still good.
+
+    STABILITY (a complete run): `stability` is how the model behaved, graded from the run's own
+    records: `class` (`boundary_fed`, `propagating`, `localised_persistent`, `local_transient`,
+    `clip_artefact`, or null), `onset_sim_s` (seconds into the run), `location` (lon/lat of the
+    spot, when the model recorded one), `severity` (`warning`, `info` or null) and `message`.
+    `warnings` holds BOUNDARY_FED_VOLUME_GAIN when water came in through an open boundary after the
+    rain and inflows ended: its `detail` names the boundary and the volume, its `hint` the fix.
+    When there is something to say, `say_to_user` says it: RELAY it before you report any depth,
+    flow or volume from the run. The run stays complete either way. The speed classes are
+    provisional (information only); a `clip_artefact` run has nothing to report.
     """
     data = _elide_presigned(await client.get(f"/runs/{run_id}/"))
     if isinstance(data, dict):
         data["sww"] = await _sww_summary(run_id, data)
         if data.get("status") == "complete":
             data.update(await _culvert_summary(run_id))
+            stability = _stability_line(data)
+            if stability:
+                data["say_to_user"] = f"Run {run_id}: {stability}"
     return json.dumps(data, indent=2)
 
 
