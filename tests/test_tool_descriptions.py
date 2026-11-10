@@ -175,7 +175,9 @@ def _customer_texts(sources):
         params = {a.arg for a in function.args.args + function.args.kwonlyargs} if function else set()
         for node in ast.walk(expr):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                texts[(module, node.lineno, node.col_offset)] = node.value
+                # id(node) in the key: before Python 3.12 every literal part of one f-string carries the
+                # f-string's own line/col, so a (module, line, col) key let the last part overwrite the others
+                texts[(module, node.lineno, node.col_offset, id(node))] = node.value
             elif isinstance(node, ast.Name):
                 if node.id in params and function.name in functions:  # a module-level helper's parameter
                     sinks.add((function.name, node.id))
@@ -218,7 +220,7 @@ def _customer_texts(sources):
                     passed.append(call.args[positions.index(param)])
                 for expr in passed:
                     collect(module, expr, function)
-    return sorted((module, line, text) for (module, line, _), text in texts.items())
+    return sorted((module, line, text) for (module, line, _, _), text in texts.items())
 
 
 def _package_sources():
