@@ -33,10 +33,10 @@ from .inputs import _unbound_series
 # build (`resolution`, `duration`, the input FKs, the terrain) and what it
 # will cost (`quote_estimate`, TASK-4101: the ONE pre-build price) — the inverse of
 # "show your work before build and spend". `inflow_anchor_mismatch` is the
-# record's only pre-build correctness warning (a timeseries inflow starting
+# record's inflow-vs-inflow start warning (a timeseries inflow starting
 # after model_start gets zero flow over the lead-in gap before its first
-# sample: run_anuga run_utils.py fillna(0.0), TASK-2825) and has no other
-# MCP path at all.
+# sample: run_anuga run_utils.py fillna(0.0), TASK-2825); since TASK-3992 the
+# hydrology_check also warns (same code) of a lone inflow starting after the rain.
 SCENARIO_RECORD_KEYS = (
     "id",
     "project",
@@ -113,9 +113,11 @@ async def get_scenario(
     `list_price` is the real figure), and
     `authored_method` and `sources` (how the agent made the scenario and the documents it cites:
     `[]` when none), and
-    `inflow_anchor_mismatch` (null unless an inflow series starts after the
-    model does: the model gets zero flow from that series over the lead-in
-    gap before its first sample), and
+    `inflow_anchor_mismatch` (null unless two inflow series start at
+    different times; for the later one the model gets zero flow from that
+    series over the lead-in gap before its first sample. One inflow that
+    starts after the rainfall is warned in `hydrology_check` under the same
+    code, INFLOW_ANCHOR_MISMATCH, with its lead-in), and
     `hydrology_check` (when Hydrata sends it: for each inflow and rainfall
     feature, the series that drives it, its peak and volume, and structured
     warnings — repeat those numbers to the user, never your own), and
