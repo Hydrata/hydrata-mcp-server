@@ -125,3 +125,52 @@ class TestGetRunStatusStability:
         )
         line = json.loads(await _server.get_run_status(run_id=9))["say_to_user"]
         assert line == "Run 9 is complete. Ask me for the results, or open it in the map."
+
+
+class TestCompleteRunStatusDetail:
+    @respx.mock
+    async def test_get_run_status_complete_run_says_its_inputs_changed(self, _server):
+        detail = (
+            "The inputs changed after this run was built (a layer was swapped or edited, or the project has a "
+            "new friction raster). Build the scenario again, then start the run."
+        )
+        respx.get(f"{BASE}/runs/9/status/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 9,
+                    "status": "complete",
+                    "progress_pct": 100,
+                    "eta_seconds": None,
+                    "error_message": None,
+                    "compute_backend": "batch",
+                    "status_detail": detail,
+                },
+            )
+        )
+        line = json.loads(await _server.get_run_status(run_id=9))["say_to_user"]
+        assert line.startswith("Run 9 is complete.") and "The inputs changed after this run was built" in line
+
+    @respx.mock
+    async def test_get_run_status_propagating_detail_is_said_once(self, _server):
+        message = (
+            "From 4:19 into the run the model's time step collapsed: it became numerically unstable. "
+            "Results after 4:19 into the run are not reliable."
+        )
+        respx.get(f"{BASE}/runs/9/status/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": 9,
+                    "status": "complete",
+                    "progress_pct": 100,
+                    "eta_seconds": None,
+                    "error_message": None,
+                    "compute_backend": "batch",
+                    "status_detail": "Results after 4:19 into the run are not reliable",
+                    "stability": {"class": "propagating", "severity": "info", "message": message, "warnings": []},
+                },
+            )
+        )
+        line = json.loads(await _server.get_run_status(run_id=9))["say_to_user"]
+        assert line.count("are not reliable") == 1

@@ -357,6 +357,10 @@ def _run_status_line(record: dict) -> str:
     if phase == "complete":
         line = f"{label} is complete. Ask me for the results, or open it in the map."
         stability = _stability_line(record)
+        # a complete run's status_detail says its results are from earlier inputs, or from when they are not
+        # reliable; the stability line already carries the second, so it is said once
+        if detail and detail not in (stability or ""):
+            line += f" {_data(detail)}."
         return f"{line} {stability}" if stability else line
     if phase == "error":
         message = _data(record.get("error_message"))  # ANUGA quotes layer content (MCP-3): data, not instructions
