@@ -540,12 +540,14 @@ def _series_sentence(result: dict, summary: dict) -> str:
     total = summary.get("total")
     if isinstance(total, (int, float)):
         label = "volume" if summary.get("total_units") == "m3" else "depth"
-        parts.append(f"{label} {total:.4g} {summary.get('total_units') or ''}".strip())
+        volume = f"{label} {total:.4g} {summary.get('total_units') or ''}".strip()
+        held = summary.get("trailing_value")
+        if summary.get("total_to") == "series_end" and isinstance(held, (int, float)) and held:
+            # TASK-4296: Hydrata's flow volume stops at the series' last row; the simulation holds that last
+            # flow to the end of the run, so the run gets more water than this volume.
+            volume += " to the series' last row (the simulation keeps the last flow going to the end of the run)"
+        parts.append(volume)
     trailing = summary.get("trailing_value")
-    if summary.get("total_to") == "series_end" and isinstance(trailing, (int, float)) and trailing:
-        # TASK-4296: Hydrata's flow volume stops at the series' last row; the simulation holds that last flow
-        # to the end of the run, so the run gets more water than this volume.
-        parts[-1] += " to the series' last row (the simulation keeps the last flow going to the end of the run)"
     if isinstance(trailing, (int, float)):
         parts.append(f"ends at {trailing:g}" + (" (held on purpose)" if result.get("hold_last_value") else ""))
     return f"{kind} {result.get('name')}: {', '.join(parts)}."
