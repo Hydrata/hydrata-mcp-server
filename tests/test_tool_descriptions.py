@@ -177,7 +177,7 @@ def _customer_texts(sources):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 texts[(module, node.lineno, node.col_offset)] = node.value
             elif isinstance(node, ast.Name):
-                if node.id in params:
+                if node.id in params and function.name in functions:  # a module-level helper's parameter
                     sinks.add((function.name, node.id))
                 for const_module, value in constants.get(node.id, []):
                     collect(const_module, value, None)
@@ -190,21 +190,34 @@ def _customer_texts(sources):
     for name, tree in trees.items():
         for expr, function in _text_roots(tree):
             collect(name, expr, function)
-    # a helper whose parameter becomes the text: what every caller passes for it is a text too
+    # a helper whose parameter becomes the text: what every caller passes for it is a text too (to a fixpoint, so a
+    # wrapper that hands its own parameter on to such a helper is followed as well)
+    calls = []
+
+    def find_calls(module, node, function):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function = node
+        if isinstance(node, ast.Call) and _call_name(node) in functions:
+            calls.append((module, node, function))
+        for child in ast.iter_child_nodes(node):
+            find_calls(module, child, function)
+
     for name, tree in trees.items():
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            for fn_name, param in sinks:
-                if _call_name(node) != fn_name:
+        find_calls(name, tree, None)
+    done = set()
+    while sinks - done:
+        for fn_name, param in sinks - done:
+            done.add((fn_name, param))
+            [(_, fn)] = functions[fn_name][:1]
+            positions = [a.arg for a in fn.args.args]
+            for module, call, function in calls:
+                if _call_name(call) != fn_name:
                     continue
-                [(_, fn)] = functions[fn_name][:1]
-                positions = [a.arg for a in fn.args.args]
-                passed = [k.value for k in node.keywords if k.arg == param]
-                if param in positions and positions.index(param) < len(node.args):
-                    passed.append(node.args[positions.index(param)])
+                passed = [k.value for k in call.keywords if k.arg == param]
+                if param in positions and positions.index(param) < len(call.args):
+                    passed.append(call.args[positions.index(param)])
                 for expr in passed:
-                    collect(name, expr, None)
+                    collect(module, expr, function)
     return sorted((module, line, text) for (module, line, _), text in texts.items())
 
 
@@ -234,6 +247,8 @@ async def test_the_customer_text_reader_finds_a_task_id_in_each_place_a_text_is_
             "    return f'run {run} TASK-2'\n"
             "def _hand(result, say_to_user):\n"
             "    result['say_to_user'] = say_to_user\n"
+            "def _wrap(result, line):\n"
+            "    return _hand(result, line)\n"
             "def tool(x):\n"
             "    # comment TASK-9 is not a text\n"
             "    if x:\n"
@@ -242,9 +257,10 @@ async def test_the_customer_text_reader_finds_a_task_id_in_each_place_a_text_is_
             "    result = {'say_to_user': _line(x)}\n"
             "    result['say_to_user'] += ' TASK-4'\n"
             "    _hand(result, 'relayed TASK-5')\n"
+            "    _wrap(result, 'wrapped TASK-8')\n"
             "    return dict(say_to_user='kw TASK-6', other='not a text TASK-7')\n"
         )
     }
     found = [text for _, _, text in _customer_texts(planted) if "TASK-" in text]
     ids = sorted(int(text.split("TASK-")[1][0]) for text in found)
-    assert ids == [1, 2, 3, 4, 5, 6], found
+    assert ids == [1, 2, 3, 4, 5, 6, 8], found
