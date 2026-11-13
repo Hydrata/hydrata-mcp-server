@@ -906,6 +906,14 @@ async def merge_terrains(
             "get_terrain reports. Nothing was sent."
         )
     stack = [by_id[i] for i in ids]
+    # Hydrata's derive only checks that each terrain exists; one still importing (or failed) breaks the merge
+    # where get_terrain_merge cannot see it, so it is refused here.
+    unready = [row.get("id") for row in stack if _status_of(row) != "ready"]
+    if unready:
+        raise ToolError(
+            f"Terrain(s) {', '.join(str(i) for i in unready)} are not ready: wait for get_terrain to report "
+            "ready before merging. Nothing was sent."
+        )
     pixels = _merge_pixel_estimate(stack, float(target_resolution_m), extent)
     names = ", ".join(f"{_data(str(row.get('title') or row.get('id')))} ({row.get('id')})" for row in stack)
     summary: dict = {

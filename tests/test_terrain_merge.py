@@ -23,9 +23,16 @@ SURFACE = f"{SURFACES}5/"
 INPUTS = f"{SURFACES}5/inputs/"
 DERIVE = f"{SURFACES}5/derive/"
 TERRAINS = f"{BASE}/projects/42/terrain/"
-LIDAR = {"id": 11, "title": "GA 5 m LiDAR", "bbox_wgs84": [150.0, -34.0, 150.01, -33.99], "native_resolution_m": 5.0}
+LIDAR = {
+    "id": 11,
+    "status": "ready",
+    "title": "GA 5 m LiDAR",
+    "bbox_wgs84": [150.0, -34.0, 150.01, -33.99],
+    "native_resolution_m": 5.0,
+}
 GLO30 = {
     "id": 12,
+    "status": "ready",
     "title": "Copernicus 30 m",
     "bbox_wgs84": [150.005, -34.005, 150.02, -33.995],
     "native_resolution_m": 30.0,
@@ -185,3 +192,12 @@ async def test_get_terrain_merge_still_merging_is_timed_out_and_says_call_again(
     )
     assert data["outcome"] == "timed_out" and data["phase"] == "merging" and data["terrain_id"] is None
     assert "get_terrain_merge" in data["next_step"]
+
+
+@respx.mock
+async def test_merge_terrains_refuses_a_terrain_that_is_not_ready_before_anything_is_created(_server):
+    """Review fix: Hydrata's derive only checks that a terrain exists; one still importing fails out of sight."""
+    respx.get(TERRAINS).mock(return_value=httpx.Response(200, json=[LIDAR, {**GLO30, "status": "creating"}]))
+    create, _inputs, _derive = _mock_writes()
+    text = _tool_error_text(await _call_as_caller(_server, "merge_terrains", ARGS))
+    assert "12" in text and "not ready" in text and create.call_count == 0
