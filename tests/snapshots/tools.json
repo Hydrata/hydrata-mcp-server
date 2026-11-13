@@ -1143,7 +1143,7 @@
       "readOnlyHint": true,
       "title": "Wait for a terrain merge"
     },
-    "description": "Wait for a terrain merge started by merge_terrains until the merged terrain is `ready` (or `error`).\n\nReturns `outcome` (ready | error | timed_out), `phase` (merging: the terrains are being merged;\nimporting: the merged terrain is being published; then ready or error), `terrain_id` of the merged\nterrain once it exists, and its record. `timed_out` is normal: call again with the same arguments.\nOnce `ready`, use `terrain_id` like any other terrain (get_terrain, sample_terrain, a scenario's terrain).\nRead-only.",
+    "description": "Wait for a terrain merge started by merge_terrains until the merged terrain is `ready` (or `error`).\n\nReturns `outcome` (ready | error | timed_out), `phase` (merging: the terrains are being merged;\nimporting: the merged terrain is being published; then ready or error), `terrain_id` of the merged\nterrain once it exists, and its record. `timed_out` is normal: call again with the same arguments.\nIf the merge itself failed, `outcome` is `error` at once with Hydrata's reason in `error`; tell the user.\nOnce `ready`, use `terrain_id` like any other terrain (get_terrain, sample_terrain, a scenario's terrain).\nRead-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

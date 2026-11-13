@@ -212,3 +212,60 @@ async def test_merge_terrains_refuses_a_terrain_that_is_not_ready_before_anythin
     create, _inputs, _derive = _mock_writes()
     text = _tool_error_text(await _call_as_caller(_server, "merge_terrains", ARGS))
     assert "12" in text and "not ready" in text and create.call_count == 0
+
+
+MERGE_FAILED = (
+    "The terrain merge failed. This usually means the combined area is too large to process at the chosen "
+    "resolution. Try merging fewer or smaller terrains, or a coarser target resolution, then try again; "
+    "if it keeps happening, contact support."
+)
+
+
+@respx.mock
+async def test_get_terrain_merge_failed_derive_returns_error_with_hydratas_reason_at_once(_server):
+    """TASK-4375: a failed derive shows on the surface (`last_derive`); the tool stops polling and says why."""
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    surface = respx.get(SURFACE).mock(
+        side_effect=[
+            httpx.Response(
+                200, json={"id": 5, "output_terrain": None, "last_derive": {"status": "running", "error": None}}
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "id": 5,
+                    "output_terrain": None,
+                    "last_derive": {"status": "failed", "error": MERGE_FAILED, "at": "2026-11-13T01:02:03+00:00"},
+                },
+            ),
+        ]
+    )
+    result = await _call_as_caller(
+        _server, "get_terrain_merge", {"project_id": 42, "analysis_surface_id": 5, "poll_interval_seconds": 0}
+    )
+    raw = json.loads(result["content"][0]["text"])
+    assert raw["error"] == f"<untrusted-data>{MERGE_FAILED}</untrusted-data>"  # Hydrata's words are data
+    data = _tool_json(result)
+    assert surface.call_count == 2 and data["polls"] == 2
+    assert data["outcome"] == "error" and data["phase"] == "merging" and data["terrain_id"] is None
+    assert data["error"] == MERGE_FAILED
+    assert "merge failed" in data["say_to_user"] and MERGE_FAILED in data["say_to_user"]
+    assert "next_step" not in data
+
+
+@respx.mock
+async def test_get_terrain_merge_failed_derive_wins_over_an_older_ready_terrain(_server):
+    """A re-derive that failed must not report the previous derive's merged terrain as ready."""
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    respx.get(SURFACE).mock(
+        return_value=httpx.Response(
+            200, json={"id": 5, "output_terrain": 99, "last_derive": {"status": "failed", "error": MERGE_FAILED}}
+        )
+    )
+    respx.get(f"{TERRAINS}99/").mock(return_value=httpx.Response(200, json={"id": 99, "status": "ready"}))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "get_terrain_merge", {"project_id": 42, "analysis_surface_id": 5, "timeout_seconds": 0}
+        )
+    )
+    assert data["outcome"] == "error" and MERGE_FAILED in data["say_to_user"]

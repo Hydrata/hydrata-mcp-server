@@ -1015,6 +1015,7 @@ async def get_terrain_merge(
     Returns `outcome` (ready | error | timed_out), `phase` (merging: the terrains are being merged;
     importing: the merged terrain is being published; then ready or error), `terrain_id` of the merged
     terrain once it exists, and its record. `timed_out` is normal: call again with the same arguments.
+    If the merge itself failed, `outcome` is `error` at once with Hydrata's reason in `error`; tell the user.
     Once `ready`, use `terrain_id` like any other terrain (get_terrain, sample_terrain, a scenario's terrain).
     Read-only.
     """
@@ -1026,15 +1027,27 @@ async def get_terrain_merge(
         terrain = await client.get(f"/projects/{project_id}/terrain/{output}/") if output else None
         return surface, terrain
 
+    def merge_failure(value):
+        """TASK-4375: Hydrata's plain reason when the surface's newest derive failed, else None."""
+        last = value[0].get("last_derive") if isinstance(value[0], dict) else None
+        if not isinstance(last, dict) or last.get("status") not in ("failed", "cancelled"):
+            return None
+        return last.get("error") or f"The merge was {last['status']} before it finished."
+
     def is_terminal(value):
-        return _status_of(value[1]) in TERRAIN_TERMINAL_STATUSES
+        return merge_failure(value) is not None or _status_of(value[1]) in TERRAIN_TERMINAL_STATUSES
 
     (surface, terrain), polls, elapsed, timed_out = await _poll_until(
         fetch, is_terminal, timeout_seconds, poll_interval_seconds
     )
+    failure = merge_failure((surface, terrain))
     status = _status_of(terrain)
     phase = status if status in TERRAIN_TERMINAL_STATUSES else ("importing" if terrain else "merging")
-    outcome = "timed_out" if timed_out else status
+    if failure is not None:
+        # The merge itself failed: a merged terrain from an earlier derive of this recipe is not this result.
+        phase, outcome = "merging", "error"
+    else:
+        outcome = "timed_out" if timed_out else status
     record = terrain if isinstance(terrain, dict) else {}
     terrain_id = record.get("id")
     result: dict = {
@@ -1046,6 +1059,8 @@ async def get_terrain_merge(
         "terrain_id": terrain_id,
         "terrain": terrain,
     }
+    if failure is not None:
+        result["error"] = _data(str(failure))
     summary = {
         "analysis_surface_id": analysis_surface_id,
         "terrain_id": terrain_id,
@@ -1057,6 +1072,11 @@ async def get_terrain_merge(
         say = (
             f"The merged terrain is ready (terrain {terrain_id}): elevation {record.get('dem_elev_min')} to "
             f"{record.get('dem_elev_max')} m. {MERGE_GAP_FILLING} Open the link and check the seams."
+        )
+    elif failure is not None:
+        say = (
+            f"The terrain merge failed, so no merged terrain was made. Hydrata says: {result['error']} "
+            "Tell the user; the merge needs running again with merge_terrains."
         )
     elif outcome == "error":
         say = f"The merged terrain (terrain {terrain_id}) failed to import; the merge needs running again."
