@@ -33,7 +33,7 @@ date with `pyproject.toml`. Without uv: `pip install -e '.[dev]'`, then `make ch
 2. `parity`: `scripts/check_version_parity.py` (`pyproject.toml` and `server.json` carry the same version).
 3. `test`: `pytest -q`, the mocked suite described in [docs/testing.md](docs/testing.md).
 
-To fix formatting: `uv run --frozen --extra dev ruff format .`
+To fix formatting: `uv run --locked --extra dev ruff format .`
 
 ## The tool-list snapshot
 
@@ -44,7 +44,7 @@ change by accident.
 When you change a tool on purpose, regenerate the snapshot deliberately and commit it with the code change:
 
 ```bash
-UPDATE_SNAPSHOT=1 uv run --frozen --extra dev pytest tests/test_tool_snapshot.py
+UPDATE_SNAPSHOT=1 uv run --locked --extra dev pytest tests/test_tool_snapshot.py
 git diff tests/snapshots/tools.json   # read it: this diff is what clients will see
 ```
 
