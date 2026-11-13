@@ -27,7 +27,7 @@ Keys and connections are listed, and revoked, on the same Agent keys page. A run
 
 ## Tools
 
-Version 0.2.2 exposes forty-two tools, all listed below; nineteen of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
+Version 0.2.2 exposes forty-three tools, all listed below; nineteen of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
 
 | Tool | Description |
 |------|-------------|
@@ -46,6 +46,7 @@ Version 0.2.2 exposes forty-two tools, all listed below; nineteen of them only r
 | `create_project` | Create an ANUGA project with a name and EPSG projection; returns its `base_map` and the `ui_url` of its map |
 | `presign_terrain_upload` | Return a presigned URL + key so the agent PUTs the terrain GeoTIFF itself (no file bytes pass through MCP) |
 | `finalize_terrain_upload` | Register the uploaded terrain; the import chain seeds the project's six default boundary/friction/inflow/rainfall/building/mesh-region rows (no culvert row: `attach_input_layer` creates 'Culvert 01' on demand) |
+| `convert_terrain_datum` | Make a copy of a terrain shifted from ellipsoid heights to EGM2008 (sea-level) heights, keeping the original; for a GeoTIFF still being uploaded, `finalize_terrain_upload(convert_to_egm2008=true)` does the same |
 | `get_terrain` | Poll the terrain until it is ready (bounded; `timed_out` means call again); `phase` is never empty; summary = WGS84 bbox, elevation min/max, nodata fraction, native CRS; the link frames the DEM |
 | `list_terrain_sources` | The terrain Hydrata can fetch for a site, finest first (Copernicus GLO-30 worldwide, finer regional LiDAR such as Geoscience Australia 5 m where it has data), with coverage, size cap, vertical datum and licence |
 | `create_terrain_from_source` | Have Hydrata fetch, reproject and publish a DEM from one of those sources, then wait for the import like `get_terrain` |

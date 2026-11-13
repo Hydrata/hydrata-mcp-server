@@ -207,3 +207,88 @@ async def test_get_terrain_levels_datum_keeps_the_inferred_guess_when_nothing_is
     }
     data = await _get(_server, _ready(vertical_datum=only_guess))
     assert data["terrain"]["vertical_datum"]["inferred_datum_guess"] == "orthometric_egm2008"
+
+
+# ---------------------------------------------------------------------------
+# TASK-4336 (epic 4329 W1): the ellipsoid to EGM2008 shift, on finalize and as its own tool.
+# ---------------------------------------------------------------------------
+CONVERT = f"{BASE}/projects/42/terrain/7/convert-datum/"
+
+
+@respx.mock
+async def test_finalize_convert_to_egm2008_sends_the_flag_with_an_ellipsoid_declaration(_server):
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "finalize_terrain_upload",
+            {"project_id": 42, "staging_key": "k", "vertical_datum_declared": "ellipsoid", "convert_to_egm2008": True},
+        )
+    )
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["convert_to_egm2008"] is True and sent["vertical_datum_declared"] == "ellipsoid"
+    assert "EGM2008" in data["say_to_user"]
+
+
+@respx.mock
+async def test_finalize_without_convert_to_egm2008_sends_no_flag(_server):
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    await _call_as_caller(
+        _server,
+        "finalize_terrain_upload",
+        {"project_id": 42, "staging_key": "k", "vertical_datum_declared": "ellipsoid"},
+    )
+    assert "convert_to_egm2008" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+async def test_finalize_convert_to_egm2008_without_an_ellipsoid_declaration_is_refused_before_the_api(_server):
+    """Hydrata honours the flag only for an ellipsoid declaration (it would double-shift anything else)."""
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={}))
+    text = _tool_error_text(
+        await _call_as_caller(
+            _server,
+            "finalize_terrain_upload",
+            {"project_id": 42, "staging_key": "k", "vertical_datum_declared": "ahd", "convert_to_egm2008": True},
+        )
+    )
+    assert "ellipsoid" in text and route.call_count == 0
+
+
+@respx.mock
+async def test_convert_terrain_datum_posts_to_convert_datum_and_hands_back(_server):
+    route = respx.post(CONVERT).mock(
+        return_value=httpx.Response(202, json={"id": 9, "title": "dem (EGM2008)", "status": "creating"})
+    )
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "convert_terrain_datum", {"project_id": 42, "terrain_id": 7}))
+    assert route.call_count == 1
+    assert route.calls[0].request.headers["authorization"] == CALLER_KEY
+    assert data["outcome"] == "started" and data["terrain_id"] == 9 and data["source_terrain_id"] == 7
+    assert data["ui_url"].endswith("/catalogue/#/map/77?panel=inputs")
+    assert data["summary"]["terrain_id"] == 9 and data["summary"]["source_terrain_id"] == 7
+    assert "get_terrain" in data["next_step"] and "EGM2008" in data["say_to_user"]
+
+
+@respx.mock
+async def test_convert_terrain_datum_existing_conversion_is_reported_not_duplicated(_server):
+    respx.post(CONVERT).mock(return_value=httpx.Response(200, json={"id": 9, "status": "ready"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "convert_terrain_datum", {"project_id": 42, "terrain_id": 7}))
+    assert data["outcome"] == "already_converted" and data["terrain_id"] == 9
+    assert "already" in data["say_to_user"]
+
+
+@respx.mock
+async def test_convert_terrain_datum_refusal_is_relayed_verbatim(_server):
+    detail = (
+        "This terrain is already on EGM2008 orthometric height; converting it again would double-apply the geoid shift."
+    )
+    respx.post(CONVERT).mock(return_value=httpx.Response(409, json={"error_code": "ALREADY_EGM2008", "detail": detail}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "convert_terrain_datum", {"project_id": 42, "terrain_id": 7}))
+    assert data["outcome"] == "refused" and data["http_status"] == 409
+    assert data["error_code"] == "ALREADY_EGM2008" and data["detail"] == detail
+    assert detail in data["say_to_user"] and "Nothing was created" in data["say_to_user"]

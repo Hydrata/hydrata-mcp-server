@@ -210,6 +210,9 @@ mcp = FastMCP(
         "pass the answer as levels_datum on create_terrain_from_source (it is required): that is the "
         "datum of the person's levels, a project fact. vertical_datum_declared stays the terrain's own "
         "datum (an uploaded DEM's, on finalize_terrain_upload); never put the person's levels there. "
+        "Only when the user says a terrain's heights are on the ellipsoid (raw GPS or satellite heights), shift "
+        "them to EGM2008: convert_to_egm2008=true on finalize_terrain_upload, or convert_terrain_datum for a "
+        "terrain already in Hydrata (it makes a copy and keeps the original). "
         "Never relay the datum Hydrata inferred as fact. When get_terrain or get_project reports a "
         "levels datum mismatch, relay it. "
         "To place a culvert, inflow or boundary on the ground, sample_terrain the points or terrain_profile "
@@ -341,6 +344,8 @@ TOOL_ANNOTATIONS = {
     "create_project": ("Create a project", False, False, False),
     "presign_terrain_upload": ("Get a terrain upload URL", False, False, False),
     "finalize_terrain_upload": ("Register an uploaded terrain", False, False, False),
+    # TASK-4336: a new terrain shifted ellipsoid -> EGM2008; the source is kept, so not destructive.
+    "convert_terrain_datum": ("Shift a terrain from ellipsoid to EGM2008 heights", False, False, False),
     "create_time_series": ("Create a time series", False, False, False),
     # TASK-4056: an agent corrects or removes its own series.
     "update_time_series": ("Correct a time series", False, False, True),

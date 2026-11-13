@@ -172,6 +172,12 @@ async def finalize_terrain_upload(
         "separate from the terrain's own datum. Pass it when the user told you; if they did not, "
         "ask them, do not guess.",
     ] = "",
+    convert_to_egm2008: Annotated[
+        bool,
+        "True to have Hydrata also make a copy of the terrain shifted from ellipsoid heights to EGM2008 "
+        "(sea-level) heights once the import is done. Only with vertical_datum_declared `ellipsoid`, the "
+        "datum the user told you; the original stays as it is. Default false.",
+    ] = False,
 ) -> str:
     """Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.
 
@@ -186,6 +192,10 @@ async def finalize_terrain_upload(
     Returns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND
     means no object is at `staging_key`: the PUT did not land (check its status
     code and Content-Type) — do not retry finalize until it has.
+
+    Heights the user says are on the ellipsoid (raw GPS or satellite heights): pass
+    convert_to_egm2008=True so a sea-level (EGM2008) copy is made after the import. For a
+    terrain already in Hydrata, use convert_terrain_datum instead.
     """
     payload = {"staging_key": staging_key, "process_id": process_id, "title": title}
     declared = (vertical_datum_declared or "").strip().lower()
@@ -197,6 +207,14 @@ async def finalize_terrain_upload(
                 "heights are on, ask them and leave this out."
             )
         payload["vertical_datum_declared"] = declared
+    if convert_to_egm2008:
+        if declared != "ellipsoid":
+            # Hydrata honours the flag only for an ellipsoid declaration: anything else would be shifted twice.
+            raise ToolError(
+                "convert_to_egm2008 needs vertical_datum_declared='ellipsoid': only heights the user says are "
+                "on the ellipsoid are shifted to EGM2008. Nothing was sent."
+            )
+        payload["convert_to_egm2008"] = True
     levels = (levels_datum or "").strip()
     if levels:
         payload["levels_datum"] = levels
@@ -205,15 +223,103 @@ async def finalize_terrain_upload(
         json=payload,
     )
     result = json.loads(_post_result(body, status_code))
+    say = (
+        f"The terrain upload is registered (terrain {result.get('id')}, {result.get('status')}). "
+        "The import takes minutes; I will tell you when it is ready to check on the map."
+    )
+    if convert_to_egm2008:
+        say += (
+            " Once it is in, Hydrata also makes a copy shifted from ellipsoid heights to EGM2008 (sea-level) heights,"
+            " as a new terrain (it skips the copy if its own check finds the heights already on EGM2008)."
+        )
     await _hand_back(
         result,
         project_id,
-        {"terrain_id": result.get("id"), "title": result.get("title") or title, "status": result.get("status")},
-        f"The terrain upload is registered (terrain {result.get('id')}, {result.get('status')}). "
-        "The import takes minutes; I will tell you when it is ready to check on the map.",
+        {
+            "terrain_id": result.get("id"),
+            "title": result.get("title") or title,
+            "status": result.get("status"),
+            "convert_to_egm2008": bool(convert_to_egm2008),
+        },
+        say,
         panel="inputs",
     )
     return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4336 (epic 4329 W1): the ellipsoid to EGM2008 shift of a terrain already in Hydrata.
+# Wraps POST terrain/<id>/convert-datum/ (the map's Convert action): a new terrain, the source untouched.
+# ---------------------------------------------------------------------------
+@_tool("convert_terrain_datum")
+async def convert_terrain_datum(
+    project_id: Annotated[
+        int, "The project ID (the key needs Contributor rights; a launch-level key since the shift can start AWS Batch)"
+    ],
+    terrain_id: Annotated[int, "The terrain whose heights are on the ellipsoid (get_terrain)"],
+) -> str:
+    """Make a copy of a terrain shifted from ellipsoid heights to EGM2008 (sea-level) heights.
+
+    Use it only when the user says the terrain's heights are on the ellipsoid (raw GPS or satellite
+    heights). The original terrain is kept unchanged; the copy is a new terrain the scenarios can use.
+    For a GeoTIFF you are still uploading, pass convert_to_egm2008=True to finalize_terrain_upload instead.
+    Hydrata refuses a terrain on AHD or already on EGM2008 (it would be shifted twice): that comes back
+    as `outcome: refused` with Hydrata's words. A terrain converted before returns the existing copy
+    (`outcome: already_converted`). The copy takes minutes: wait on it with get_terrain(project_id,
+    terrain_id=<the new terrain_id>).
+    """
+    body, status_code = await client.post(
+        f"/projects/{project_id}/terrain/{terrain_id}/convert-datum/", json={}, raise_for_status=False
+    )
+    body = body if isinstance(body, dict) else {"response": body}
+    if status_code >= 400:
+        if status_code >= 500:
+            raise HydrataAPIError(f"POST convert-datum failed: {status_code} {body}", status=status_code)
+        reason = body.get("detail") or body.get("error_code") or f"HTTP {status_code}"
+        result = {
+            "outcome": "refused",
+            "http_status": status_code,
+            "error_code": body.get("error_code"),
+            "detail": _data(str(reason)),
+            "source_terrain_id": terrain_id,
+        }
+        await _hand_back(
+            result,
+            project_id,
+            {"source_terrain_id": terrain_id, "reason": result["detail"]},
+            f"I did not convert the terrain: {_data(str(reason))} Nothing was created.",
+            panel="inputs",
+        )
+        return json.dumps(result, indent=2)
+    new_id = body.get("id")
+    existing = status_code == 200
+    result = {
+        "outcome": "already_converted" if existing else "started",
+        "http_status": status_code,
+        "terrain_id": new_id,
+        "source_terrain_id": terrain_id,
+        "terrain": body,
+        "next_step": f"Call get_terrain(project_id={project_id}, terrain_id={new_id}) to wait until it is ready.",
+    }
+    if existing:
+        say = (
+            f"Terrain {terrain_id} was already converted: its EGM2008 (sea-level) copy is terrain {new_id} "
+            f"({body.get('status')}). Nothing new was made."
+        )
+    else:
+        say = (
+            f"Hydrata is making a copy of terrain {terrain_id} shifted from ellipsoid heights to EGM2008 "
+            f"(sea-level) heights: terrain {new_id}. The original is unchanged. It takes minutes; I will tell you "
+            "when it is ready to check on the map."
+        )
+    await _hand_back(
+        result,
+        project_id,
+        {"terrain_id": new_id, "source_terrain_id": terrain_id, "status": body.get("status")},
+        say,
+        panel="inputs",
+    )
+    return json.dumps(_elide_presigned(result), indent=2)
 
 
 # ---------------------------------------------------------------------------

@@ -298,6 +298,36 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Shift a terrain from ellipsoid to EGM2008 heights"
+    },
+    "description": "Make a copy of a terrain shifted from ellipsoid heights to EGM2008 (sea-level) heights.\n\nUse it only when the user says the terrain's heights are on the ellipsoid (raw GPS or satellite\nheights). The original terrain is kept unchanged; the copy is a new terrain the scenarios can use.\nFor a GeoTIFF you are still uploading, pass convert_to_egm2008=True to finalize_terrain_upload instead.\nHydrata refuses a terrain on AHD or already on EGM2008 (it would be shifted twice): that comes back\nas `outcome: refused` with Hydrata's words. A terrain converted before returns the existing copy\n(`outcome: already_converted`). The copy takes minutes: wait on it with get_terrain(project_id,\nterrain_id=<the new terrain_id>).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID (the key needs Contributor rights; a launch-level key since the shift can start AWS Batch)",
+          "type": "integer"
+        },
+        "terrain_id": {
+          "description": "The terrain whose heights are on the ellipsoid (get_terrain)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id"
+      ],
+      "type": "object"
+    },
+    "name": "convert_terrain_datum",
+    "title": "Shift a terrain from ellipsoid to EGM2008 heights"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Create a flood observation layer"
     },
     "description": "Create a flood observation layer in a project and wait for its map layer.\n\nA flood observation layer holds real flood evidence (Flood marks, Timed\nlevels, Gauge records, Dry points) that every historic run is compared\nwith (Compare with observations). It is project-level: it is never a scenario input.\nPOSTs /projects/<id>/flood-observations/, then polls the layer until its\nGeoServer layer exists (`ready`), usually a few seconds; until then\nadd_observations refuses. On `timed_out`, call list_observations later.",
@@ -799,10 +829,15 @@
       "readOnlyHint": false,
       "title": "Register an uploaded terrain"
     },
-    "description": "Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.\n\nNeeds a launch-level agent key (the import can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nCall this only after the presigned PUT returned 200. Creates the Terrain row\n(status `creating`) and queues the import chain — reproject to UTM, publish\nthe layer + hillshade, style — which also seeds the project's six default\nboundary, friction, inflow, rainfall, building and mesh-region rows.\nReturns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND\nmeans no object is at `staging_key`: the PUT did not land (check its status\ncode and Content-Type) — do not retry finalize until it has.",
+    "description": "Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.\n\nNeeds a launch-level agent key (the import can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nCall this only after the presigned PUT returned 200. Creates the Terrain row\n(status `creating`) and queues the import chain — reproject to UTM, publish\nthe layer + hillshade, style — which also seeds the project's six default\nboundary, friction, inflow, rainfall, building and mesh-region rows.\nReturns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND\nmeans no object is at `staging_key`: the PUT did not land (check its status\ncode and Content-Type) — do not retry finalize until it has.\n\nHeights the user says are on the ellipsoid (raw GPS or satellite heights): pass\nconvert_to_egm2008=True so a sea-level (EGM2008) copy is made after the import. For a\nterrain already in Hydrata, use convert_terrain_datum instead.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "convert_to_egm2008": {
+          "default": false,
+          "description": "True to have Hydrata also make a copy of the terrain shifted from ellipsoid heights to EGM2008 (sea-level) heights once the import is done. Only with vertical_datum_declared `ellipsoid`, the datum the user told you; the original stays as it is. Default false.",
+          "type": "boolean"
+        },
         "levels_datum": {
           "default": "",
           "description": "The datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, `NAVD88`, `Ordnance Datum Newlyn` or an EPSG vertical code (`EPSG:5711`). A project fact, separate from the terrain's own datum. Pass it when the user told you; if they did not, ask them, do not guess.",

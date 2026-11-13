@@ -29,6 +29,8 @@ REQUIRED = [
     "the lowest point on a profile across a channel is the invert candidate",
     "vertical_datum_declared",
     "Never relay the datum Hydrata inferred",
+    # TASK-4336 (epic 4329 W1): the ellipsoid to EGM2008 shift, on upload or for a terrain already in Hydrata
+    "convert_to_egm2008=true on finalize_terrain_upload, or convert_terrain_datum",
     "levels_datum",
     "PERMISSIONS: say once, at the start, that claude.ai will ask to allow each Hydrata tool",
     "Always allow saves the interruptions",

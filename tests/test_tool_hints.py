@@ -51,6 +51,7 @@ WRITES = {
     "create_scenario": False,
     "create_terrain_from_source": False,
     "create_time_series": False,
+    "convert_terrain_datum": False,  # makes a shifted copy; the source terrain is kept
     "finalize_terrain_upload": False,
     "presign_terrain_upload": False,
     "set_comparison_tolerance": False,
@@ -85,12 +86,12 @@ def test_tool_hints_the_three_groups_are_disjoint():
     assert not set(WRITES) & SPENDS_COMPUTE
 
 
-async def test_tool_hints_the_table_names_every_one_of_the_42_tools(_server):
+async def test_tool_hints_the_table_names_every_one_of_the_43_tools(_server):
     tools = await _tools(_server)
-    assert len(tools) == 42
+    assert len(tools) == 43
     grouped = READ_ONLY | set(WRITES) | SPENDS_COMPUTE
     assert grouped == set(tools), {"unlisted": sorted(set(tools) - grouped), "stale": sorted(grouped - set(tools))}
-    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 42
+    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 43
 
 
 async def test_tool_hints_read_only_tools_say_read_only_and_not_destructive(_server):
