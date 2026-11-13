@@ -269,3 +269,4 @@ async def test_get_terrain_merge_failed_derive_wins_over_an_older_ready_terrain(
         )
     )
     assert data["outcome"] == "error" and MERGE_FAILED in data["say_to_user"]
+    assert data["terrain_id"] is None and data["terrain"] is None and data["summary"]["terrain_id"] is None

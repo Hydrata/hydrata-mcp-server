@@ -1041,13 +1041,12 @@ async def get_terrain_merge(
         fetch, is_terminal, timeout_seconds, poll_interval_seconds
     )
     failure = merge_failure((surface, terrain))
-    status = _status_of(terrain)
-    phase = status if status in TERRAIN_TERMINAL_STATUSES else ("importing" if terrain else "merging")
     if failure is not None:
         # The merge itself failed: a merged terrain from an earlier derive of this recipe is not this result.
-        phase, outcome = "merging", "error"
-    else:
-        outcome = "timed_out" if timed_out else status
+        terrain = None
+    status = _status_of(terrain)
+    phase = status if status in TERRAIN_TERMINAL_STATUSES else ("importing" if terrain else "merging")
+    outcome = "error" if failure is not None else ("timed_out" if timed_out else status)
     record = terrain if isinstance(terrain, dict) else {}
     terrain_id = record.get("id")
     result: dict = {
