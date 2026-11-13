@@ -9,7 +9,7 @@ You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 git clone https://github.com/Hydrata/hydrata-mcp-server
 cd hydrata-mcp-server
-uv sync --frozen --extra dev      # exact versions from uv.lock, same as CI
+uv sync
 ```
 
 Optional, once per clone:
@@ -22,12 +22,14 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs  # blame skips the one-of
 ## `make check` is the one gate
 
 ```bash
-uv run --frozen --extra dev make check
+make check
 ```
 
-CI runs exactly this command, so a green local run means a green CI run. It runs, in order:
+CI runs exactly this command, so a green local run means a green CI run. The Makefile runs every tool through
+`uv run --locked --extra dev`, which installs the pinned dev tools from `uv.lock` and fails if `uv.lock` is out of
+date with `pyproject.toml`. Without uv: `pip install -e '.[dev]'`, then `make check PY=python`. It runs, in order:
 
-1. `lint`: `ruff check .` and `ruff format --check .` (ruff 0.15.2, line length 120).
+1. `lint`: `ruff check .` and `ruff format --check .` (ruff 0.17.3, line length 120).
 2. `parity`: `scripts/check_version_parity.py` (`pyproject.toml` and `server.json` carry the same version).
 3. `test`: `pytest -q`, the mocked suite described in [docs/testing.md](docs/testing.md).
 

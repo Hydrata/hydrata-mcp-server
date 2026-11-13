@@ -38,7 +38,9 @@ jobs:
           assert here in src.parents, f'hydrata_mcp imported from {src}, not {here}'
           print('hydrata_mcp from', src)"
       - name: make check
-        run: uv run --frozen --extra dev make check
+        # The Makefile runs each tool via `uv run --locked --extra dev`, so this is the
+        # same command CONTRIBUTING.md documents (and it fails if uv.lock is stale).
+        run: make check
 
   lint:
     name: lint
@@ -51,4 +53,4 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen --extra dev
       - name: ruff + version parity
-        run: uv run --frozen --extra dev make lint parity
+        run: make lint parity

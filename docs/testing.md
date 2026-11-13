@@ -2,7 +2,7 @@
 
 ## What the automated tests cover
 
-`make check` runs `pytest -q` (about 400 tests, under a minute). Every test is **mocked**: Hydrata's REST API is
+`make check` runs `pytest -q` (about 900 tests, under a minute). Every test is **mocked**: Hydrata's REST API is
 replaced with [respx](https://lundberg.github.io/respx/) responses, so no test needs a network, a Hydrata account or a
 key.
 

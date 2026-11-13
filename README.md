@@ -115,11 +115,10 @@ ANUGA is an open-source hydrodynamic model developed by [Geoscience Australia](h
 ```bash
 git clone https://github.com/Hydrata/hydrata-mcp-server.git
 cd hydrata-mcp-server
-pip install -e ".[dev]"
-pytest -v
+uv sync && make check
 ```
 
-Contributions welcome — see [issues](https://github.com/Hydrata/hydrata-mcp-server/issues).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/testing.md](docs/testing.md). Contributions welcome — see [issues](https://github.com/Hydrata/hydrata-mcp-server/issues).
 
 ## License
 

@@ -1,7 +1,9 @@
 # TASK-4010 (epic 3995, D11b): public-own tier - weekly, grouped version updates for Python and Actions.
 version: 2
 updates:
-  - package-ecosystem: pip
+  # uv (not pip): bumps pyproject.toml AND uv.lock together. A pip-ecosystem bump left uv.lock
+  # stale (PR #27: fastmcp 4.1.4 declared, 4.1.3 locked), which `make check`'s `uv run --locked` now rejects.
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly

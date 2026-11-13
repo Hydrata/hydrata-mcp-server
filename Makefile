@@ -1,6 +1,8 @@
 # `make check` is the one gate: CI runs it, and so should you before pushing.
-# Needs the dev extras: `uv sync --extra dev` (or pip install -e '.[dev]').
-PY ?= python
+# After `uv sync`, `make check` runs everything through uv with the dev extras from
+# uv.lock (`--locked` fails if uv.lock is stale against pyproject.toml).
+# Without uv: pip install -e '.[dev]' and run `make check PY=python`.
+PY ?= uv run --locked --extra dev python
 
 .PHONY: check lint parity test
 
