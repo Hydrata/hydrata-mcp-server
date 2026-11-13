@@ -325,11 +325,11 @@ DESTRUCTIVE_TOOLS = {"cancel_run", "delete_observation", "delete_time_series"}
 
 
 class TestToolAnnotations:
-    async def test_annotations_on_all_43_tools_read_hints_and_cancel_destructive(self, _server):
+    async def test_annotations_on_all_44_tools_read_hints_and_cancel_destructive(self, _server):
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
-        assert len(tools) == 43
+        assert len(tools) == 44
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name

@@ -1551,6 +1551,36 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Record the datum of the user's levels"
+    },
+    "description": "Record which height datum the user's own levels are on, for a project that already has its terrain.\n\nUse it when get_terrain or get_project says the project has no levels datum, or the user corrects it.\nFor a new terrain, pass levels_datum to create_terrain_from_source instead. This is a fact about the\nperson's numbers, not about the terrain: it never changes the terrain's own datum. Hydrata compares the\ntwo and returns `levels_datum_mismatch` when they differ: relay it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "levels_datum": {
+          "description": "The datum the PERSON'S levels (study, survey, tailwater) are on, in their words: `AHD`, `NAVD88`, `Ordnance Datum Newlyn`, or an EPSG vertical code such as `EPSG:5711`. Ask the user; never guess.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID (the key's person needs Editor rights on it)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "levels_datum"
+      ],
+      "type": "object"
+    },
+    "name": "set_levels_datum",
+    "title": "Record the datum of the user's levels"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Exclude or include a flood observation in a run's comparison"
     },
     "description": "Exclude a flood observation from ONE run's comparison with observations, or include it again.\n\nNeeds Editor (or above) on the project. The exclusion is logged with the user\nand reason (nothing is overwritten) and keyed on (run, layer, fid), so it\nsurvives a recompute. The figures change at once: `headline_after` is the\nrun's headline with the change applied. To exclude, the user must give the\nreason: if they have not, ASK them; do not make one up.",

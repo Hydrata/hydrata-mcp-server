@@ -529,7 +529,10 @@ async def get_terrain(
         if mismatch:
             say += f" WARNING: {_data(mismatch)} Tell the user, and do not mix the two sets of heights."
         elif levels is None:
-            say += " The project has no levels datum yet: put the question of which datum their levels are on to the user, and pass levels_datum to create_terrain_from_source."
+            say += (
+                " The project has no levels datum yet: find out from the user which datum their levels are on, and "
+                "record their answer with set_levels_datum."
+            )
     elif outcome == "error":
         say = "The terrain import failed; the GeoTIFF needs fixing and uploading again."
     elif outcome == "not_found":
@@ -547,6 +550,47 @@ async def get_terrain(
     # TASK-3187 — this tool composes its own envelope, so elide the COMPOSED
     # result; the terrain record carries no signed key today (future-proofing).
     return json.dumps(_elide_presigned(result), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4337 (epic 4329 W1, D7): record the person's levels datum on a project that already has a terrain.
+# PATCH projects/<id>/levels-datum/ (Editor+). The terrain's OWN datum is a separate fact (vertical-datum route).
+# ---------------------------------------------------------------------------
+@_tool("set_levels_datum")
+async def set_levels_datum(
+    project_id: Annotated[int, "The project ID (the key's person needs Editor rights on it)"],
+    levels_datum: Annotated[
+        str,
+        "The datum the PERSON'S levels (study, survey, tailwater) are on, in their words: `AHD`, `NAVD88`, "
+        "`Ordnance Datum Newlyn`, or an EPSG vertical code such as `EPSG:5711`. Ask the user; never guess.",
+    ],
+) -> str:
+    """Record which height datum the user's own levels are on, for a project that already has its terrain.
+
+    Use it when get_terrain or get_project says the project has no levels datum, or the user corrects it.
+    For a new terrain, pass levels_datum to create_terrain_from_source instead. This is a fact about the
+    person's numbers, not about the terrain: it never changes the terrain's own datum. Hydrata compares the
+    two and returns `levels_datum_mismatch` when they differ: relay it.
+    """
+    levels = levels_datum.strip() if isinstance(levels_datum, str) else ""
+    if not levels:
+        raise ToolError(
+            "levels_datum is required: the datum the user's levels are on (for example AHD, NAVD88, "
+            "Ordnance Datum Newlyn or EPSG:5711). If the user has not said, ask them, do not guess. Nothing was sent."
+        )
+    body, status_code = await client.patch(f"/projects/{project_id}/levels-datum/", json={"levels_datum": levels})
+    result = {**(body if isinstance(body, dict) else {"response": body}), "http_status": status_code}
+    recorded = result.get("levels_datum") if isinstance(result.get("levels_datum"), dict) else None
+    mismatch = result.get("levels_datum_mismatch") if isinstance(result.get("levels_datum_mismatch"), str) else None
+    name = (recorded or {}).get("label") or (recorded or {}).get("datum") or levels
+    say = f"Recorded: your levels are on {_data(str(name))} (project {project_id})."
+    if mismatch:
+        say += f" WARNING: {_data(mismatch)} Tell the user, and do not mix the two sets of heights."
+    summary = {"project_id": project_id, "levels_datum": recorded, "terrain_id": result.get("terrain")}
+    if mismatch:
+        summary["levels_datum_mismatch"] = mismatch
+    await _hand_back(result, project_id, summary, say, panel="inputs")
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------

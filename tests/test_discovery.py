@@ -82,7 +82,7 @@ class TestCrawlerDiscovery:
     async def test_crawler_tools_list_is_the_full_catalog(self, _server):
         resp = await _post(_server, MCPTRY, _rpc("tools/list"))
         tools = _parse(resp)["result"]["tools"]
-        assert len(tools) == 43
+        assert len(tools) == 44
         assert sorted(t["name"] for t in tools) == SNAPSHOT_NAMES
 
     async def test_crawler_initialized_notification_is_accepted(self, _server):
