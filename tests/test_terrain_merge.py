@@ -107,7 +107,18 @@ async def test_merge_terrains_reply_carries_the_pixel_estimate(_server):
     expected = _expected_pixels(2.0, [LIDAR["bbox_wgs84"], GLO30["bbox_wgs84"]])
     assert data["summary"]["estimated_pixels"] == expected
     assert data["summary"]["target_resolution_m"] == 2.0
-    assert f"{expected / 1e6:.1f} million" in data["say_to_user"] and "estimate" in data["say_to_user"]
+    from hydrata_mcp.terrain import _cells_phrase
+
+    assert _cells_phrase(expected) in data["say_to_user"] and "estimate" in data["say_to_user"]
+
+
+def test_merge_cells_phrase_never_rounds_a_small_merge_to_zero_million():
+    # Live self-verify (epic 4329 W1): a 41,820-cell merge read "about 0.0 million grid cells".
+    from hydrata_mcp.terrain import _cells_phrase  # module import needs the test env (HYDRATA_API_URL)
+
+    assert _cells_phrase(41_820) == "about 41,820 grid cells"
+    assert _cells_phrase(858_281_255_238) == "about 858,281.3 million grid cells"
+    assert _cells_phrase(2_500_000) == "about 2.5 million grid cells"
 
 
 @respx.mock

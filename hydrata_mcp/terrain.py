@@ -818,6 +818,11 @@ MERGE_GAP_FILLING = (
 )
 
 
+def _cells_phrase(pixels: int) -> str:
+    """'about 41,820 grid cells' below a million (never 'about 0.0 million'), else 'about 2.5 million grid cells'."""
+    return f"about {pixels:,} grid cells" if pixels < 1_000_000 else f"about {pixels / 1e6:,.1f} million grid cells"
+
+
 def _merge_pixel_estimate(rows: list[dict], resolution_m: float, extent) -> int | None:
     """The output grid's cell count: the inputs' union box (clipped to `extent`) at `resolution_m`.
 
@@ -923,7 +928,7 @@ async def merge_terrains(
         "estimated_pixels": pixels,
     }
     size = (
-        f"about {pixels / 1e6:.1f} million grid cells at {target_resolution_m:g} m (an estimate)"
+        f"{_cells_phrase(pixels)} at {target_resolution_m:g} m (an estimate)"
         if pixels is not None
         else f"a size Hydrata will check at {target_resolution_m:g} m (I could not estimate it)"
     )
