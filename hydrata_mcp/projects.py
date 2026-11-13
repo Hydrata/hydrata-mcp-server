@@ -44,29 +44,34 @@ async def get_project(
     if isinstance(data, dict):
         data = dict(data, ui_url=_ui_url(data.get("base_map")))
         data["levels_datum"] = levels = data.get("levels_datum") if isinstance(data.get("levels_datum"), dict) else None
-        say = _levels_sentence(levels)
-        mismatch = await _levels_mismatch(project_id)
-        if mismatch:
+        newest = await _newest_terrain(project_id)
+        say = _levels_sentence(levels, has_terrain=newest is not None)
+        mismatch = (newest or {}).get("levels_datum_mismatch")
+        if isinstance(mismatch, str) and mismatch:
             say += f" WARNING: {_data(mismatch)} Tell the user, and do not mix the two sets of heights."
         data["say_to_user"] = say
     return json.dumps(_elide_presigned(data), indent=2)
 
 
-def _levels_sentence(levels) -> str:
-    """TASK-4118: the project's levels datum in one sentence for the user."""
+def _levels_sentence(levels, has_terrain: bool = False) -> str:
+    """TASK-4118: the project's levels datum in one sentence for the user.
+
+    TASK-4376: once the project has its terrain the answer is recorded with set_levels_datum (get_terrain says
+    the same), so the agent does not reach for create_terrain_from_source again.
+    """
     if not levels:
-        return "No levels datum is recorded for this project: ask the user which datum their levels are in."
+        say = "No levels datum is recorded for this project: ask the user which datum their levels are in"
+        return f"{say}, and record their answer with set_levels_datum." if has_terrain else f"{say}."
     who = f", declared by {_data(str(levels['declared_by']))}" if levels.get("declared_by") else ""
     return f"The user's levels are on {_data(str(levels.get('label') or levels.get('datum')))}{who}."
 
 
-async def _levels_mismatch(project_id: int) -> str | None:
-    """The newest terrain's levels-datum mismatch sentence, or None (best effort: a failed read says nothing)."""
+async def _newest_terrain(project_id: int) -> dict | None:
+    """The project's newest terrain record, or None (none yet; best effort: a failed read says nothing)."""
     try:
         rows = await client.get(f"/projects/{project_id}/terrain/")
         rows = rows if isinstance(rows, list) else (rows or {}).get("results", [])
-        newest = max(rows, key=lambda row: row.get("id", 0)) if rows else None
-        text = newest.get("levels_datum_mismatch") if isinstance(newest, dict) else None
-        return text if isinstance(text, str) and text else None
+        rows = [row for row in rows if isinstance(row, dict)]
+        return max(rows, key=lambda row: row.get("id", 0)) if rows else None
     except Exception:
         return None
