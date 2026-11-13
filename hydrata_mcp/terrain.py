@@ -172,6 +172,12 @@ async def finalize_terrain_upload(
         "separate from the terrain's own datum. Pass it when the user told you; if they did not, "
         "ask them, do not guess.",
     ] = "",
+    convert_to_egm2008: Annotated[
+        bool,
+        "True to have Hydrata also make a copy of the terrain shifted from ellipsoid heights to EGM2008 "
+        "(sea-level) heights once the import is done. Only with vertical_datum_declared `ellipsoid`, the "
+        "datum the user told you; the original stays as it is. Default false.",
+    ] = False,
 ) -> str:
     """Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.
 
@@ -186,6 +192,10 @@ async def finalize_terrain_upload(
     Returns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND
     means no object is at `staging_key`: the PUT did not land (check its status
     code and Content-Type) — do not retry finalize until it has.
+
+    Heights the user says are on the ellipsoid (raw GPS or satellite heights): pass
+    convert_to_egm2008=True so a sea-level (EGM2008) copy is made after the import. For a
+    terrain already in Hydrata, use convert_terrain_datum instead.
     """
     payload = {"staging_key": staging_key, "process_id": process_id, "title": title}
     declared = (vertical_datum_declared or "").strip().lower()
@@ -197,6 +207,14 @@ async def finalize_terrain_upload(
                 "heights are on, ask them and leave this out."
             )
         payload["vertical_datum_declared"] = declared
+    if convert_to_egm2008:
+        if declared != "ellipsoid":
+            # Hydrata honours the flag only for an ellipsoid declaration: anything else would be shifted twice.
+            raise ToolError(
+                "convert_to_egm2008 needs vertical_datum_declared='ellipsoid': only heights the user says are "
+                "on the ellipsoid are shifted to EGM2008. Nothing was sent."
+            )
+        payload["convert_to_egm2008"] = True
     levels = (levels_datum or "").strip()
     if levels:
         payload["levels_datum"] = levels
@@ -205,15 +223,103 @@ async def finalize_terrain_upload(
         json=payload,
     )
     result = json.loads(_post_result(body, status_code))
+    say = (
+        f"The terrain upload is registered (terrain {result.get('id')}, {result.get('status')}). "
+        "The import takes minutes; I will tell you when it is ready to check on the map."
+    )
+    if convert_to_egm2008:
+        say += (
+            " Once it is in, Hydrata also makes a copy shifted from ellipsoid heights to EGM2008 (sea-level) heights,"
+            " as a new terrain (it skips the copy if its own check finds the heights already on EGM2008)."
+        )
     await _hand_back(
         result,
         project_id,
-        {"terrain_id": result.get("id"), "title": result.get("title") or title, "status": result.get("status")},
-        f"The terrain upload is registered (terrain {result.get('id')}, {result.get('status')}). "
-        "The import takes minutes; I will tell you when it is ready to check on the map.",
+        {
+            "terrain_id": result.get("id"),
+            "title": result.get("title") or title,
+            "status": result.get("status"),
+            "convert_to_egm2008": bool(convert_to_egm2008),
+        },
+        say,
         panel="inputs",
     )
     return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4336 (epic 4329 W1): the ellipsoid to EGM2008 shift of a terrain already in Hydrata.
+# Wraps POST terrain/<id>/convert-datum/ (the map's Convert action): a new terrain, the source untouched.
+# ---------------------------------------------------------------------------
+@_tool("convert_terrain_datum")
+async def convert_terrain_datum(
+    project_id: Annotated[
+        int, "The project ID (the key needs Contributor rights; a launch-level key since the shift can start AWS Batch)"
+    ],
+    terrain_id: Annotated[int, "The terrain whose heights are on the ellipsoid (get_terrain)"],
+) -> str:
+    """Make a copy of a terrain shifted from ellipsoid heights to EGM2008 (sea-level) heights.
+
+    Use it only when the user says the terrain's heights are on the ellipsoid (raw GPS or satellite
+    heights). The original terrain is kept unchanged; the copy is a new terrain the scenarios can use.
+    For a GeoTIFF you are still uploading, pass convert_to_egm2008=True to finalize_terrain_upload instead.
+    Hydrata refuses a terrain on AHD or already on EGM2008 (it would be shifted twice): that comes back
+    as `outcome: refused` with Hydrata's words. A terrain converted before returns the existing copy
+    (`outcome: already_converted`). The copy takes minutes: wait on it with get_terrain(project_id,
+    terrain_id=<the new terrain_id>).
+    """
+    body, status_code = await client.post(
+        f"/projects/{project_id}/terrain/{terrain_id}/convert-datum/", json={}, raise_for_status=False
+    )
+    body = body if isinstance(body, dict) else {"response": body}
+    if status_code >= 400:
+        if status_code >= 500:
+            raise HydrataAPIError(f"POST convert-datum failed: {status_code} {body}", status=status_code)
+        reason = body.get("detail") or body.get("error_code") or f"HTTP {status_code}"
+        result = {
+            "outcome": "refused",
+            "http_status": status_code,
+            "error_code": body.get("error_code"),
+            "detail": _data(str(reason)),
+            "source_terrain_id": terrain_id,
+        }
+        await _hand_back(
+            result,
+            project_id,
+            {"source_terrain_id": terrain_id, "reason": result["detail"]},
+            f"I did not convert the terrain: {_data(str(reason))} Nothing was created.",
+            panel="inputs",
+        )
+        return json.dumps(result, indent=2)
+    new_id = body.get("id")
+    existing = status_code == 200
+    result = {
+        "outcome": "already_converted" if existing else "started",
+        "http_status": status_code,
+        "terrain_id": new_id,
+        "source_terrain_id": terrain_id,
+        "terrain": body,
+        "next_step": f"Call get_terrain(project_id={project_id}, terrain_id={new_id}) to wait until it is ready.",
+    }
+    if existing:
+        say = (
+            f"Terrain {terrain_id} was already converted: its EGM2008 (sea-level) copy is terrain {new_id} "
+            f"({body.get('status')}). Nothing new was made."
+        )
+    else:
+        say = (
+            f"Hydrata is making a copy of terrain {terrain_id} shifted from ellipsoid heights to EGM2008 "
+            f"(sea-level) heights: terrain {new_id}. The original is unchanged. It takes minutes; I will tell you "
+            "when it is ready to check on the map."
+        )
+    await _hand_back(
+        result,
+        project_id,
+        {"terrain_id": new_id, "source_terrain_id": terrain_id, "status": body.get("status")},
+        say,
+        panel="inputs",
+    )
+    return json.dumps(_elide_presigned(result), indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +529,10 @@ async def get_terrain(
         if mismatch:
             say += f" WARNING: {_data(mismatch)} Tell the user, and do not mix the two sets of heights."
         elif levels is None:
-            say += " The project has no levels datum yet: put the question of which datum their levels are on to the user, and pass levels_datum to create_terrain_from_source."
+            say += (
+                " The project has no levels datum yet: find out from the user which datum their levels are on, and "
+                "record their answer with set_levels_datum."
+            )
     elif outcome == "error":
         say = "The terrain import failed; the GeoTIFF needs fixing and uploading again."
     elif outcome == "not_found":
@@ -441,6 +550,47 @@ async def get_terrain(
     # TASK-3187 — this tool composes its own envelope, so elide the COMPOSED
     # result; the terrain record carries no signed key today (future-proofing).
     return json.dumps(_elide_presigned(result), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4337 (epic 4329 W1, D7): record the person's levels datum on a project that already has a terrain.
+# PATCH projects/<id>/levels-datum/ (Editor+). The terrain's OWN datum is a separate fact (vertical-datum route).
+# ---------------------------------------------------------------------------
+@_tool("set_levels_datum")
+async def set_levels_datum(
+    project_id: Annotated[int, "The project ID (the key's person needs Editor rights on it)"],
+    levels_datum: Annotated[
+        str,
+        "The datum the PERSON'S levels (study, survey, tailwater) are on, in their words: `AHD`, `NAVD88`, "
+        "`Ordnance Datum Newlyn`, or an EPSG vertical code such as `EPSG:5711`. Ask the user; never guess.",
+    ],
+) -> str:
+    """Record which height datum the user's own levels are on, for a project that already has its terrain.
+
+    Use it when get_terrain or get_project says the project has no levels datum, or the user corrects it.
+    For a new terrain, pass levels_datum to create_terrain_from_source instead. This is a fact about the
+    person's numbers, not about the terrain: it never changes the terrain's own datum. Hydrata compares the
+    two and returns `levels_datum_mismatch` when they differ: relay it.
+    """
+    levels = levels_datum.strip() if isinstance(levels_datum, str) else ""
+    if not levels:
+        raise ToolError(
+            "levels_datum is required: the datum the user's levels are on (for example AHD, NAVD88, "
+            "Ordnance Datum Newlyn or EPSG:5711). If the user has not said, ask them, do not guess. Nothing was sent."
+        )
+    body, status_code = await client.patch(f"/projects/{project_id}/levels-datum/", json={"levels_datum": levels})
+    result = {**(body if isinstance(body, dict) else {"response": body}), "http_status": status_code}
+    recorded = result.get("levels_datum") if isinstance(result.get("levels_datum"), dict) else None
+    mismatch = result.get("levels_datum_mismatch") if isinstance(result.get("levels_datum_mismatch"), str) else None
+    name = (recorded or {}).get("label") or (recorded or {}).get("datum") or levels
+    say = f"Recorded: your levels are on {_data(str(name))} (project {project_id})."
+    if mismatch:
+        say += f" WARNING: {_data(mismatch)} Tell the user, and do not mix the two sets of heights."
+    summary = {"project_id": project_id, "levels_datum": recorded, "terrain_id": result.get("terrain")}
+    if mismatch:
+        summary["levels_datum_mismatch"] = mismatch
+    await _hand_back(result, project_id, summary, say, panel="inputs")
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +803,300 @@ async def create_terrain_from_source(
     polled["summary"] = summary
     polled["say_to_user"] = say
     return json.dumps(_elide_presigned(polled), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4338 (epic 4329 W1): merge project terrains into one, over the EXISTING analysis-surfaces routes
+# (the map's Terrain Workbench): POST analysis-surfaces/ (the recipe), POST <pk>/inputs/ (the priority stack),
+# POST <pk>/derive/ (launch level: the merge can run on AWS Batch). No route reports a void, so the reply
+# says every time that gaps in a higher terrain are filled from the ones below.
+# ---------------------------------------------------------------------------
+_M_PER_DEG = 111_320.0  # Hydrata's own size guard (services_terrain_merge._LAT_M_PER_DEG / _LON_M_PER_DEG_EQUATOR)
+MERGE_GAP_FILLING = (
+    "Where a higher-priority terrain has gaps (cells with no data), they are filled from the terrains below "
+    "it, in priority order."
+)
+
+
+def _cells_phrase(pixels: int) -> str:
+    """'about 41,820 grid cells' below a million (never 'about 0.0 million'), else 'about 2.5 million grid cells'."""
+    return f"about {pixels:,} grid cells" if pixels < 1_000_000 else f"about {pixels / 1e6:,.1f} million grid cells"
+
+
+def _merge_pixel_estimate(rows: list[dict], resolution_m: float, extent) -> int | None:
+    """The output grid's cell count: the inputs' union box (clipped to `extent`) at `resolution_m`.
+
+    The same union-box, metres-per-degree estimate as Hydrata's own size guard (and the map's), so it is an
+    estimate: Hydrata's check works in the project's grid and can differ slightly. None when a footprint is missing.
+    """
+    boxes = [_bbox_args(row.get("bbox_wgs84")) for row in rows]
+    if not boxes or any(box is None for box in boxes):
+        return None
+    if extent:
+        boxes = [b for b in boxes if b[0] < extent[2] and extent[0] < b[2] and b[1] < extent[3] and extent[1] < b[3]]
+        if not boxes:
+            return None
+    west, south = min(b[0] for b in boxes), min(b[1] for b in boxes)
+    east, north = max(b[2] for b in boxes), max(b[3] for b in boxes)
+    if extent:
+        west, south, east, north = (
+            max(west, extent[0]),
+            max(south, extent[1]),
+            min(east, extent[2]),
+            min(north, extent[3]),
+        )
+    width_m = (east - west) * _M_PER_DEG * math.cos(math.radians((south + north) / 2))
+    height_m = (north - south) * _M_PER_DEG
+    return math.ceil(width_m / resolution_m) * math.ceil(height_m / resolution_m)
+
+
+@_tool("merge_terrains")
+async def merge_terrains(
+    project_id: Annotated[
+        int,
+        "The project ID (the key needs Contributor rights; a launch-level key, since the merge can run on AWS Batch)",
+    ],
+    terrain_ids: Annotated[
+        list[int],
+        "Two or more of the project's terrain IDs, highest priority FIRST (the one whose heights win where they "
+        "overlap, usually the finest survey), then the ones that fill in around and under it",
+    ],
+    target_resolution_m: Annotated[float, "Cell size of the merged terrain in metres, e.g. 2"],
+    title: Annotated[str, "Name of the merged terrain (default: 'Merged terrain')"] = "",
+    merge_extent_wgs84: Annotated[
+        list[float] | None,
+        "Optional area to keep, [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees; omit for the whole of the "
+        "terrains' combined area",
+    ] = None,
+    acknowledge_coarser_above_finer: Annotated[
+        bool,
+        "True only after the user agreed to put a coarser terrain above a finer one (a design surface over a "
+        "survey); Hydrata refuses that order otherwise",
+    ] = False,
+) -> str:
+    """Merge two or more of the project's terrains into one new terrain, in the priority order given.
+
+    Use it when no single terrain covers the site well, e.g. a fine LiDAR survey over the channel and a
+    coarser terrain around it. The first terrain's heights are kept as they are; the ones below can be
+    shifted slightly so they meet it without a step at the seams (the same as the map's merge). Gaps in a
+    higher terrain are filled from the ones below. The reply gives the size estimate (grid cells) and
+    `analysis_surface_id`; the merge takes minutes, so follow it with get_terrain_merge until `ready`, then
+    use the merged terrain like any other. A refusal (too large for the resolution, a coarser terrain above a
+    finer one) comes back as `outcome: refused` with Hydrata's reply unchanged in `hydrata_reply`; nothing is kept.
+    """
+    ids = terrain_ids if isinstance(terrain_ids, list) else []
+    if len(ids) < 2 or any(isinstance(i, bool) or not isinstance(i, int) for i in ids) or len(set(ids)) != len(ids):
+        raise ToolError(
+            "terrain_ids must list at least two different terrain IDs, highest priority first. Nothing was sent."
+        )
+    if (
+        isinstance(target_resolution_m, bool)
+        or not isinstance(target_resolution_m, (int, float))
+        or not math.isfinite(target_resolution_m)
+        or target_resolution_m <= 0
+    ):
+        raise ToolError("target_resolution_m must be a cell size in metres greater than 0. Nothing was sent.")
+    extent = None
+    if merge_extent_wgs84 is not None:
+        extent = _bbox_args(merge_extent_wgs84)
+        if extent is None:
+            raise ToolError(_BBOX_REFUSAL.replace("bbox", "merge_extent_wgs84", 1))
+    listing = await client.get(f"/projects/{project_id}/terrain/")
+    rows = listing if isinstance(listing, list) else (listing.get("results") or [] if isinstance(listing, dict) else [])
+    by_id = {row.get("id"): row for row in rows if isinstance(row, dict)}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise ToolError(
+            f"Terrain(s) {', '.join(str(i) for i in missing)} are not in project {project_id}: use the IDs "
+            "get_terrain reports. Nothing was sent."
+        )
+    stack = [by_id[i] for i in ids]
+    # Hydrata's derive only checks that each terrain exists; one still importing (or failed) breaks the merge
+    # where get_terrain_merge cannot see it, so it is refused here.
+    unready = [row.get("id") for row in stack if _status_of(row) != "ready"]
+    if unready:
+        raise ToolError(
+            f"Terrain(s) {', '.join(str(i) for i in unready)} are not ready: wait for get_terrain to report "
+            "ready before merging. Nothing was sent."
+        )
+    pixels = _merge_pixel_estimate(stack, float(target_resolution_m), extent)
+    names = ", ".join(f"{_data(str(row.get('title') or row.get('id')))} ({row.get('id')})" for row in stack)
+    summary: dict = {
+        "terrain_ids": ids,
+        "target_resolution_m": target_resolution_m,
+        "merge_extent_wgs84": extent,
+        "estimated_pixels": pixels,
+    }
+    size = (
+        f"{_cells_phrase(pixels)} at {target_resolution_m:g} m (an estimate)"
+        if pixels is not None
+        else f"a size Hydrata will check at {target_resolution_m:g} m (I could not estimate it)"
+    )
+    recipe: dict = {"title": title or "Merged terrain", "target_resolution_m": target_resolution_m}
+    params: dict = {"target_resolution_m": target_resolution_m}
+    if extent is not None:
+        recipe["merge_extent_wgs84"] = params["merge_extent_wgs84"] = extent
+    if acknowledge_coarser_above_finer:
+        params["acknowledge_coarser_above_finer"] = True
+
+    async def refused(step: str, body, status_code: int, surface_id=None) -> str:
+        if status_code >= 500:
+            raise HydrataAPIError(f"POST {step} failed: {status_code} {body}", status=status_code)
+        if surface_id is not None:
+            try:  # the recipe made for this call is not left behind in the person's workbench
+                await client.delete(f"/projects/{project_id}/analysis-surfaces/{surface_id}/")
+            except HydrataAPIError:
+                pass
+        reply = body if isinstance(body, dict) else {"response": body}
+        reason = reply.get("error") or reply.get("detail") or reply.get("error_code") or f"HTTP {status_code}"
+        result = {
+            "outcome": "refused",
+            "http_status": status_code,
+            "hydrata_reply": reply,
+            "gap_filling": MERGE_GAP_FILLING,
+        }
+        await _hand_back(
+            result,
+            project_id,
+            {**summary, "reason": _data(str(reason))},
+            f"Hydrata did not start the merge of {names}: {_data(str(reason))} Nothing was kept. "
+            f"(When it runs: {MERGE_GAP_FILLING})",
+            panel="inputs",
+        )
+        return json.dumps(result, indent=2)
+
+    base = f"/projects/{project_id}/analysis-surfaces/"
+    body, status_code = await client.post(base, json=recipe, raise_for_status=False)
+    if status_code >= 400:
+        return await refused("analysis-surfaces", body, status_code)
+    surface_id = body.get("id") if isinstance(body, dict) else None
+    inputs = [{"terrain_id": tid, "priority": pos, "unmodified": pos == 0} for pos, tid in enumerate(ids)]
+    body, status_code = await client.post(
+        f"{base}{surface_id}/inputs/", json={"inputs": inputs}, raise_for_status=False
+    )
+    if status_code >= 400:
+        return await refused("inputs", body, status_code, surface_id)
+    body, status_code = await client.post(f"{base}{surface_id}/derive/", json=params, raise_for_status=False)
+    if status_code >= 400:
+        return await refused("derive", body, status_code, surface_id)
+    result = {
+        "outcome": "started",
+        "http_status": status_code,
+        "analysis_surface_id": surface_id,
+        "estimated_pixels": pixels,
+        "gap_filling": MERGE_GAP_FILLING,
+        "next_step": f"Call get_terrain_merge(project_id={project_id}, analysis_surface_id={surface_id}) until it is ready.",
+    }
+    summary["analysis_surface_id"] = surface_id
+    await _hand_back(
+        result,
+        project_id,
+        summary,
+        f"Hydrata is merging {names} (top first) into one terrain: {size}. {MERGE_GAP_FILLING} "
+        "The merge takes minutes; I will tell you when it is ready to check on the map.",
+        panel="inputs",
+    )
+    return json.dumps(result, indent=2)
+
+
+@_tool("get_terrain_merge")
+async def get_terrain_merge(
+    project_id: Annotated[int, "The project ID"],
+    analysis_surface_id: Annotated[int, "`analysis_surface_id` from merge_terrains"],
+    timeout_seconds: Annotated[
+        int,
+        "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200). "
+        "0 = one status read, no waiting.",
+    ] = POLL_DEFAULT_TIMEOUT_SECONDS,
+    poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
+) -> str:
+    """Wait for a terrain merge started by merge_terrains until the merged terrain is `ready` (or `error`).
+
+    Returns `outcome` (ready | error | timed_out), `phase` (merging: the terrains are being merged;
+    importing: the merged terrain is being published; then ready or error), `terrain_id` of the merged
+    terrain once it exists, and its record. `timed_out` is normal: call again with the same arguments.
+    If the merge itself failed, `outcome` is `error` at once with Hydrata's reason in `error`; tell the user.
+    Once `ready`, use `terrain_id` like any other terrain (get_terrain, sample_terrain, a scenario's terrain).
+    Read-only.
+    """
+    surface_path = f"/projects/{project_id}/analysis-surfaces/{analysis_surface_id}/"
+
+    async def fetch():
+        surface = await client.get(surface_path)
+        output = surface.get("output_terrain") if isinstance(surface, dict) else None
+        terrain = await client.get(f"/projects/{project_id}/terrain/{output}/") if output else None
+        return surface, terrain
+
+    def merge_failure(value):
+        """TASK-4375: Hydrata's plain reason when the surface's newest derive failed, else None."""
+        last = value[0].get("last_derive") if isinstance(value[0], dict) else None
+        if not isinstance(last, dict) or last.get("status") not in ("failed", "cancelled"):
+            return None
+        return last.get("error") or f"The merge was {last['status']} before it finished."
+
+    def is_terminal(value):
+        return merge_failure(value) is not None or _status_of(value[1]) in TERRAIN_TERMINAL_STATUSES
+
+    (surface, terrain), polls, elapsed, timed_out = await _poll_until(
+        fetch, is_terminal, timeout_seconds, poll_interval_seconds
+    )
+    failure = merge_failure((surface, terrain))
+    if failure is not None:
+        # The merge itself failed: a merged terrain from an earlier derive of this recipe is not this result.
+        terrain = None
+    status = _status_of(terrain)
+    phase = status if status in TERRAIN_TERMINAL_STATUSES else ("importing" if terrain else "merging")
+    outcome = "error" if failure is not None else ("timed_out" if timed_out else status)
+    record = terrain if isinstance(terrain, dict) else {}
+    terrain_id = record.get("id")
+    result: dict = {
+        "outcome": outcome,
+        "phase": phase,
+        "polls": polls,
+        "elapsed_seconds": elapsed,
+        "analysis_surface_id": analysis_surface_id,
+        "terrain_id": terrain_id,
+        "terrain": terrain,
+    }
+    if failure is not None:
+        result["error"] = _data(str(failure))
+    summary = {
+        "analysis_surface_id": analysis_surface_id,
+        "terrain_id": terrain_id,
+        "phase": phase,
+        "dem_elev_min": record.get("dem_elev_min"),
+        "dem_elev_max": record.get("dem_elev_max"),
+    }
+    if outcome == "ready":
+        say = (
+            f"The merged terrain is ready (terrain {terrain_id}): elevation {record.get('dem_elev_min')} to "
+            f"{record.get('dem_elev_max')} m. {MERGE_GAP_FILLING} Open the link and check the seams."
+        )
+    elif failure is not None:
+        say = (
+            f"The terrain merge failed, so no merged terrain was made. Hydrata says: {result['error']} "
+            "Tell the user; the merge needs running again with merge_terrains."
+        )
+    elif outcome == "error":
+        say = f"The merged terrain (terrain {terrain_id}) failed to import; the merge needs running again."
+    else:
+        result["next_step"] = (
+            f"Call get_terrain_merge(project_id={project_id}, analysis_surface_id={analysis_surface_id}) again."
+        )
+        say = (
+            "The terrains are still being merged; I am still waiting on it."
+            if phase == "merging"
+            else f"The merged terrain (terrain {terrain_id}) is being published; I am still waiting on it."
+        )
+    await _hand_back(
+        result,
+        project_id,
+        summary,
+        say,
+        panel="inputs",
+        layer=_alternate(record.get("gn_layer_name")) if outcome == "ready" else None,
+    )
+    return json.dumps(_elide_presigned(result), indent=2)
 
 
 # ---------------------------------------------------------------------------

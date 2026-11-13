@@ -298,6 +298,36 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Shift a terrain from ellipsoid to EGM2008 heights"
+    },
+    "description": "Make a copy of a terrain shifted from ellipsoid heights to EGM2008 (sea-level) heights.\n\nUse it only when the user says the terrain's heights are on the ellipsoid (raw GPS or satellite\nheights). The original terrain is kept unchanged; the copy is a new terrain the scenarios can use.\nFor a GeoTIFF you are still uploading, pass convert_to_egm2008=True to finalize_terrain_upload instead.\nHydrata refuses a terrain on AHD or already on EGM2008 (it would be shifted twice): that comes back\nas `outcome: refused` with Hydrata's words. A terrain converted before returns the existing copy\n(`outcome: already_converted`). The copy takes minutes: wait on it with get_terrain(project_id,\nterrain_id=<the new terrain_id>).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "The project ID (the key needs Contributor rights; a launch-level key since the shift can start AWS Batch)",
+          "type": "integer"
+        },
+        "terrain_id": {
+          "description": "The terrain whose heights are on the ellipsoid (get_terrain)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id"
+      ],
+      "type": "object"
+    },
+    "name": "convert_terrain_datum",
+    "title": "Shift a terrain from ellipsoid to EGM2008 heights"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Create a flood observation layer"
     },
     "description": "Create a flood observation layer in a project and wait for its map layer.\n\nA flood observation layer holds real flood evidence (Flood marks, Timed\nlevels, Gauge records, Dry points) that every historic run is compared\nwith (Compare with observations). It is project-level: it is never a scenario input.\nPOSTs /projects/<id>/flood-observations/, then polls the layer until its\nGeoServer layer exists (`ready`), usually a few seconds; until then\nadd_observations refuses. On `timed_out`, call list_observations later.",
@@ -799,10 +829,15 @@
       "readOnlyHint": false,
       "title": "Register an uploaded terrain"
     },
-    "description": "Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.\n\nNeeds a launch-level agent key (the import can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nCall this only after the presigned PUT returned 200. Creates the Terrain row\n(status `creating`) and queues the import chain — reproject to UTM, publish\nthe layer + hillshade, style — which also seeds the project's six default\nboundary, friction, inflow, rainfall, building and mesh-region rows.\nReturns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND\nmeans no object is at `staging_key`: the PUT did not land (check its status\ncode and Content-Type) — do not retry finalize until it has.",
+    "description": "Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.\n\nNeeds a launch-level agent key (the import can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nCall this only after the presigned PUT returned 200. Creates the Terrain row\n(status `creating`) and queues the import chain — reproject to UTM, publish\nthe layer + hillshade, style — which also seeds the project's six default\nboundary, friction, inflow, rainfall, building and mesh-region rows.\nReturns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND\nmeans no object is at `staging_key`: the PUT did not land (check its status\ncode and Content-Type) — do not retry finalize until it has.\n\nHeights the user says are on the ellipsoid (raw GPS or satellite heights): pass\nconvert_to_egm2008=True so a sea-level (EGM2008) copy is made after the import. For a\nterrain already in Hydrata, use convert_terrain_datum instead.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "convert_to_egm2008": {
+          "default": false,
+          "description": "True to have Hydrata also make a copy of the terrain shifted from ellipsoid heights to EGM2008 (sea-level) heights once the import is done. Only with vertical_datum_declared `ellipsoid`, the datum the user told you; the original stays as it is. Default false.",
+          "type": "boolean"
+        },
         "levels_datum": {
           "default": "",
           "description": "The datum the PERSON'S levels (study, survey, tailwater) are on, e.g. `AHD`, `NAVD88`, `Ordnance Datum Newlyn` or an EPSG vertical code (`EPSG:5711`). A project fact, separate from the terrain's own datum. Pass it when the user told you; if they did not, ask them, do not guess.",
@@ -1106,6 +1141,46 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "Wait for a terrain merge"
+    },
+    "description": "Wait for a terrain merge started by merge_terrains until the merged terrain is `ready` (or `error`).\n\nReturns `outcome` (ready | error | timed_out), `phase` (merging: the terrains are being merged;\nimporting: the merged terrain is being published; then ready or error), `terrain_id` of the merged\nterrain once it exists, and its record. `timed_out` is normal: call again with the same arguments.\nIf the merge itself failed, `outcome` is `error` at once with Hydrata's reason in `error`; tell the user.\nOnce `ready`, use `terrain_id` like any other terrain (get_terrain, sample_terrain, a scenario's terrain).\nRead-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_surface_id": {
+          "description": "`analysis_surface_id` from merge_terrains",
+          "type": "integer"
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 180,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200). 0 = one status read, no waiting.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "analysis_surface_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_terrain_merge",
+    "title": "Wait for a terrain merge"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "List a project's input layers"
     },
     "description": "List every input layer row of a project, per kind, with whether it has features.\n\nFor each of boundary, friction, inflow, rainfall, building, mesh_region and culvert:\nthe rows (`row_id`, `title`, `gn_layer` — the dataset pk — and\n`dataset_alternate`, the `workspace:name` WFS typename), `authored_method`\n(the one-line account an agent gave of how it made the layer; null when\nnobody said) and `has_features`.\n`has_features` is the API's own answer for every kind. It is null only when\na row's record does not carry it: treat null as unknown, not as empty. A row\nwith no `gn_layer` has no layer yet (`has_features` false). Use the row ids with\ncreate_scenario; this is the listing primitive — no need to probe files.",
@@ -1294,6 +1369,69 @@
     },
     "name": "list_time_series",
     "title": "List a project's time series"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Merge project terrains into one"
+    },
+    "description": "Merge two or more of the project's terrains into one new terrain, in the priority order given.\n\nUse it when no single terrain covers the site well, e.g. a fine LiDAR survey over the channel and a\ncoarser terrain around it. The first terrain's heights are kept as they are; the ones below can be\nshifted slightly so they meet it without a step at the seams (the same as the map's merge). Gaps in a\nhigher terrain are filled from the ones below. The reply gives the size estimate (grid cells) and\n`analysis_surface_id`; the merge takes minutes, so follow it with get_terrain_merge until `ready`, then\nuse the merged terrain like any other. A refusal (too large for the resolution, a coarser terrain above a\nfiner one) comes back as `outcome: refused` with Hydrata's reply unchanged in `hydrata_reply`; nothing is kept.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "acknowledge_coarser_above_finer": {
+          "default": false,
+          "description": "True only after the user agreed to put a coarser terrain above a finer one (a design surface over a survey); Hydrata refuses that order otherwise",
+          "type": "boolean"
+        },
+        "merge_extent_wgs84": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional area to keep, [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees; omit for the whole of the terrains' combined area"
+        },
+        "project_id": {
+          "description": "The project ID (the key needs Contributor rights; a launch-level key, since the merge can run on AWS Batch)",
+          "type": "integer"
+        },
+        "target_resolution_m": {
+          "description": "Cell size of the merged terrain in metres, e.g. 2",
+          "type": "number"
+        },
+        "terrain_ids": {
+          "description": "Two or more of the project's terrain IDs, highest priority FIRST (the one whose heights win where they overlap, usually the finest survey), then the ones that fill in around and under it",
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "title": {
+          "default": "",
+          "description": "Name of the merged terrain (default: 'Merged terrain')",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_ids",
+        "target_resolution_m"
+      ],
+      "type": "object"
+    },
+    "name": "merge_terrains",
+    "title": "Merge project terrains into one"
   },
   {
     "annotations": {
@@ -1509,6 +1647,36 @@
     },
     "name": "set_comparison_tolerance",
     "title": "Save a project's default comparison tolerance"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Record the datum of the user's levels"
+    },
+    "description": "Record which height datum the user's own levels are on, for a project that already has its terrain.\n\nUse it when get_terrain or get_project says the project has no levels datum, or the user corrects it.\nFor a new terrain, pass levels_datum to create_terrain_from_source instead. This is a fact about the\nperson's numbers, not about the terrain: it never changes the terrain's own datum. Hydrata compares the\ntwo and returns `levels_datum_mismatch` when they differ: relay it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "levels_datum": {
+          "description": "The datum the PERSON'S levels (study, survey, tailwater) are on, in their words: `AHD`, `NAVD88`, `Ordnance Datum Newlyn`, or an EPSG vertical code such as `EPSG:5711`. Ask the user; never guess.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID (the key's person needs Editor rights on it)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "levels_datum"
+      ],
+      "type": "object"
+    },
+    "name": "set_levels_datum",
+    "title": "Record the datum of the user's levels"
   },
   {
     "annotations": {

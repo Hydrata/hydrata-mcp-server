@@ -208,8 +208,14 @@ mcp = FastMCP(
         "you cannot move file bytes (presign_terrain_upload and finalize_terrain_upload are "
         "for a client that can). Ask the user which height datum their levels are in, and "
         "pass the answer as levels_datum on create_terrain_from_source (it is required): that is the "
-        "datum of the person's levels, a project fact. vertical_datum_declared stays the terrain's own "
+        "datum of the person's levels, a project fact (for a project whose terrain already exists, record it with "
+        "set_levels_datum). vertical_datum_declared stays the terrain's own "
         "datum (an uploaded DEM's, on finalize_terrain_upload); never put the person's levels there. "
+        "Only when the user says a terrain's heights are on the ellipsoid (raw GPS or satellite heights), shift "
+        "them to EGM2008: convert_to_egm2008=true on finalize_terrain_upload, or convert_terrain_datum for a "
+        "terrain already in Hydrata (it makes a copy and keeps the original). "
+        "When no one terrain covers the site well, merge_terrains (highest priority first) and follow it with "
+        "get_terrain_merge until ready. "
         "Never relay the datum Hydrata inferred as fact. When get_terrain or get_project reports a "
         "levels datum mismatch, relay it. "
         "To place a culvert, inflow or boundary on the ground, sample_terrain the points or terrain_profile "
@@ -341,6 +347,13 @@ TOOL_ANNOTATIONS = {
     "create_project": ("Create a project", False, False, False),
     "presign_terrain_upload": ("Get a terrain upload URL", False, False, False),
     "finalize_terrain_upload": ("Register an uploaded terrain", False, False, False),
+    # TASK-4336: a new terrain shifted ellipsoid -> EGM2008; the source is kept, so not destructive.
+    "convert_terrain_datum": ("Shift a terrain from ellipsoid to EGM2008 heights", False, False, False),
+    # TASK-4337: the person's levels datum on the project; overwritten by the next call, not destructive.
+    "set_levels_datum": ("Record the datum of the user's levels", False, False, True),
+    # TASK-4338: a new merged terrain from the project's terrains (the inputs are kept); then wait for it.
+    "merge_terrains": ("Merge project terrains into one", False, False, False),
+    "get_terrain_merge": ("Wait for a terrain merge", True, False, True),
     "create_time_series": ("Create a time series", False, False, False),
     # TASK-4056: an agent corrects or removes its own series.
     "update_time_series": ("Correct a time series", False, False, True),
