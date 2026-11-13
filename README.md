@@ -1,6 +1,7 @@
 # hydrata-mcp-server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Hydrata/hydrata-mcp-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Hydrata/hydrata-mcp-server)
 
 <!-- mcp-name: com.hydrata/hydrata-mcp-server -->
 
