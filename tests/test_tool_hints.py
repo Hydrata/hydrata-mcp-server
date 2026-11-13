@@ -27,6 +27,7 @@ READ_ONLY = {
     "get_run_status",
     "get_scenario",
     "get_terrain",
+    "get_terrain_merge",
     "sample_terrain",
     "terrain_profile",
     "list_inputs",
@@ -55,6 +56,7 @@ WRITES = {
     "finalize_terrain_upload": False,
     "presign_terrain_upload": False,
     "set_comparison_tolerance": False,
+    "merge_terrains": False,  # a new merged terrain; the inputs are kept
     "set_levels_datum": False,  # the person's levels datum; the next call overwrites it
     "set_observation_exclusion": False,
     "update_observation": False,
@@ -87,12 +89,12 @@ def test_tool_hints_the_three_groups_are_disjoint():
     assert not set(WRITES) & SPENDS_COMPUTE
 
 
-async def test_tool_hints_the_table_names_every_one_of_the_44_tools(_server):
+async def test_tool_hints_the_table_names_every_one_of_the_46_tools(_server):
     tools = await _tools(_server)
-    assert len(tools) == 44
+    assert len(tools) == 46
     grouped = READ_ONLY | set(WRITES) | SPENDS_COMPUTE
     assert grouped == set(tools), {"unlisted": sorted(set(tools) - grouped), "stale": sorted(grouped - set(tools))}
-    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 44
+    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 46
 
 
 async def test_tool_hints_read_only_tools_say_read_only_and_not_destructive(_server):

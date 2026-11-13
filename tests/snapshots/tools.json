@@ -1141,6 +1141,46 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "Wait for a terrain merge"
+    },
+    "description": "Wait for a terrain merge started by merge_terrains until the merged terrain is `ready` (or `error`).\n\nReturns `outcome` (ready | error | timed_out), `phase` (merging: the terrains are being merged;\nimporting: the merged terrain is being published; then ready or error), `terrain_id` of the merged\nterrain once it exists, and its record. `timed_out` is normal: call again with the same arguments.\nOnce `ready`, use `terrain_id` like any other terrain (get_terrain, sample_terrain, a scenario's terrain).\nRead-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_surface_id": {
+          "description": "`analysis_surface_id` from merge_terrains",
+          "type": "integer"
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 180,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200). 0 = one status read, no waiting.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "analysis_surface_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_terrain_merge",
+    "title": "Wait for a terrain merge"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "List a project's input layers"
     },
     "description": "List every input layer row of a project, per kind, with whether it has features.\n\nFor each of boundary, friction, inflow, rainfall, building, mesh_region and culvert:\nthe rows (`row_id`, `title`, `gn_layer` — the dataset pk — and\n`dataset_alternate`, the `workspace:name` WFS typename), `authored_method`\n(the one-line account an agent gave of how it made the layer; null when\nnobody said) and `has_features`.\n`has_features` is the API's own answer for every kind. It is null only when\na row's record does not carry it: treat null as unknown, not as empty. A row\nwith no `gn_layer` has no layer yet (`has_features` false). Use the row ids with\ncreate_scenario; this is the listing primitive — no need to probe files.",
@@ -1329,6 +1369,69 @@
     },
     "name": "list_time_series",
     "title": "List a project's time series"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Merge project terrains into one"
+    },
+    "description": "Merge two or more of the project's terrains into one new terrain, in the priority order given.\n\nUse it when no single terrain covers the site well, e.g. a fine LiDAR survey over the channel and a\ncoarser terrain around it. The first terrain's heights are kept as they are; the ones below can be\nshifted slightly so they meet it without a step at the seams (the same as the map's merge). Gaps in a\nhigher terrain are filled from the ones below. The reply gives the size estimate (grid cells) and\n`analysis_surface_id`; the merge takes minutes, so follow it with get_terrain_merge until `ready`, then\nuse the merged terrain like any other. A refusal (too large for the resolution, a coarser terrain above a\nfiner one) comes back as `outcome: refused` with Hydrata's reply unchanged in `hydrata_reply`; nothing is kept.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "acknowledge_coarser_above_finer": {
+          "default": false,
+          "description": "True only after the user agreed to put a coarser terrain above a finer one (a design surface over a survey); Hydrata refuses that order otherwise",
+          "type": "boolean"
+        },
+        "merge_extent_wgs84": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional area to keep, [min_lon, min_lat, max_lon, max_lat] in WGS84 degrees; omit for the whole of the terrains' combined area"
+        },
+        "project_id": {
+          "description": "The project ID (the key needs Contributor rights; a launch-level key, since the merge can run on AWS Batch)",
+          "type": "integer"
+        },
+        "target_resolution_m": {
+          "description": "Cell size of the merged terrain in metres, e.g. 2",
+          "type": "number"
+        },
+        "terrain_ids": {
+          "description": "Two or more of the project's terrain IDs, highest priority FIRST (the one whose heights win where they overlap, usually the finest survey), then the ones that fill in around and under it",
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "title": {
+          "default": "",
+          "description": "Name of the merged terrain (default: 'Merged terrain')",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_ids",
+        "target_resolution_m"
+      ],
+      "type": "object"
+    },
+    "name": "merge_terrains",
+    "title": "Merge project terrains into one"
   },
   {
     "annotations": {
