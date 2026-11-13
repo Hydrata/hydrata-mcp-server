@@ -54,6 +54,8 @@ SCENARIO_RECORD_KEYS = (
     "duration",
     # How the model reads the ground under each triangle: footprint (default) or centroid
     "elevation_sampling",
+    # The solver: DE0 (default), DE1 or DE_ader2; DE1 costs about 2x
+    "flow_algorithm",
     "computed_status",
     "mesh_triangle_count_estimate",
     "mesh_triangle_count_estimate_breakdown",
@@ -80,6 +82,16 @@ ELEVATION_SAMPLING_HELP = (
     "Terrain sampling, how the model reads the ground under each mesh triangle: 'footprint' or 'centroid'. "
     "footprint = area-weighted average of DEM cells under each triangle (default); "
     "centroid = the DEM cell at the triangle centre (plain-ANUGA style). "
+    "Say which one the model used."
+)
+
+#: What each solver value means and what it costs; the argument help and get_scenario's description say it.
+FLOW_ALGORITHM_HELP = (
+    "Solver (the ANUGA flow algorithm): 'DE0', 'DE1' or 'DE_ader2'. "
+    "DE0 = standard (default); "
+    "DE1 = second-order, about 2x compute and price; "
+    "DE_ader2 = second-order, experimental (still being validated upstream), about 1.25x price. "
+    "A non-default solver raises the quote_estimate, so tell the user and ask before choosing one. "
     "Say which one the model used."
 )
 
@@ -119,7 +131,10 @@ async def get_scenario(
     — plus what the scenario IS and what it will cost: `name`, `description`,
     `project`, `resolution`, `duration`, `elevation_sampling` (how the model
     reads the ground under each triangle: footprint = area-weighted average of DEM cells under each triangle (default),
-    centroid = the DEM cell at the triangle centre (plain-ANUGA style)), the input row ids (`terrain`,
+    centroid = the DEM cell at the triangle centre (plain-ANUGA style)), `flow_algorithm` (the solver:
+    DE0 = standard (default);
+    DE1 = second-order, about 2x compute and price;
+    DE_ader2 = second-order, experimental (still being validated upstream), about 1.25x price), the input row ids (`terrain`,
     `boundary`, `friction`, `inflow`, `rainfall`, `building`, `mesh_region`, `culvert`),
     `quote_estimate` (the ONE pre-build price in USD, GPU formula, labelled an
     estimate: `price` is what the person pays, `0.00` inside the daily free band, and
@@ -522,6 +537,7 @@ async def update_scenario(
     ] = None,
     duration: Annotated[int | None, "Simulation duration in seconds"] = None,
     elevation_sampling: Annotated[str | None, ELEVATION_SAMPLING_HELP] = None,
+    flow_algorithm: Annotated[str | None, FLOW_ALGORITHM_HELP] = None,
     terrain: Annotated[int | None, "Terrain id to attach"] = None,
     boundary: Annotated[int | None, "Boundary row id to attach"] = None,
     friction: Annotated[int | None, "Friction row id to attach"] = None,
@@ -531,7 +547,7 @@ async def update_scenario(
     mesh_region: Annotated[int | None, "MeshRegion row id to attach"] = None,
     culvert: Annotated[int | None, "Culvert row id to attach"] = None,
 ) -> str:
-    """Edit a scenario: its name, description, resolution, duration, terrain sampling, or which input rows it points at.
+    """Edit a scenario: its name, description, resolution, duration, terrain sampling, solver, or which input rows it points at.
 
     A thin PATCH of scenarios/{id}/ with only the fields you pass. It NEVER
     builds or runs anything: a changed scenario is marked stale and you call
@@ -548,6 +564,8 @@ async def update_scenario(
         "duration": duration,
         # Sent as given: Hydrata checks the value and its 400 names the allowed ones.
         "elevation_sampling": elevation_sampling,
+        # Sent as given: Hydrata checks the value and its 400 names the allowed ones.
+        "flow_algorithm": flow_algorithm,
         "terrain": terrain,
         "boundary": boundary,
         "friction": friction,
@@ -580,7 +598,7 @@ async def clone_scenario(
     overrides: Annotated[
         dict | None,
         "Fields of the copy to set at once, the same as update_scenario: description, resolution, duration, "
-        "elevation_sampling, terrain, boundary, friction, inflow, rainfall, building, mesh_region, culvert.",
+        "elevation_sampling, flow_algorithm, terrain, boundary, friction, inflow, rainfall, building, mesh_region, culvert.",
     ] = None,
 ) -> str:
     """Copy a scenario into a new sibling, for a variant. No run is copied and nothing is built.
@@ -597,6 +615,7 @@ async def clone_scenario(
         "resolution",
         "duration",
         "elevation_sampling",
+        "flow_algorithm",
         "terrain",
         "boundary",
         "friction",
