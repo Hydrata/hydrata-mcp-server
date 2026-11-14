@@ -445,6 +445,8 @@ async def test_delineate_with_an_id_says_a_persons_ticks_were_reapplied_and_need
     )
     say = data["say_to_user"]
     assert "re-applied" in say and "check" in say and "only a person" in say.lower()
+    assert "re-run" not in say  # a settings change is a regroup, not a re-run (TASK-4424)
+    assert "after the catchments changed" in say
     assert data["diversions_to_check"] == 1
 
 
@@ -524,6 +526,22 @@ async def test_get_delineation_waits_for_the_job_and_returns_outcome_ready_with_
     assert route.call_count == 3 and data["polls"] == 3
     assert data["outcome"] == "ready" and data["phase"] == "ready"
     assert len(data["catchments"]) == 2
+
+
+@respx.mock
+async def test_get_delineation_counts_every_suggestion_and_how_many_are_shallow(_server):
+    # TASK-4424: tally.suggested counts only drains 2 m deep or less; the sentence counts every suggestion listed
+    _mock_project()
+    doc = _doc(
+        suggestions=[{"from": 101, "to": 102, "area_ha": 12.5, "drain_depth_m": 3.67, "length_m": 60.0}],
+        tally={"catchments": 2, "diverted": 1, "suggested": 0, "lumped_low_points": 0, "total_area_ha": 15.7},
+    )
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = await _read(_server, timeout_seconds=30, poll_interval_seconds=0)
+    say = data["say_to_user"]
+    assert "1 diversion suggested (information only), 0 with a drain 2 m deep or less" in say
+    assert "0 suggested" not in say
+    assert "1 diversion applied" in say and "1 diversions" not in say
 
 
 @respx.mock

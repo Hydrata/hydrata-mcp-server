@@ -144,7 +144,7 @@ def _ticks_text(doc: dict) -> str | None:
     if to_check:
         parts.append(
             f"{to_check} diversion{' a person ticked was' if to_check == 1 else 's a person ticked were'} re-applied "
-            "after the re-run and must be checked again"
+            "after the catchments changed and must be checked again"
         )
     if remembered:
         parts.append(
@@ -244,10 +244,15 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     if shown:
         mode = shown.get("mode") or "quick"
         coarse = ", coarsened to the web server's limit" if shown.get("coarsened") else ""
+        diverted = tally.get("diverted", 0) or 0
+        # every suggestion listed; the API's tally.suggested counts only the shallow ones (a drain 2 m deep or less)
+        suggested = len(doc.get("suggestions") or [])
+        shallow = tally.get("suggested", 0) or 0
         parts.append(
             f"Delineation {line.get('id')} ({_data(str(line.get('name')))}) has {tally.get('catchments')} catchments "
-            f"totalling {tally.get('total_area_ha', 0):.1f} ha; {tally.get('diverted', 0)} diversions applied, "
-            f"{tally.get('suggested', 0)} suggested (information only). Shown result: {mode}, worked at "
+            f"totalling {tally.get('total_area_ha', 0):.1f} ha; {diverted} diversion{'' if diverted == 1 else 's'} applied, "
+            f"{suggested} diversion{'' if suggested == 1 else 's'} suggested (information only), {shallow} with a drain "
+            f"2 m deep or less. Shown result: {mode}, worked at "
             f"{_m(shown.get('working_resolution_m'))} m on a {_m(shown.get('terrain_resolution_m'))} m terrain{coarse}."
         )
     parts.append(_who(doc))
