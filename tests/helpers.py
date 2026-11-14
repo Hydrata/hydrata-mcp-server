@@ -560,6 +560,7 @@ SERVER_MODULES = (
     "projects",
     "runs",
     "terrain",
+    "delineation",
     "inputs",
     "observations",
     "calibration",

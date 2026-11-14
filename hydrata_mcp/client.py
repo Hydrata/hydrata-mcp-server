@@ -371,7 +371,7 @@ class HydrataClient:
         resp = await self._send("POST", f"{self._origin}{path}", path, json=json or {})
         return self._body(resp), resp.status_code
 
-    async def patch(self, path: str, json: dict | None = None) -> tuple[Any, int]:
+    async def patch(self, path: str, json: dict | None = None, raise_for_status: bool = True) -> tuple[Any, int]:
         """PATCH request (partial update). Returns (body, status_code) like post().
 
         TASK-3171 (W1.2, epic 2467) — attach_input_layer sets ONE field
@@ -380,7 +380,9 @@ class HydrataClient:
         else, and a POST to the two create-capable ones (buildings,
         mesh-regions) has its gn_layer overwritten by the async layer factory.
         """
-        resp = await self._send("PATCH", f"{self._base}{path}", path, json=json or {})
+        resp = await self._send(
+            "PATCH", f"{self._base}{path}", path, raise_for_status=raise_for_status, json=json or {}
+        )
         return self._body(resp), resp.status_code
 
     async def delete(self, path: str) -> int:
