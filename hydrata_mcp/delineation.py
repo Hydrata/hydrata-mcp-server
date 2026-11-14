@@ -60,6 +60,11 @@ def _chainage_text(metres) -> str | None:
     return f"CH {sign}{whole // 1000}+{whole % 1000:03d}"
 
 
+def _m(value) -> str:
+    """A length in metres for a sentence: at most one decimal ('28.1')."""
+    return f"{round(value, 1):g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else "unknown"
+
+
 def _duration(seconds) -> str:
     """Seconds as '2 h 1 min' / '45 min' / '30 s'."""
     if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0:
@@ -94,7 +99,7 @@ def _catchment_doc(c: dict) -> dict:
         out["arrival_point"] = _with_text(c["arrival_point"], ("chainage_m", "chainage"))
     if c.get("area_is_lower_bound"):
         out["area_note"] = (
-            f"The area is at least {c.get('area_ha')} ha, not the full area: the terrain ends inside this catchment "
+            f"The area is at least {_m(c.get('area_ha'))} ha, not the full area: the terrain ends inside this catchment "
             "(or the water may be shared), so treat it as a lower bound."
         )
     return out
@@ -197,9 +202,10 @@ def _result(doc: dict) -> dict:
             {
                 **_with_text(m, ("chainage_m", "chainage")),
                 "sentence": (
-                    f"The watercourse that drains {_data(str(names.get(m.get('catchment'), m.get('catchment'))))} runs on "
-                    f"and meets the line again in {_data(str(names.get(m.get('meets_again_in'), m.get('meets_again_in'))))} "
-                    f"at {_chainage_text(m.get('chainage_m'))}: water passing the line there is counted in two catchments."
+                    f"The watercourse that drains in {_data(str(names.get(m.get('catchment'), m.get('catchment'))))} runs on "
+                    f"and meets the line again at {_chainage_text(m.get('chainage_m'))}, in "
+                    f"{_data(str(names.get(m.get('meets_again_in'), m.get('meets_again_in'))))}: water passing the drainage "
+                    "point comes back to the line there, so the two places are linked and neither area is the whole story."
                 ),
             }
             for m in doc.get("meets_line_twice") or []
@@ -236,7 +242,7 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
             f"Delineation {line.get('id')} ({_data(str(line.get('name')))}) has {tally.get('catchments')} catchments "
             f"totalling {tally.get('total_area_ha', 0):.1f} ha; {tally.get('diverted', 0)} diversions applied, "
             f"{tally.get('suggested', 0)} suggested (information only). Shown result: {mode}, worked at "
-            f"{shown.get('working_resolution_m')} m on a {shown.get('terrain_resolution_m')} m terrain{coarse}."
+            f"{_m(shown.get('working_resolution_m'))} m on a {_m(shown.get('terrain_resolution_m'))} m terrain{coarse}."
         )
     parts.append(_who(doc))
     if ticks:
@@ -272,17 +278,19 @@ def _estimate_words(estimate: dict) -> str:
         high = (e.get("expected_seconds") or {}).get("high")
         where = "AWS Batch" if e.get("runs_on") == "batch" else "the web server"
         text = (
-            f"{mode}: about {e.get('cells'):,} cells at {e.get('working_resolution_m')} m on {where}, "
+            f"{mode}: about {e.get('cells'):,} cells at {_m(e.get('working_resolution_m'))} m on {where}, "
             f"expected {_duration(low)} to {_duration(high)}"
             f"{', it can take hours' if e.get('can_take_hours') else ''}"
         )
         if e.get("may_move_to_batch"):
             text += " (a web-server run that overruns is handed to Batch)"
+        text += "."
         if not e.get("can_run"):
-            text += f"; it CANNOT run here: {e.get('cannot_run_reason')}"
+            reason = str(e.get("cannot_run_reason") or "").strip()
+            text += f" The {mode} run CANNOT run here: {reason}{'' if reason.endswith('.') else '.'}"
         out.append(text)
     note = (estimate.get("quick") or {}).get("note")
-    return "Estimate (a range, not a promise). " + ". ".join(out) + "." + (f" {note}" if note else "")
+    return "Estimate (a range, not a promise). " + " ".join(out) + (f" {note}" if note else "")
 
 
 def _refused(body, status: int, what: str) -> dict:
@@ -545,7 +553,6 @@ async def _change(
             "Nothing to change: give a name, start_chainage_m, min_area_ha or max_divert_area_ha, or mode='full' to "
             "start the full run. Nothing was sent."
         )
-    ticks = None
     doc = None
     if changes:
         payload = dict(changes)
@@ -700,9 +707,7 @@ async def get_delineation(
         outcome = "error"
     else:
         outcome = "ready"
-    phase = _phase_of(job) if (live or failed) else "ready"
-    if failed and not live and outcome == "ready":
-        phase = "ready"
+    phase = _phase_of(job) if (live or outcome == "error") else "ready"
     result = _result(doc)
     result.update({"outcome": outcome, "phase": phase, "polls": polls, "elapsed_seconds": elapsed})
     full_run = None
@@ -841,18 +846,21 @@ async def use_catchments_as_boundary(
             "made_at": made.get("made_at"),
             "method": made.get("method"),
             "open_stretch_m": made.get("open_stretch_m"),
-            "open_stretches": [_with_text(s, ("chainage_m", "chainage")) for s in made.get("open_stretches") or []],
+            "open_stretches": made.get("open_stretches") or [],
             "perimeter_m": made.get("perimeter_m"),
             "boundary_rule": BOUNDARY_RULE,
         }
     )
     d = doc.get("delineation") or {}
     unreviewed_delineation = bool(d.get("agent_authored") and not d.get("confirmed"))
+    stretches = made.get("open_stretches") or []
+    open_total = sum(x.get("length_m") or 0 for x in stretches if isinstance(x, dict))
     say = (
         f"Made boundary '{_data(str(boundary.get('title')))}' (input {boundary.get('id')}, {boundary.get('feature_count')} "
-        f"features, {made.get('perimeter_m')} m round) from catchments {', '.join(used)}. It is Closed (Reflective) "
-        f"everywhere except a {made.get('open_stretch_m')} m open stretch, typed Transmissive, at each included drainage "
-        f"point ({len(made.get('open_stretches') or [])} of them). The boundary is unreviewed"
+        f"features, a ring {_m(made.get('perimeter_m'))} m round) from catchments {', '.join(used)}. It is Closed "
+        f"(Reflective) everywhere except short open stretches, typed Transmissive, at each included drainage point "
+        f"({len(stretches)} stretch{'es' if len(stretches) != 1 else ''}, {_m(open_total)} m in all; each about "
+        f"{_m(made.get('open_stretch_m'))} m, and stretches that overlap join into one). The boundary is unreviewed"
         + (", and so is the delineation (no person has confirmed it)" if unreviewed_delineation else "")
         + ": nothing is built or run until a person reviews them in the browser. To model with it, attach it to a "
         f"scenario with update_scenario(boundary={boundary.get('id')}), then give the user the link."

@@ -743,7 +743,7 @@ def _boundary_reply():
         "made_at": "2026-11-14T10:30:00+00:00",
         "method": "Use as model boundary from delineation ...",
         "open_stretch_m": 150.0,
-        "open_stretches": [{"distance_m": 40.0, "chainage_m": 5040.0, "length_m": 150.0}],
+        "open_stretches": [{"catchment_ids": [101], "length_m": 150.0, "from_m": 10.0, "to_m": 160.0}],
         "perimeter_m": 9800.0,
         "use_id": 3,
     }
