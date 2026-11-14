@@ -42,18 +42,19 @@ NO_LANE = (
     "This terrain is too large to be worked out on the web server, and the cloud compute that large terrains "
     "need is not set up on this site yet. Nothing was run."
 )
+# the API's own sentences (TASK-4405 wording: each leads with the chainage it applies to)
 WARN_CREST = (
-    "The line runs along the top of a ridge or built ground for 220 m of its 900 m (between CH 0+100 and CH 0+320): "
-    "the ground falls away on both sides. Redraw the line where the water arrives, at the toe or in the channel."
+    "CH 0+100 to CH 0+320: 220 m of the 900 m line is on a ridge or built ground (ground falls away on both sides). "
+    "Water cannot reach the line there, so those catchments are merged or wrong. Redraw the line at the toe or in the "
+    "channel."
 )
 WARN_SHARE = (
-    "At CH 5+081 the water of the catchment draining at CH 5+040 would pond only 0.12 m before spilling over the "
-    "high point into the catchment draining at CH 5+300: the two catchments can share water, so treat both areas "
-    "as uncertain."
+    "CH 5+081 (high point): water from the catchment draining at CH 5+040 spills into the one draining at CH 5+300 "
+    "after ponding 0.12 m. Both areas are uncertain."
 )
 WARN_EDGE = (
-    "The terrain ends inside the catchment draining at CH 5+300: its area is at least 3.2 ha, not the full area. "
-    "Add terrain beyond it."
+    "CH 5+300: the terrain ends inside the catchment draining here, so its area is at least 3.2 ha. Add terrain beyond "
+    "the edge for the full area."
 )
 WARNINGS = [
     {"code": "line_on_a_crest", "sentence": WARN_CREST, "distance_m": 100.0, "chainage_m": 100.0, "catchments": []},
@@ -679,8 +680,20 @@ async def test_every_warning_reaches_the_agent_in_words(_server):
     # every shares-water flag, and every watercourse that meets the line twice, has its own sentence
     assert len(data["shares_water"]) == 1 and "can share water" in data["shares_water"][0]["sentence"]
     assert data["shares_water"][0]["pass_chainage"] == "CH 5+081"
-    assert len(data["meets_line_twice"]) == 1 and "meets the line again" in data["meets_line_twice"][0]["sentence"]
+    assert len(data["meets_line_twice"]) == 1 and "reaches the line again" in data["meets_line_twice"][0]["sentence"]
     assert data["meets_line_twice"][0]["chainage"] == "CH 5+700"
+    # TASK-4405: the same plain wording as the API's sentences, nothing narrative or hedged
+    assert data["shares_water"][0]["sentence"].startswith("CH 5+081 (high point): ")
+    assert data["shares_water"][0]["sentence"].endswith("Both areas are uncertain.")
+    assert "reaches the line again at CH 5+700, in " in data["meets_line_twice"][0]["sentence"]
+    lower = next(c for c in data["catchments"] if c.get("area_is_lower_bound"))
+    assert "the terrain ends inside this catchment" in lower["area_note"]
+    words = [data["shares_water"][0]["sentence"], data["meets_line_twice"][0]["sentence"], lower["area_note"]]
+    for text in words:
+        for phrase in ("whole story", " only ", "would ", "treat both", "treat it", "may be shared"):
+            assert phrase not in text, (phrase, text)
+    for phrase in ("whole story", "treat both", "treat it"):
+        assert phrase not in data["say_to_user"], phrase
     assert "shared" in data["say_to_user"] or "share" in data["say_to_user"]
 
 

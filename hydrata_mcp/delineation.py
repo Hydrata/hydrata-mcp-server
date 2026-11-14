@@ -99,8 +99,8 @@ def _catchment_doc(c: dict) -> dict:
         out["arrival_point"] = _with_text(c["arrival_point"], ("chainage_m", "chainage"))
     if c.get("area_is_lower_bound"):
         out["area_note"] = (
-            f"The area is at least {_m(c.get('area_ha'))} ha, not the full area: the terrain ends inside this catchment "
-            "(or the water may be shared), so treat it as a lower bound."
+            f"Its area is at least {_m(c.get('area_ha'))} ha: the terrain ends inside this catchment, so its true area is "
+            "larger. Add terrain beyond the edge for the full area."
         )
     return out
 
@@ -110,17 +110,28 @@ def _names(doc: dict) -> dict:
 
 
 def _shares_sentence(item: dict, names: dict) -> str:
+    """The API's shares-water wording (TASK-4405): where it applies first, the measured height, then the plain consequence."""
     a, b = (item.get("catchments") or [None, None])[:2]
-    where = "upstream of the line" if item.get("where") == "upstream" else "on the line"
+    pair = f"{_data(str(names.get(a, a)))} and {_data(str(names.get(b, b)))}"
     height = item.get("pass_height_m")
-    height_text = (
-        f" would pond only {height:.2f} m before spilling" if isinstance(height, (int, float)) else " can spill"
-    )
-    at = _chainage_text(item.get("pass_chainage_m"))
+    measured = isinstance(height, (int, float)) and not isinstance(height, bool)
+    if item.get("where") == "upstream":
+        lead = f"{pair} can share water upstream of the line"
+        how = f"; the ground between them is {height:.2f} m above the channel" if measured else ""
+    else:
+        at = _chainage_text(item.get("pass_chainage_m"))
+        lead = f"{f'{at} (high point): ' if at else ''}{pair} can share water"
+        how = f"; water ponds {height:.2f} m before it spills from one into the other" if measured else ""
+    return f"{lead}{how}. Both areas are uncertain."
+
+
+def _meets_twice_sentence(item: dict, names: dict) -> str:
+    """The API's meets-twice wording (TASK-4405): the catchment first, where its water reaches the line again, what follows."""
+    here = _data(str(names.get(item.get("catchment"), item.get("catchment"))))
+    again = _data(str(names.get(item.get("meets_again_in"), item.get("meets_again_in"))))
     return (
-        f"{_data(str(names.get(a, a)))} and {_data(str(names.get(b, b)))} can share water, {where}"
-        f"{f' at {at}' if at else ''}: the water{height_text} over the high point into the other, so treat both areas "
-        "as uncertain."
+        f"{here}: water leaving its drainage point reaches the line again at {_chainage_text(item.get('chainage_m'))}, "
+        f"in {again}. The area of {again} does not include the area of {here}."
     )
 
 
@@ -201,12 +212,7 @@ def _result(doc: dict) -> dict:
         "meets_line_twice": [
             {
                 **_with_text(m, ("chainage_m", "chainage")),
-                "sentence": (
-                    f"The watercourse that drains in {_data(str(names.get(m.get('catchment'), m.get('catchment'))))} runs on "
-                    f"and meets the line again at {_chainage_text(m.get('chainage_m'))}, in "
-                    f"{_data(str(names.get(m.get('meets_again_in'), m.get('meets_again_in'))))}: water passing the drainage "
-                    "point comes back to the line there, so the two places are linked and neither area is the whole story."
-                ),
+                "sentence": _meets_twice_sentence(m, names),
             }
             for m in doc.get("meets_line_twice") or []
         ],
@@ -254,7 +260,7 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
         parts.append("The API raised no warnings.")
     if result["shares_water"]:
         parts.append(
-            f"{len(result['shares_water'])} pair(s) of neighbouring catchments can share water: treat both areas as "
+            f"{len(result['shares_water'])} pair(s) of neighbouring catchments can share water: both areas of each pair are "
             "uncertain."
         )
     replaced = shown.get("replaced") if shown.get("mode") == "full" else None
