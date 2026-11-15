@@ -118,6 +118,7 @@ DATA_TEXT_KEYS = frozenset(
         "confirmed_by",
         "ticked_by",
         "reapplied_by",
+        "checked_by",
         "made_by",
     }
 )
