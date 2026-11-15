@@ -2,7 +2,9 @@
 
 delineate_catchments  - a line on the project's terrain makes a delineation and starts its job (returns at once, with
                         the estimate); with a delineation id it changes the two areas, the name or the start chainage
-                        of the agent's own unconfirmed delineation (a regroup, no new job) or starts its full run.
+                        of the agent's own unconfirmed delineation (a regroup, no new job) or starts its High resolution
+                        run. Over a fast screen, High resolution makes a COPY of the line ('<name> (high res)') and runs
+                        there; the fast screen stays for comparison (operator, 15-11-26).
 get_delineation       - reads one, waiting for its job the way get_terrain_merge waits for a merge.
 use_catchments_as_boundary - a Closed (Reflective) model boundary round chosen catchments, with a short Transmissive
                         opening at each drainage point (decisions D14 = A, D15 = A).
@@ -11,6 +13,9 @@ Every result carries the API's own field names (TASK-4397, 4398, 4410, 4417) and
 CH k+mmm, its distance in metres. Every warning comes back as its sentence. The tools never tick, apply or undo a
 diversion and never confirm: only a person does, in the browser (decision D13). What an agent makes is unreviewed
 until a person confirms it. There is no tool that deletes a delineation or edits its line.
+
+Words (operator, 15-11-26): the quick run (API mode 'quick') is the FAST SCREEN (low resolution), a first look; the full run
+(mode 'full') is HIGH RESOLUTION. A fast screen is a quick result that was coarsened; its ground profile is not given anywhere.
 """
 
 import json
@@ -35,6 +40,16 @@ LIVE_STATUSES = ("pending", "running")
 OMITTED = (
     "The drawing data (the ground profile along the line, each catchment's polygon, the line's own vertices) is left "
     "on the map; use terrain_profile to read the ground along a line."
+)
+FAST_SCREEN = "fast screen (low resolution)"
+HIGH_RES = "high resolution"
+FAST_SCREEN_PROFILE = (
+    "This is a fast screen: its ground profile is not available anywhere (not on the map either), because the coarsened "
+    "ground misleads. Run High resolution to see the profile."
+)
+FAST_SCREEN_CAVEAT = (
+    "A fast screen is a first look at low resolution: tell the person so, and offer High resolution before they rely on "
+    "it (it can still be used as the model boundary)."
 )
 SUGGESTIONS_NOTE = (
     "Diversion suggestions are information only: a drain that could send one catchment's water to its neighbour. "
@@ -178,6 +193,31 @@ def _full_run_doc(job: dict) -> dict:
     return out
 
 
+def _is_fast_screen(shown) -> bool:
+    """The API's `fast_screen`; for an older API, a quick result that was coarsened (or does not say)."""
+    if not isinstance(shown, dict) or not shown:
+        return False
+    if "fast_screen" in shown:
+        return bool(shown.get("fast_screen"))
+    return (shown.get("mode") or "quick") == "quick" and shown.get("coarsened") is not False
+
+
+def _kind(shown) -> str:
+    """'fast screen (low resolution)' or 'high resolution', for a sentence."""
+    return FAST_SCREEN if _is_fast_screen(shown) else HIGH_RES
+
+
+def _copied_from_text(line: dict) -> str | None:
+    """'It is the High resolution copy of delineation 7 (<name>)...' for a copy, else None. The name is a person's words."""
+    source = line.get("derived_from") if isinstance(line, dict) else None
+    if not isinstance(source, dict) or source.get("id") is None:
+        return None
+    return (
+        f"It is the High resolution copy of delineation {source.get('id')} ({_data(str(source.get('name')))}), whose "
+        "fast screen is kept for comparison."
+    )
+
+
 def _phase_of(job: dict) -> str:
     status = job.get("status")
     if status in LIVE_STATUSES:
@@ -221,6 +261,15 @@ def _result(doc: dict) -> dict:
         "job": doc.get("job"),
         "omitted": OMITTED,
     }
+    shown = doc.get("shown_result")
+    if shown:
+        out["resolution"] = _kind(shown)
+        out["profile_available"] = not _is_fast_screen(shown)
+        if _is_fast_screen(shown):
+            out["omitted"] = f"{OMITTED} {FAST_SCREEN_PROFILE}"
+    source = line.get("derived_from")
+    if isinstance(source, dict) and source.get("id") is not None:
+        out["derived_from"] = {"id": source.get("id"), "name": _data(str(source.get("name")))}
     out["warnings_in_words"] = [w.get("sentence") for w in out["warnings"] if w.get("sentence")]
     return out
 
@@ -242,7 +291,6 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     shown = doc.get("shown_result") or {}
     parts = []
     if shown:
-        mode = shown.get("mode") or "quick"
         coarse = ", coarsened to the web server's limit" if shown.get("coarsened") else ""
         diverted = tally.get("diverted", 0) or 0
         # every suggestion listed; the API's tally.suggested counts only the shallow ones (a drain 2 m deep or less)
@@ -252,9 +300,14 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
             f"Delineation {line.get('id')} ({_data(str(line.get('name')))}) has {tally.get('catchments')} catchments "
             f"totalling {tally.get('total_area_ha', 0):.1f} ha; {diverted} diversion{'' if diverted == 1 else 's'} applied, "
             f"{suggested} diversion{'' if suggested == 1 else 's'} suggested (information only), {shallow} with a drain "
-            f"2 m deep or less. Shown result: {mode}, worked at "
+            f"2 m deep or less. Shown result: {_kind(shown)}, worked at "
             f"{_m(shown.get('working_resolution_m'))} m on a {_m(shown.get('terrain_resolution_m'))} m terrain{coarse}."
         )
+        if _is_fast_screen(shown):
+            parts.append(f"{FAST_SCREEN_CAVEAT} {FAST_SCREEN_PROFILE}")
+    copied = _copied_from_text(line)
+    if copied:
+        parts.append(copied)
     parts.append(_who(doc))
     if ticks:
         parts.append(ticks)
@@ -273,12 +326,15 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
         lost = (replaced.get("not_carried_over") or {}).get("catchments") or []
         if lost:
             parts.append(
-                f"The full-resolution result replaced the quick look; {len(lost)} catchment(s) of the quick look have no "
-                "match in it."
+                f"The new high resolution result replaced the earlier one on this line; {len(lost)} catchment(s) of the "
+                "earlier result have no match in it."
             )
         if replaced.get("confirmation_lapsed"):
             parts.append("The new result lapsed an earlier confirmation: a person needs to confirm again.")
     return parts
+
+
+MODE_WORDS = {"quick": "Fast screen (mode 'quick', low resolution)", "full": "High resolution (mode 'full')"}
 
 
 def _estimate_words(estimate: dict) -> str:
@@ -289,7 +345,7 @@ def _estimate_words(estimate: dict) -> str:
         high = (e.get("expected_seconds") or {}).get("high")
         where = "AWS Batch" if e.get("runs_on") == "batch" else "the web server"
         text = (
-            f"{mode}: about {e.get('cells'):,} cells at {_m(e.get('working_resolution_m'))} m on {where}, "
+            f"{MODE_WORDS[mode]}: about {e.get('cells'):,} cells at {_m(e.get('working_resolution_m'))} m on {where}, "
             f"expected {_duration(low)} to {_duration(high)}"
             f"{', it can take hours' if e.get('can_take_hours') else ''}"
         )
@@ -298,13 +354,19 @@ def _estimate_words(estimate: dict) -> str:
         text += "."
         if not e.get("can_run"):
             reason = str(e.get("cannot_run_reason") or "").strip()
-            text += f" The {mode} run CANNOT run here: {reason}{'' if reason.endswith('.') else '.'}"
+            text += f" The {MODE_WORDS[mode]} run CANNOT run here: {reason}{'' if reason.endswith('.') else '.'}"
         out.append(text)
     note = (estimate.get("quick") or {}).get("note")
-    return "Estimate (a range, not a promise). " + " ".join(out) + (f" {note}" if note else "")
+    copy = (
+        " High resolution on this line makes a copy of it, '<name> (high res)', and runs there; the fast screen stays "
+        "as it is, for comparison."
+        if estimate.get("full_makes_copy")
+        else ""
+    )
+    return "Estimate (a range, not a promise). " + " ".join(out) + (f" {note}" if note else "") + copy
 
 
-def _refused(body, status: int, what: str) -> dict:
+def _refused(body, status: int, what: str, project_id=None, asked_id=None) -> dict:
     reply = body if isinstance(body, dict) else {"response": body}
     sentence = reply.get("detail") or reply.get("error") or reply.get("error_code") or f"HTTP {status}"
     out = {
@@ -317,6 +379,16 @@ def _refused(body, status: int, what: str) -> dict:
             "person confirmed, ask the user to change it in the browser."
         ),
     }
+    running = reply.get("delineation_id")
+    if running is not None and running != asked_id:
+        # a High resolution copy of this line is already running: follow it rather than starting another
+        out["delineation_id"] = running
+        out["next_step"] = (
+            f"Read the running copy with get_delineation(project_id={project_id}, delineation_id={running})."
+        )
+        out["say_to_user"] = (
+            f"Hydrata refused {what}: {sentence} Nothing was changed. Follow delineation {running} with get_delineation."
+        )
     return out
 
 
@@ -337,7 +409,8 @@ async def delineate_catchments(
         int | None,
         "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, "
         "start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with "
-        "mode='full', to start its full-resolution run. A delineation a person made or confirmed is refused.",
+        "mode='full', to start High resolution (on a copy of the line when its result is a fast screen). A "
+        "delineation a person made or confirmed is refused.",
     ] = None,
     line: Annotated[
         list[list[float]] | None,
@@ -362,10 +435,13 @@ async def delineate_catchments(
     ] = None,
     mode: Annotated[
         Literal["quick", "full"] | None,
-        "'quick' (the default for a new delineation): coarsened to the web server's limit, seconds to a couple of "
-        "minutes. 'full': at the terrain's own resolution, on AWS Batch, can take many hours (up to about 24); the "
-        "quick result stays usable and the person can close the map. Do the quick look first and offer the full "
-        "run with its estimate. With delineation_id, 'full' starts the full run; 'quick' runs it again.",
+        "'quick' (the default for a new delineation) is the FAST SCREEN: low resolution, coarsened to the web "
+        "server's limit, seconds to a couple of minutes; a first look. 'full' is HIGH RESOLUTION: the terrain's own "
+        "resolution, on AWS Batch, can take many hours (up to about 24), and the person can close the map. Do the "
+        "fast screen first and offer High resolution with its estimate. With delineation_id, 'full' starts High "
+        "resolution: over a fast screen it makes a COPY of the line, '<name> (high res)', and runs there (the fast "
+        "screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast "
+        "screen again.",
     ] = None,
     estimate_only: Annotated[
         bool,
@@ -390,7 +466,9 @@ async def delineate_catchments(
     With `delineation_id`: changing the name, start chainage or either area regroups the stored result without
     repeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and
     marked check again until a person checks them; say so. A delineation a person made or confirmed is refused in
-    words. `mode='full'` starts the full-resolution run on that delineation.
+    words. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata
+    makes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names
+    the copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.
     """
     clean_sources = _clean_sources(sources)
     method = authored_method.strip() if isinstance(authored_method, str) else ""
@@ -422,7 +500,7 @@ async def delineate_catchments(
             project_id,
             {"estimate": _estimate_summary(estimate), "terrain_id": estimate.get("terrain_id")},
             _estimate_words(estimate)
-            + " Nothing was run. Offer the quick look first; offer the full run with this estimate.",
+            + " Nothing was run. Offer the fast screen first; then offer High resolution with this estimate.",
             panel="catchments",
         )
         return json.dumps(result, indent=2)
@@ -447,9 +525,9 @@ async def delineate_catchments(
             result,
             project_id,
             {"mode": chosen, "estimate": _estimate_summary(estimate)},
-            f"The {chosen} run cannot start, so no delineation was made: {sentence} "
+            f"The {MODE_WORDS[chosen]} run cannot start, so no delineation was made: {sentence} "
             + (
-                "Do the quick look instead (mode='quick'): " + _estimate_words(estimate)
+                "Do the fast screen instead (mode='quick'): " + _estimate_words(estimate)
                 if chosen == "full" and (estimate.get("quick") or {}).get("can_run")
                 else ""
             ),
@@ -492,13 +570,16 @@ async def delineate_catchments(
     }
     where = "AWS Batch" if job.get("runs_on") == "batch" else "the web server"
     say = (
-        f"The {chosen} delineation '{_data(name.strip())}' (id {new_id}) has started on {where}. "
+        f"The {MODE_WORDS[chosen]} delineation '{_data(name.strip())}' (id {new_id}) has started on {where}. "
         "An agent made it, so it is unreviewed: only a person confirms it, in the browser. " + _estimate_words(estimate)
     )
     if chosen == "full":
-        say += " A full run can take many hours: the quick result is not made by this call, and the person can close the map."
+        say += " High resolution can take many hours: no fast screen is made by this call, and the person can close the map."
     else:
-        say += " The quick look takes seconds to a couple of minutes; I will read it and tell you the catchments and every warning."
+        say += (
+            " The fast screen takes seconds to a couple of minutes; I will read it and tell you the catchments and every "
+            "warning. It is a first look at low resolution: offer High resolution before the person relies on it."
+        )
     await _hand_back(
         result,
         project_id,
@@ -588,12 +669,14 @@ async def _change(
         doc = body
     estimate = None
     run_job = None
+    copy_id = None
+    read_id = delineation_id
     if mode is not None:
         body, status = await client.post(f"{base}run/", json={"mode": mode}, raise_for_status=False)
         if status >= 500:
             raise ToolError(f"Hydrata API returned {status} for POST {base}run/: {str(body)[:300]}")
         if status >= 400:
-            result = _refused(body, status, f"the {mode} run")
+            result = _refused(body, status, f"the {MODE_WORDS[mode]} run", project_id, delineation_id)
             await _hand_back(
                 result,
                 project_id,
@@ -604,8 +687,12 @@ async def _change(
             )
             return json.dumps(result, indent=2)
         run_job = body.get("job") or {}
-        doc = await client.get(base)
-        estimate = await client.get(f"{base}estimate/")
+        if body.get("created_copy") and body.get("delineation_id") not in (None, delineation_id):
+            # High resolution over a fast screen: Hydrata made a copy of the line and runs there; the fast screen is untouched
+            copy_id = read_id = body.get("delineation_id")
+        read_base = f"/projects/{project_id}/delineations/{read_id}/"
+        doc = await client.get(read_base)
+        estimate = await client.get(f"{read_base}estimate/")
     result = _result(doc)
     ticks = _ticks_text(doc) if changes else None
     parts = []
@@ -620,35 +707,58 @@ async def _change(
     if mode is not None:
         result["estimate"] = estimate
         result["http_status"] = 202
+        result["created_copy"] = copy_id is not None
+        if copy_id is not None:
+            result["delineation_id"] = copy_id
+            result["source_delineation_id"] = delineation_id
+            copy_name = _data(str((doc.get("line") or {}).get("name")))
+            parts.append(
+                f"High resolution does not replace the fast screen: Hydrata made a copy of the line, {copy_name} "
+                f"(delineation {copy_id}), and runs High resolution on the copy. The fast screen (delineation "
+                f"{delineation_id}) stays as it is, so the person can compare the two. From now on read delineation "
+                f"{copy_id}."
+            )
         live = (run_job or {}).get("status") in LIVE_STATUSES
         if live:
             result["outcome"] = "started"
             result["next_step"] = (
-                f"A full run can take many hours: do not wait on it. Tell the person, and read again later with "
-                f"get_delineation(project_id={project_id}, delineation_id={delineation_id})."
+                f"High resolution can take many hours: do not wait on it. Tell the person, and read again later with "
+                f"get_delineation(project_id={project_id}, delineation_id={read_id})."
                 if mode == "full"
-                else f"Call get_delineation(project_id={project_id}, delineation_id={delineation_id}) until it is ready."
+                else f"Call get_delineation(project_id={project_id}, delineation_id={read_id}) until it is ready."
             )
             if mode == "full":
+                where = "AWS Batch" if (run_job or {}).get("runs_on") == "batch" else "the web server"
                 parts.append(
-                    "The full run has started on AWS Batch at the terrain's own resolution. It can take many hours (up "
-                    "to about 24). The quick result stays shown and usable meanwhile, and the person can close the map. "
+                    f"The High resolution run has started on {where} at the terrain's own resolution. It can take many "
+                    "hours (up to about 24), and the person can close the map."
+                    + (
+                        ""
+                        if copy_id is not None
+                        else " The result shown on this line stays usable meanwhile; the new one replaces it when it finishes."
+                    )
+                    + " "
                     + _estimate_words(estimate)
                 )
             else:
-                parts.append("The delineation is running again (quick).")
+                parts.append("The fast screen (low resolution) is running again.")
         else:
             result["outcome"] = "cannot_run"
             parts.append(
-                f"The {mode} run did not start: {(run_job or {}).get('error') or 'Hydrata gave no reason'} "
-                "The quick result is still shown and usable."
+                f"The {MODE_WORDS[mode]} run did not start: {(run_job or {}).get('error') or 'Hydrata gave no reason'} "
+                + (
+                    f"The copy (delineation {copy_id}) has no result; the fast screen (delineation {delineation_id}) is unchanged."
+                    if copy_id is not None
+                    else "The result shown is unchanged."
+                )
             )
     parts.extend(_read_words(doc, result, ticks))
     await _hand_back(
         result,
         project_id,
         {
-            "delineation_id": delineation_id,
+            "delineation_id": read_id,
+            **({"created_copy": True, "source_delineation_id": delineation_id} if copy_id is not None else {}),
             "outcome": result["outcome"],
             "catchments": (doc.get("tally") or {}).get("catchments"),
             "total_area_ha": (doc.get("tally") or {}).get("total_area_ha"),
@@ -657,7 +767,7 @@ async def _change(
         },
         " ".join(parts),
         panel="catchments",
-        line=delineation_id,
+        line=read_id,
     )
     return json.dumps(result, indent=2)
 
@@ -677,9 +787,10 @@ async def get_delineation(
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
     wait_for_full_run: Annotated[
         bool,
-        "False (default): a quick result is returned as `ready` at once even while a full run is going, with the "
-        "full run's progress in `full_run`. True: also wait (bounded) for the full run; a `timed_out` read is "
-        "normal for it, since it can take many hours: read again later, do not wait in a loop.",
+        "False (default): a result already shown is returned as `ready` at once even while a High resolution run "
+        "goes over it (a high resolution line run again), with that run's progress in `full_run`. True: also wait "
+        "(bounded) for it; a `timed_out` read is normal, since it can take many hours: read again later, do not wait "
+        "in a loop. (High resolution over a fast screen runs on a COPY of the line: read the copy's own id.)",
     ] = False,
 ) -> str:
     """Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.
@@ -689,8 +800,11 @@ async def get_delineation(
     lower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person
     applied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and
     whether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;
-    it never starts a second job. `shown_result` says which result is shown (quick or full); `full_run` reports a full
-    run's progress, elapsed time, expected finish, where it runs and whether it was handed to Batch. Read-only.
+    it never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a
+    first look: say so, and offer High resolution before the person relies on it; its profile is not available) or
+    'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High
+    resolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's
+    progress, elapsed time, expected finish, where it runs and whether it was handed to Batch. Read-only.
     """
 
     async def fetch():
@@ -736,7 +850,7 @@ async def get_delineation(
         )
     elif not shown:
         parts.append(
-            f"The delineation is still being made ({phase}, {job.get('progress', 0):.0f}% through, {_duration(job.get('elapsed_s'))} so far); "
+            f"The {'High resolution' if full_job else 'fast screen'} delineation is still being made ({phase}, {job.get('progress', 0):.0f}% through, {_duration(job.get('elapsed_s'))} so far); "
             "I am still waiting on it: read it again with get_delineation."
         )
     if shown:
@@ -754,14 +868,14 @@ async def get_delineation(
                     else ", with no finish time yet"
                 )
                 + (", handed over from the web server to Batch" if full_run.get("handed_over") else "")
-                + f". The quick result is the one shown ({(shown or {}).get('mode')}) and it is usable meanwhile; the full "
-                "result replaces it when it finishes and keeps ids, names and diversions. A full run can take many hours: "
-                "do not wait in a loop; tell the person and read again later."
+                + f". The result shown ({_kind(shown)}) is usable meanwhile; the new result replaces it when it finishes "
+                "and keeps ids, names and diversions. High resolution can take many hours: do not wait in a loop; tell "
+                "the person and read again later."
             )
         else:
             parts.append(
-                f"The full-resolution run did not finish: {full_run.get('error') or 'it was cancelled'} The quick result "
-                "is still shown and usable."
+                f"The High resolution run did not finish: {full_run.get('error') or 'it was cancelled'} The result shown "
+                f"({_kind(shown)}) is unchanged and usable."
             )
     if timed_out and not shown:
         result["next_step"] = f"Call get_delineation(project_id={project_id}, delineation_id={delineation_id}) again."
@@ -784,6 +898,7 @@ async def get_delineation(
         "warnings": len(result["warnings"]),
         "diversions_to_check": doc.get("diversions_to_check") or 0,
         "shown_result": (shown or {}).get("mode"),
+        "resolution": _kind(shown) if shown else None,
     }
     await _hand_back(result, project_id, summary, " ".join(parts), panel="catchments", line=delineation_id)
     return json.dumps(result, indent=2)
@@ -877,6 +992,11 @@ async def use_catchments_as_boundary(
         f"scenario with update_scenario(boundary={boundary.get('id')}), then give the user the link."
     )
     parts = [say]
+    if _is_fast_screen(doc.get("shown_result")):
+        parts.append(
+            "These catchments are from a fast screen (low resolution): tell the person, and that a High resolution run "
+            "of the line may move the boundary."
+        )
     ticks = _ticks_text(doc)
     if ticks:
         parts.append(ticks)

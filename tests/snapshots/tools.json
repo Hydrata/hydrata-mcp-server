@@ -806,7 +806,7 @@
       "readOnlyHint": false,
       "title": "Make catchments from a delineation line, or change its settings"
     },
-    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nWith `delineation_id`: changing the name, start chainage or either area regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts the full-resolution run on that delineation.",
+    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nWith `delineation_id`: changing the name, start chainage or either area regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -825,7 +825,7 @@
             }
           ],
           "default": null,
-          "description": "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with mode='full', to start its full-resolution run. A delineation a person made or confirmed is refused."
+          "description": "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with mode='full', to start High resolution (on a copy of the line when its result is a fast screen). A delineation a person made or confirmed is refused."
         },
         "estimate_only": {
           "default": false,
@@ -888,7 +888,7 @@
             }
           ],
           "default": null,
-          "description": "'quick' (the default for a new delineation): coarsened to the web server's limit, seconds to a couple of minutes. 'full': at the terrain's own resolution, on AWS Batch, can take many hours (up to about 24); the quick result stays usable and the person can close the map. Do the quick look first and offer the full run with its estimate. With delineation_id, 'full' starts the full run; 'quick' runs it again."
+          "description": "'quick' (the default for a new delineation) is the FAST SCREEN: low resolution, coarsened to the web server's limit, seconds to a couple of minutes; a first look. 'full' is HIGH RESOLUTION: the terrain's own resolution, on AWS Batch, can take many hours (up to about 24), and the person can close the map. Do the fast screen first and offer High resolution with its estimate. With delineation_id, 'full' starts High resolution: over a fast screen it makes a COPY of the line, '<name> (high res)', and runs there (the fast screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast screen again."
         },
         "name": {
           "default": "",
@@ -1034,7 +1034,7 @@
       "readOnlyHint": true,
       "title": "Wait for and read a delineation"
     },
-    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;\nit never starts a second job. `shown_result` says which result is shown (quick or full); `full_run` reports a full\nrun's progress, elapsed time, expected finish, where it runs and whether it was handed to Batch. Read-only.",
+    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;\nit never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a\nfirst look: say so, and offer High resolution before the person relies on it; its profile is not available) or\n'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High\nresolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's\nprogress, elapsed time, expected finish, where it runs and whether it was handed to Batch. Read-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1058,7 +1058,7 @@
         },
         "wait_for_full_run": {
           "default": false,
-          "description": "False (default): a quick result is returned as `ready` at once even while a full run is going, with the full run's progress in `full_run`. True: also wait (bounded) for the full run; a `timed_out` read is normal for it, since it can take many hours: read again later, do not wait in a loop.",
+          "description": "False (default): a result already shown is returned as `ready` at once even while a High resolution run goes over it (a high resolution line run again), with that run's progress in `full_run`. True: also wait (bounded) for it; a `timed_out` read is normal, since it can take many hours: read again later, do not wait in a loop. (High resolution over a fast screen runs on a COPY of the line: read the copy's own id.)",
           "type": "boolean"
         }
       },
