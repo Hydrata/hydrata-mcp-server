@@ -207,3 +207,161 @@ async def test_get_terrain_levels_datum_keeps_the_inferred_guess_when_nothing_is
     }
     data = await _get(_server, _ready(vertical_datum=only_guess))
     assert data["terrain"]["vertical_datum"]["inferred_datum_guess"] == "orthometric_egm2008"
+
+
+# ---------------------------------------------------------------------------
+# TASK-4336 (epic 4329 W1): the ellipsoid to EGM2008 shift, on finalize and as its own tool.
+# ---------------------------------------------------------------------------
+CONVERT = f"{BASE}/projects/42/terrain/7/convert-datum/"
+
+
+@respx.mock
+async def test_finalize_convert_to_egm2008_sends_the_flag_with_an_ellipsoid_declaration(_server):
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "finalize_terrain_upload",
+            {"project_id": 42, "staging_key": "k", "vertical_datum_declared": "ellipsoid", "convert_to_egm2008": True},
+        )
+    )
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["convert_to_egm2008"] is True and sent["vertical_datum_declared"] == "ellipsoid"
+    assert "EGM2008" in data["say_to_user"]
+
+
+@respx.mock
+async def test_finalize_without_convert_to_egm2008_sends_no_flag(_server):
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={"id": 7, "status": "creating"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 7}))
+    await _call_as_caller(
+        _server,
+        "finalize_terrain_upload",
+        {"project_id": 42, "staging_key": "k", "vertical_datum_declared": "ellipsoid"},
+    )
+    assert "convert_to_egm2008" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+async def test_finalize_convert_to_egm2008_without_an_ellipsoid_declaration_is_refused_before_the_api(_server):
+    """Hydrata honours the flag only for an ellipsoid declaration (it would double-shift anything else)."""
+    route = respx.post(FINALIZE).mock(return_value=httpx.Response(202, json={}))
+    text = _tool_error_text(
+        await _call_as_caller(
+            _server,
+            "finalize_terrain_upload",
+            {"project_id": 42, "staging_key": "k", "vertical_datum_declared": "ahd", "convert_to_egm2008": True},
+        )
+    )
+    assert "ellipsoid" in text and route.call_count == 0
+
+
+@respx.mock
+async def test_convert_terrain_datum_posts_to_convert_datum_and_hands_back(_server):
+    route = respx.post(CONVERT).mock(
+        return_value=httpx.Response(202, json={"id": 9, "title": "dem (EGM2008)", "status": "creating"})
+    )
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "convert_terrain_datum", {"project_id": 42, "terrain_id": 7}))
+    assert route.call_count == 1
+    assert route.calls[0].request.headers["authorization"] == CALLER_KEY
+    assert data["outcome"] == "started" and data["terrain_id"] == 9 and data["source_terrain_id"] == 7
+    assert data["ui_url"].endswith("/catalogue/#/map/77?panel=inputs")
+    assert data["summary"]["terrain_id"] == 9 and data["summary"]["source_terrain_id"] == 7
+    assert "get_terrain" in data["next_step"] and "EGM2008" in data["say_to_user"]
+
+
+@respx.mock
+async def test_convert_terrain_datum_existing_conversion_is_reported_not_duplicated(_server):
+    respx.post(CONVERT).mock(return_value=httpx.Response(200, json={"id": 9, "status": "ready"}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "convert_terrain_datum", {"project_id": 42, "terrain_id": 7}))
+    assert data["outcome"] == "already_converted" and data["terrain_id"] == 9
+    assert "already" in data["say_to_user"]
+
+
+@respx.mock
+async def test_convert_terrain_datum_refusal_is_relayed_verbatim(_server):
+    detail = (
+        "This terrain is already on EGM2008 orthometric height; converting it again would double-apply the geoid shift."
+    )
+    respx.post(CONVERT).mock(return_value=httpx.Response(409, json={"error_code": "ALREADY_EGM2008", "detail": detail}))
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "convert_terrain_datum", {"project_id": 42, "terrain_id": 7}))
+    assert data["outcome"] == "refused" and data["http_status"] == 409
+    assert data["error_code"] == "ALREADY_EGM2008" and data["detail"] == detail
+    assert detail in data["say_to_user"] and "Nothing was created" in data["say_to_user"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-4337 (epic 4329 W1, D7): record the person's levels datum on a project that already has a terrain.
+# ---------------------------------------------------------------------------
+LEVELS = f"{BASE}/projects/42/levels-datum/"
+AHD_LEVELS = {"datum": "EPSG:5711", "label": "AHD height (EPSG:5711)", "declared_by": "dave", "declared_at": None}
+
+
+@respx.mock
+async def test_set_levels_datum_patches_the_project_route_and_hands_back(_server):
+    route = respx.patch(LEVELS).mock(
+        return_value=httpx.Response(
+            200, json={"project": 42, "levels_datum": AHD_LEVELS, "levels_datum_mismatch": None, "terrain": 7}
+        )
+    )
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "set_levels_datum", {"project_id": 42, "levels_datum": " AHD "}))
+    assert route.calls[0].request.headers["authorization"] == CALLER_KEY
+    assert json.loads(route.calls[0].request.content) == {"levels_datum": "AHD"}
+    assert data["levels_datum"] == AHD_LEVELS and data["summary"]["levels_datum"] == AHD_LEVELS
+    assert data["ui_url"].endswith("/catalogue/#/map/77?panel=inputs")
+    assert "AHD height (EPSG:5711)" in data["say_to_user"] and "WARNING" not in data["say_to_user"]
+
+
+@respx.mock
+async def test_set_levels_datum_mismatch_with_the_terrain_is_relayed(_server):
+    sentence = "Your levels are on NAVD88 but this terrain is on AHD height (EPSG:5711): fix it."
+    respx.patch(LEVELS).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "project": 42,
+                "levels_datum": {**AHD_LEVELS, "datum": "NAVD88", "label": "NAVD88"},
+                "levels_datum_mismatch": sentence,
+                "terrain": 7,
+            },
+        )
+    )
+    respx.get(url__regex=r".*/projects/42/?$").mock(return_value=httpx.Response(200, json={"base_map": 77}))
+    data = _tool_json(await _call_as_caller(_server, "set_levels_datum", {"project_id": 42, "levels_datum": "NAVD88"}))
+    assert data["levels_datum_mismatch"] == sentence and data["summary"]["levels_datum_mismatch"] == sentence
+    assert "WARNING" in data["say_to_user"] and sentence in data["say_to_user"]
+
+
+@respx.mock
+async def test_set_levels_datum_without_a_datum_is_refused_before_the_api(_server):
+    route = respx.patch(LEVELS).mock(return_value=httpx.Response(200, json={}))
+    text = _tool_error_text(
+        await _call_as_caller(_server, "set_levels_datum", {"project_id": 42, "levels_datum": "  "})
+    )
+    assert "ask them" in text and route.call_count == 0
+
+
+@respx.mock
+async def test_set_levels_datum_hydrata_refusal_carries_its_detail(_server):
+    respx.patch(LEVELS).mock(
+        return_value=httpx.Response(
+            400, json={"error_code": "VALIDATION_ERROR", "detail": "levels_datum: EPSG:4326 is not a vertical CRS"}
+        )
+    )
+    text = _tool_error_text(
+        await _call_as_caller(_server, "set_levels_datum", {"project_id": 42, "levels_datum": "EPSG:4326"})
+    )
+    assert "VALIDATION_ERROR" in text and "not a vertical CRS" in text
+
+
+@respx.mock
+async def test_get_terrain_without_a_levels_datum_names_set_levels_datum(_server):
+    """D7: the terrain exists, so the agent records the levels datum on the project, not by fetching terrain again."""
+    data = await _get(_server, _ready(metadata={"vertical_datum_declared": "ahd"}, levels_datum=None))
+    say = data["say_to_user"]
+    assert "set_levels_datum" in say and "create_terrain_from_source" not in say

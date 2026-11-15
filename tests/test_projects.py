@@ -71,3 +71,23 @@ class TestProjectLevelsDatum:
         respx.get(f"{BASE}/projects/1/terrain/").mock(return_value=httpx.Response(200, json=[]))
         data = json.loads(await _server.get_project(project_id=1))
         assert data["levels_datum"] is None and "ask the user" in data["say_to_user"]
+
+    @respx.mock
+    async def test_levels_datum_unset_with_a_terrain_names_set_levels_datum(self, _server):
+        """TASK-4376: the project has its terrain, so the answer is recorded with set_levels_datum (as get_terrain says)."""
+        respx.get(f"{BASE}/projects/1/").mock(
+            return_value=httpx.Response(200, json={"id": 1, "name": "P", "base_map": 5})
+        )
+        respx.get(f"{BASE}/projects/1/terrain/").mock(return_value=httpx.Response(200, json=[{"id": 3}]))
+        say = json.loads(await _server.get_project(project_id=1))["say_to_user"]
+        assert "ask the user" in say and "set_levels_datum" in say
+        assert "create_terrain_from_source" not in say
+
+    @respx.mock
+    async def test_levels_datum_unset_without_a_terrain_does_not_name_set_levels_datum(self, _server):
+        respx.get(f"{BASE}/projects/1/").mock(
+            return_value=httpx.Response(200, json={"id": 1, "name": "P", "base_map": 5})
+        )
+        respx.get(f"{BASE}/projects/1/terrain/").mock(return_value=httpx.Response(200, json=[]))
+        say = json.loads(await _server.get_project(project_id=1))["say_to_user"]
+        assert "ask the user" in say and "set_levels_datum" not in say
