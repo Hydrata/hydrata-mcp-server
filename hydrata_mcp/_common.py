@@ -110,6 +110,16 @@ DATA_TEXT_KEYS = frozenset(
         "cloudwatch_log_tail",
         # full review 03-11-26 (MCP-3): the levels-datum mismatch sentence embeds the person's datum label
         "levels_datum_mismatch",
+        # TASK-4404: a catchment's typed name and the usernames on a delineation / tick are people's text
+        "typed_name",
+        "from_name",
+        "to_name",
+        "created_by",
+        "confirmed_by",
+        "ticked_by",
+        "reapplied_by",
+        "checked_by",
+        "made_by",
     }
 )
 # Keys holding a VERBATIM third-party record: every string inside is data.
@@ -231,8 +241,19 @@ mcp = FastMCP(
         "friction, inflow, rainfall, building, mesh_region, culvert) inline with "
         "write_input_layer. For a file above the inline cap, call request_input_upload and "
         "give the user the link, so they drop the file in their browser. "
-        "The design storm, the catchment and the mesh region are supplied by you or the user. "
+        "The design storm and the mesh region are supplied by you or the user. "
         "Say how you made them with authored_method. "
+        "CATCHMENTS AND THE MODEL BOUNDARY: never draw a catchment or a model boundary off the platform: use "
+        "delineate_catchments for the catchments, get_delineation to wait for and read them, and "
+        "use_catchments_as_boundary for the model boundary. First read the ground along a candidate line with "
+        "terrain_profile, and put the line on natural ground where the water arrives, not on a crest (the toe of a "
+        "slope, or in the channel). Do the fast screen first (mode 'quick', low resolution: a first look, and say so), "
+        "then offer the High resolution run (mode 'full') with its estimate (it can take many hours, and the person can "
+        "close the map). High resolution on a fast screen makes a copy of the line, '<name> (high res)', and runs "
+        "there; the fast screen stays for comparison, so read the copy's delineation_id. Say how you placed the line (authored_method, and sources "
+        "when it came from a document). Relay every warning in words and each chainage with its distance in metres. "
+        "What you make is unreviewed until a person confirms it in the browser: only a person ticks a diversion "
+        "(you only report the suggestions and any tick marked check again) or confirms. "
         "SOURCES: when an input comes from a document (a flood study, a gauge record, a BoM page), pass "
         "sources=[{title, url, locator}] beside authored_method so the engineer can click through to it. "
         "TIME SERIES: create_time_series for each rain gauge or hydrograph; fix mistakes with "
@@ -383,6 +404,11 @@ TOOL_ANNOTATIONS = {
     "set_comparison_tolerance": ("Save a project's default comparison tolerance", False, False, True),
     # TASK-3964 (epic 3958 D7): tells the Hydrata team a tool is missing; changes none of the user's data.
     "suggest_capability": ("Tell the Hydrata team about a capability that is missing", True, False, False),
+    # TASK-4404 (epic 4274 W4.1): catchments from a delineation line. None of the three ticks, applies or confirms
+    # a diversion or deletes a delineation (only a person does, in the browser); none is destructive.
+    "delineate_catchments": ("Make catchments from a delineation line, or change its settings", False, False, False),
+    "get_delineation": ("Wait for and read a delineation", True, False, True),
+    "use_catchments_as_boundary": ("Use catchments as the model boundary", False, False, False),
 }
 
 

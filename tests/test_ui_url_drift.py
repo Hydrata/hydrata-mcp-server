@@ -16,9 +16,11 @@ import pytest
 
 from tests.helpers import reload_server
 
-FE_PARAMS = ("panel", "layer", "scenario", "run", "kind")
+FE_PARAMS = ("panel", "layer", "scenario", "run", "kind", "line")
 # panel=<value> the FE opens (PANEL_ACTIONS keys in handBackParamsEpic.js)
 FE_PANELS = ("inputs", "scenarios", "results", "hydrology", "input-review", "input-upload")
+# TASK-4399: the FE opens this one through a computed key ([DELINEATION_PAGE]), so the file scan below cannot see it.
+FE_COMPUTED_PANELS = ("catchments",)
 
 SRC = Path(__file__).resolve().parent.parent / "hydrata_mcp"
 FE_FILE = Path(
@@ -58,7 +60,9 @@ def _emitted_params(_helpers) -> set[str]:
 def test_ui_url_drift_every_panel_the_mcp_can_emit_is_handled_by_the_map():
     emitted = _emitted_panels()
     assert emitted, "found no panel values: the scan is broken"
-    assert emitted <= set(FE_PANELS), f"MCP emits a panel the map ignores: {sorted(emitted - set(FE_PANELS))}"
+    assert emitted <= set(FE_PANELS) | set(FE_COMPUTED_PANELS), (
+        f"MCP emits a panel the map ignores: {sorted(emitted - set(FE_PANELS))}"
+    )
 
 
 def test_ui_url_drift_every_param_the_mcp_can_emit_is_handled_by_the_map(_helpers):
