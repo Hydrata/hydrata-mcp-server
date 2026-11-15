@@ -904,6 +904,32 @@ async def get_delineation(
     return json.dumps(result, indent=2)
 
 
+# The API's boundary notes (TASK-4430), written here from its data so a catchment's name (a person may have typed it) is wrapped
+ENCLOSED_NOTE = "The boundary takes in {ha:.1f} ha that is not in a ticked catchment (between or inside them)."
+OPENING_NOTE = "{name} keeps its own opening: its diversion to {neighbour} is not modelled."
+
+
+def _boundary_notes(made: dict) -> tuple[list, list]:
+    """(notes, diverted openings) for a made boundary: the ground the ring takes in that no ticked catchment holds, and each
+    ticked catchment with an applied diversion, which keeps its own opening (the diversion is not modelled). Names as data."""
+    notes, openings = [], []
+    enclosed = made.get("enclosed_not_ticked_ha")
+    if isinstance(enclosed, (int, float)) and not isinstance(enclosed, bool) and enclosed > 0:
+        notes.append(ENCLOSED_NOTE.format(ha=enclosed))
+    for item in made.get("diverted_openings") or []:
+        if not isinstance(item, dict):
+            continue
+        opening = {
+            "catchment_id": item.get("catchment_id"),
+            "name": _data(str(item.get("name"))),
+            "diverted_to": item.get("diverted_to"),
+            "diverted_to_name": _data(str(item.get("diverted_to_name"))),
+        }
+        openings.append(opening)
+        notes.append(OPENING_NOTE.format(name=opening["name"], neighbour=opening["diverted_to_name"]))
+    return notes, openings
+
+
 # ---------------------------------------------------------------------------
 # Tool 3: use_catchments_as_boundary
 # ---------------------------------------------------------------------------
@@ -977,6 +1003,14 @@ async def use_catchments_as_boundary(
             "boundary_rule": BOUNDARY_RULE,
         }
     )
+    notes, openings = _boundary_notes(made)
+    result.update(
+        {
+            "notes": notes,
+            "enclosed_not_ticked_ha": made.get("enclosed_not_ticked_ha"),
+            "diverted_openings": openings,
+        }
+    )
     d = doc.get("delineation") or {}
     unreviewed_delineation = bool(d.get("agent_authored") and not d.get("confirmed"))
     stretches = made.get("open_stretches") or []
@@ -992,6 +1026,8 @@ async def use_catchments_as_boundary(
         f"scenario with update_scenario(boundary={boundary.get('id')}), then give the user the link."
     )
     parts = [say]
+    if notes:
+        parts.append("Tell the person what the boundary takes in, and why: " + " ".join(notes))
     if _is_fast_screen(doc.get("shown_result")):
         parts.append(
             "These catchments are from a fast screen (low resolution): tell the person, and that a High resolution run "
@@ -1016,6 +1052,8 @@ async def use_catchments_as_boundary(
             "open_stretch_m": made.get("open_stretch_m"),
             "perimeter_m": made.get("perimeter_m"),
             "unreviewed": boundary.get("unreviewed"),
+            "enclosed_not_ticked_ha": made.get("enclosed_not_ticked_ha"),
+            "diverted_openings": len(openings),
         },
         " ".join(parts),
         panel="catchments",

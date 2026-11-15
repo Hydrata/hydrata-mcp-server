@@ -821,6 +821,61 @@ async def test_use_catchments_as_boundary_makes_it_and_says_what_is_open_and_unr
 
 
 @respx.mock
+async def test_use_catchments_as_boundary_relays_the_notes_with_names_as_data(_server):
+    # TASK-4430: what the ring takes in that no ticked catchment holds, and why a diverted catchment keeps its own opening
+    _mock_project()
+    reply = {
+        **_boundary_reply(),
+        "notes": [
+            "The boundary takes in 6.0 ha that is not in a ticked catchment (between or inside them).",
+            "Upper creek keeps its own opening: its diversion to W4 line CH 0+300 is not modelled.",
+        ],
+        "enclosed_not_ticked_ha": 6.0,
+        "diverted_openings": [
+            {"catchment_id": 101, "name": "Upper creek", "diverted_to": 102, "diverted_to_name": "W4 line CH 0+300"}
+        ],
+    }
+    respx.post(BOUNDARY).mock(return_value=httpx.Response(201, json=reply))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101, 102]}
+        )
+    )
+    assert data["enclosed_not_ticked_ha"] == 6.0 and len(data["diverted_openings"]) == 1
+    assert len(data["notes"]) == 2
+    say = data["say_to_user"]
+    assert "6.0 ha that is not in a ticked catchment (between or inside them)" in say
+    assert "keeps its own opening: its diversion to" in say and "is not modelled" in say
+    assert "Upper creek keeps its own opening: its diversion to W4 line CH 0+300 is not modelled." in say
+    assert data["summary"]["enclosed_not_ticked_ha"] == 6.0 and data["summary"]["diverted_openings"] == 1
+    # over the MCP transport a catchment's name (a person may have typed it) is wrapped as data
+    async with _asgi_client(_server) as c:
+        resp = await c.post(
+            "/",
+            headers={**MCP_HEADERS, "Authorization": CALLER_KEY},
+            json=_tools_call(
+                "use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101, 102]}
+            ),
+        )
+    text = _parse(resp)["result"]["content"][0]["text"]
+    assert "<untrusted-data>Upper creek</untrusted-data> keeps its own opening" in text
+
+
+@respx.mock
+async def test_use_catchments_as_boundary_says_nothing_extra_without_notes(_server):
+    _mock_project()
+    respx.post(BOUNDARY).mock(return_value=httpx.Response(201, json=_boundary_reply()))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101, 102]}
+        )
+    )
+    assert data["notes"] == [] and "not in a ticked catchment" not in data["say_to_user"]
+
+
+@respx.mock
 async def test_use_catchments_as_boundary_relays_a_refusal_in_words(_server):
     sentence = "The chosen catchments do not touch each other, so they cannot make one model boundary. Choose catchments that are next to each other."
     respx.post(BOUNDARY).mock(
