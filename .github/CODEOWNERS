@@ -2,3 +2,6 @@
 /pyproject.toml  @davekennewell
 /server.json     @davekennewell
 /tests/snapshots/**  @davekennewell
+/tests/test_tool_snapshot.py  @davekennewell
+/tests/conftest.py  @davekennewell
+/Makefile        @davekennewell

@@ -2,7 +2,7 @@
 
 ## What the automated tests cover
 
-`make check` runs `pytest -q` (about 400 tests, under a minute). Every test is **mocked**: Hydrata's REST API is
+`make check` runs `pytest -q` (about 900 tests, under a minute). Every test is **mocked**: Hydrata's REST API is
 replaced with [respx](https://lundberg.github.io/respx/) responses, so no test needs a network, a Hydrata account or a
 key.
 
@@ -39,10 +39,10 @@ Calling a tool does need a real key and a reachable Hydrata (see the last sectio
 ### 1. Start the server
 
 ```bash
-uv sync --frozen --extra dev
+uv sync
 export HYDRATA_API_URL=http://127.0.0.1:8000   # your local Hydrata, or any URL for a tools/list-only check
 export HYDRATA_MCP_PORT=8765                   # default 8001
-uv run --frozen --extra dev hydrata-mcp
+uv run --locked --extra dev hydrata-mcp
 ```
 
 ### 2a. With curl (no browser, no Node)
