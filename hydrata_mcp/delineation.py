@@ -8,6 +8,8 @@ delineate_catchments  - a line on the project's terrain makes a delineation and 
 get_delineation       - reads one, waiting for its job the way get_terrain_merge waits for a merge.
 use_catchments_as_boundary - a Closed (Reflective) model boundary round chosen catchments, with a short Transmissive
                         opening at each drainage point (decisions D14 = A, D15 = A).
+promote_catchments    - (epic 4445 W6.2) a CONFIRMED line's catchments published as a GeoNode layer of the project: a
+                        snapshot, marked when the line has changed since; promoting again replaces its contents (D8, D16).
 
 Every result carries the API's own field names (TASK-4397, 4398, 4410, 4417) and, beside each chainage written
 CH k+mmm, its distance in metres. Every warning comes back as its sentence. The tools never tick, apply or undo a
@@ -336,6 +338,8 @@ def _result(doc: dict) -> dict:
         "drainage_analysis": doc.get("drainage_analysis"),
         # epic 4445 W5.1: the terrain's drainage corrections changed since this line was run (the API's sentence)
         "drainage_changed": doc.get("drainage_changed"),
+        # epic 4445 W6.2: the line's promoted layer and whether the line has changed since (null: never promoted)
+        "promoted_layer": _promoted_doc(doc.get("promoted_layer")),
         "omitted": OMITTED,
     }
     shown = doc.get("shown_result")
@@ -349,6 +353,37 @@ def _result(doc: dict) -> dict:
         out["derived_from"] = {"id": source.get("id"), "name": _data(str(source.get("name")))}
     out["warnings_in_words"] = [w.get("sentence") for w in out["warnings"] if w.get("sentence")]
     return out
+
+
+def _promoted_doc(layer) -> dict | None:
+    """The API's promoted layer, with the names a person typed wrapped as data."""
+    if not isinstance(layer, dict):
+        return None
+    out = dict(layer)
+    for key in ("title", "line_name", "made_by"):
+        if out.get(key) is not None:
+            out[key] = _data(str(out[key]))
+    return out
+
+
+def _promoted_words(layer) -> str | None:
+    """One sentence on the line's promoted layer, and the API's own sentences (the line has changed since; an agent
+    promoted it and no person has reviewed it), to relay."""
+    if not isinstance(layer, dict):
+        return None
+    who = "an agent" if layer.get("made_by_agent") else f"a person ({layer.get('made_by')})"
+    text = (
+        f"Its catchments were promoted to the layer {layer.get('title')} ({layer.get('alternate')}) by {who} on "
+        f"{layer.get('made_at')}."
+    )
+    if layer.get("layer_exists") is False:
+        text += " That layer has since been deleted; promote_catchments makes it again."
+    sentences = [x for x in layer.get("sentences") or [] if isinstance(x, str) and x]
+    if sentences:
+        text += " Relay: " + " ".join(sentences)
+    elif not layer.get("line_changed_since"):
+        text += " The line has not changed since."
+    return text
 
 
 def _who(doc: dict) -> str:
@@ -389,6 +424,9 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     if copied:
         parts.append(copied)
     parts.append(_who(doc))
+    promoted = _promoted_words(result.get("promoted_layer"))
+    if promoted:
+        parts.append(promoted)
     if ticks:
         parts.append(ticks)
     words = result["warnings_in_words"]
@@ -1172,6 +1210,112 @@ async def use_catchments_as_boundary(
         panel="catchments",
         line=delineation_id,
     )
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Epic 4445 W6.2 (TASK-4469; D8, D16): promote a confirmed line's catchments to a GeoNode layer
+# ---------------------------------------------------------------------------
+PROMOTE_RULE = (
+    "A promoted layer is a snapshot of a CONFIRMED line's catchments, published as a layer of the project (name, chainage, "
+    "area and where each drains), to style, print and share like any other layer. It does not follow later changes to the "
+    "line; it is marked 'the line has changed since', and promoting again replaces its contents. Only a person confirms a "
+    "line, in the browser. A layer an agent promotes is marked as made by an agent and unreviewed until a person promotes "
+    "it again."
+)
+
+
+@_tool("promote_catchments")
+async def promote_catchments(
+    project_id: Annotated[int, "The project ID (Editor rights)"],
+    delineation_id: Annotated[int, "`delineation_id` of a line a person has confirmed"],
+    replace: Annotated[
+        bool,
+        "True only after the user said yes to replacing the contents of the line's promoted layer with the catchments as "
+        "they are now (maps and prints that show the layer then show the new catchments).",
+    ] = False,
+    authored_method: Annotated[
+        str, "One short phrase saying why you are promoting these catchments. Shown to the person who reviews it."
+    ] = "",
+    sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
+) -> str:
+    """Promote a confirmed line's catchments to a GeoNode layer of the project: a snapshot to style, print and share.
+
+    Refused unless a person has confirmed the line (ask them to, in the browser). When the line already has a promoted
+    layer, the call is refused with that layer and its 'the line has changed since' mark: ask the user, and call again
+    with replace=true only if they say yes. The layer you promote is marked as made by an agent and unreviewed. The
+    same mark is on get_delineation's `promoted_layer`. Give the user the link (`ui_url`): the layer is on the map in
+    Promoted catchments.
+    """
+    cited = _clean_sources(sources)
+    payload: dict = {"replace": bool(replace)}
+    if authored_method.strip():
+        payload["authored_method"] = authored_method.strip()
+    if cited:
+        payload["sources"] = cited
+    base = f"/projects/{project_id}/delineations/{delineation_id}/"
+    body, status = await client.post(f"{base}promote/", json=payload, raise_for_status=False)
+    if status >= 500:
+        raise ToolError(f"Hydrata API returned {status} for POST {base}promote/: {str(body)[:300]}")
+    links = {"panel": "catchments", "line": delineation_id}
+    reply = body if isinstance(body, dict) else {}
+    if status >= 400:
+        result = _refused(body, status, "the promotion")
+        result["rule"] = PROMOTE_RULE
+        code = reply.get("error_code")
+        if code == "NOT_CONFIRMED":
+            say = (
+                f"Hydrata refused the promotion: {reply.get('detail')} Only a person confirms a line: ask the user to "
+                "check the catchments and confirm the line in the browser (the link), then promote it."
+            )
+        elif code == "PROMOTED_ALREADY":
+            layer = _promoted_doc(reply.get("promoted_layer"))
+            result["promoted_layer"] = layer
+            changed = bool(layer and layer.get("line_changed_since"))
+            say = (
+                f"This line's catchments are already a layer{' (' + str(layer.get('title')) + ')' if layer else ''}"
+                + (
+                    ", and the line has changed since it was promoted"
+                    if changed
+                    else ", and the line has not changed since"
+                )
+                + ". Promoting again replaces its contents, and maps and prints that show it will change: ask the user, "
+                "and call promote_catchments again with replace=true only if they say yes. Nothing was changed."
+            )
+        else:
+            say = result.pop("say_to_user")
+        result.pop("say_to_user", None)
+        await _hand_back(result, project_id, {"http_status": status, "error_code": code}, say, **links)
+        return json.dumps(result, indent=2)
+    layer = _promoted_doc(reply.get("promoted_layer")) or {}
+    replaced = bool(reply.get("replaced"))
+    result = {
+        "outcome": "replaced" if replaced else "promoted",
+        "http_status": status,
+        "promoted_layer": layer,
+        "replaced": replaced,
+        "method": reply.get("method"),
+        "vertices_before": reply.get("vertices_before"),
+        "vertices_after": reply.get("vertices_after"),
+        "rule": PROMOTE_RULE,
+    }
+    what = "replaced the contents of" if replaced else "made"
+    say = (
+        f"I {what} the layer {layer.get('title')} ({layer.get('alternate')}) from the {layer.get('feature_count')} "
+        f"catchments of delineation {delineation_id}: name, chainage, area and where each drains. It is on the map in "
+        f"{layer.get('map_group') or 'Promoted catchments'}, to style, print and share like any other layer. It is a "
+        "snapshot: it does not follow later changes to the line."
+    )
+    if layer.get("unreviewed"):
+        say += " It is marked as made by an agent and unreviewed until you promote it again yourself."
+    summary = {
+        "promoted_layer_id": layer.get("id"),
+        "gn_layer": layer.get("gn_layer"),
+        "alternate": layer.get("alternate"),
+        "replaced": replaced,
+        "unreviewed": layer.get("unreviewed"),
+    }
+    await _hand_back(result, project_id, summary, say, **links)
     return json.dumps(result, indent=2)
 
 

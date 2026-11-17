@@ -411,6 +411,8 @@ TOOL_ANNOTATIONS = {
     "use_catchments_as_boundary": ("Use catchments as the model boundary", False, False, False),
     # TASK-4467 (epic 4445 W5.4, D16): stored as a proposal a person accepts on the map; nothing is applied.
     "propose_drainage_correction": ("Propose a drainage barrier, opening or excluded ground", False, False, False),
+    # TASK-4469 (epic 4445 W6.2, D8): a confirmed line's catchments to a layer; replaces only with replace=true.
+    "promote_catchments": ("Promote a confirmed line's catchments to a layer", False, False, False),
 }
 
 

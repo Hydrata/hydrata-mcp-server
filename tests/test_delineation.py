@@ -1364,3 +1364,161 @@ async def test_sections_side_is_one_of_left_right_or_automatic(_server):
     args = {**NEW_ARGS, "side": "uphill"}
     text = _tool_error_text(await _call_as_caller(_server, "delineate_catchments", args))
     assert "side" in text
+
+
+# ---------------------------------------------------------------------------
+# Epic 4445 W6.2 (TASK-4469; D8, D16): promote_catchments, and the line has changed since
+# ---------------------------------------------------------------------------
+PROMOTE = f"{ONE}promote/"
+CHANGED = (
+    "The line has changed since these catchments were promoted on 17-11-26. Promote again to bring the layer up to date; "
+    "until then it stays as it was."
+)
+AGENT_MARK = (
+    "An agent promoted this layer and no person has reviewed it yet. A person reviews it by promoting it again."
+)
+
+
+def _promoted(**over):
+    layer = {
+        "id": 5,
+        "title": "Catchments of W4 line",
+        "kind": "promoted_catchments",
+        "gn_layer": 1930,
+        "alternate": "geonode:pcat_42_9",
+        "layer_exists": True,
+        "map_group": "Promoted catchments",
+        "delineation_id": 9,
+        "line_name": "W4 line",
+        "catchment_ids": [101, 102],
+        "feature_count": 2,
+        "promotions": 1,
+        "made_by": "agent-user",
+        "made_by_agent": True,
+        "made_at": "2026-11-17T09:30:00+00:00",
+        "unreviewed": True,
+        "authored_method": "Promoted from delineation 'W4 line' (id 9)",
+        "line_changed_since": False,
+        "line_deleted": False,
+        "sentences": [AGENT_MARK],
+    }
+    layer.update(over)
+    return layer
+
+
+def _confirmed_doc(**top):
+    doc = _doc()
+    doc["delineation"].update(
+        {"confirmed": True, "confirmed_by": "engineer", "confirmed_at": "2026-11-17T09:00:00+00:00"}
+    )
+    doc.update(top)
+    return doc
+
+
+@respx.mock
+async def test_promote_catchments_makes_the_layer_and_says_it_is_unreviewed(_server):
+    _mock_project()
+    post = respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "promoted_layer": _promoted(),
+                "replaced": False,
+                "method": "Promoted from delineation 'W4 line' (id 9): 2 catchments",
+                "vertices_before": 900,
+                "vertices_after": 400,
+            },
+        )
+    )
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "promote_catchments",
+            {"project_id": 42, "delineation_id": 9, "authored_method": "The engineer asked for a figure"},
+        )
+    )
+    assert json.loads(post.calls[0].request.content) == {
+        "replace": False,
+        "authored_method": "The engineer asked for a figure",
+    }
+    assert data["outcome"] == "promoted" and data["replaced"] is False
+    layer = data["promoted_layer"]
+    assert layer["alternate"] == "geonode:pcat_42_9" and layer["unreviewed"] is True
+    assert "Catchments of W4 line" in layer["title"]  # wrapped as data where the envelope is on
+    say = data["say_to_user"]
+    assert "Promoted catchments" in say and "snapshot" in say and "unreviewed" in say
+    assert data["ui_url"].endswith(MAP_URL) and "CONFIRMED" in data["rule"]
+
+
+@respx.mock
+async def test_promote_catchments_is_refused_for_an_unconfirmed_line_and_says_a_person_confirms(_server):
+    _mock_project()
+    respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_code": "NOT_CONFIRMED",
+                "detail": "Confirm the line before promoting its catchments: only a confirmed line's catchments become a "
+                "layer, so nothing unreviewed is published.",
+            },
+        )
+    )
+    data = _tool_json(await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert data["outcome"] == "refused" and data["error_code"] == "NOT_CONFIRMED" and data["http_status"] == 409
+    assert "Only a person confirms a line" in data["say_to_user"] and data["ui_url"].endswith(MAP_URL)
+
+
+@respx.mock
+async def test_promote_catchments_again_asks_the_user_first_and_reads_the_changed_since_mark(_server):
+    _mock_project()
+    post = respx.post(PROMOTE).mock(
+        side_effect=[
+            httpx.Response(
+                409,
+                json={
+                    "error_code": "PROMOTED_ALREADY",
+                    "detail": "This line's catchments are already the layer 'Catchments of W4 line', promoted on 17-11-26. "
+                    "Promoting again replaces its contents with the catchments as they are now; send replace: true to go "
+                    "ahead.",
+                    "promoted_layer": _promoted(line_changed_since=True, sentences=[CHANGED, AGENT_MARK]),
+                },
+            ),
+            httpx.Response(
+                200,
+                json={"promoted_layer": _promoted(promotions=2), "replaced": True, "method": "Promoted from ..."},
+            ),
+        ]
+    )
+    refused = _tool_json(await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert refused["error_code"] == "PROMOTED_ALREADY" and refused["promoted_layer"]["line_changed_since"] is True
+    assert "ask the user" in refused["say_to_user"] and "replace=true" in refused["say_to_user"]
+    assert "the line has changed since" in refused["say_to_user"]
+    done = _tool_json(
+        await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9, "replace": True})
+    )
+    assert json.loads(post.calls[1].request.content) == {"replace": True}
+    assert done["outcome"] == "replaced" and "replaced the contents of" in done["say_to_user"]
+
+
+@respx.mock
+async def test_promote_get_delineation_reads_the_same_mark(_server):
+    _mock_project()
+    doc = _confirmed_doc(promoted_layer=_promoted(line_changed_since=True, sentences=[CHANGED, AGENT_MARK]))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = _tool_json(
+        await _call_as_caller(_server, "get_delineation", {"project_id": 42, "delineation_id": 9, "timeout_seconds": 0})
+    )
+    assert data["promoted_layer"]["line_changed_since"] is True
+    assert "W4 line" in data["promoted_layer"]["line_name"]
+    assert CHANGED in data["say_to_user"] and AGENT_MARK in data["say_to_user"]
+    assert "geonode:pcat_42_9" in data["say_to_user"]
+
+
+@respx.mock
+async def test_promote_get_delineation_of_a_line_never_promoted_says_nothing_of_it(_server):
+    _mock_project()
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_confirmed_doc(promoted_layer=None)))
+    data = _tool_json(
+        await _call_as_caller(_server, "get_delineation", {"project_id": 42, "delineation_id": 9, "timeout_seconds": 0})
+    )
+    assert data["promoted_layer"] is None and "promoted" not in data["say_to_user"]

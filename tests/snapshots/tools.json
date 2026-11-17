@@ -1698,6 +1698,62 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Promote a confirmed line's catchments to a layer"
+    },
+    "description": "Promote a confirmed line's catchments to a GeoNode layer of the project: a snapshot to style, print and share.\n\nRefused unless a person has confirmed the line (ask them to, in the browser). When the line already has a promoted\nlayer, the call is refused with that layer and its 'the line has changed since' mark: ask the user, and call again\nwith replace=true only if they say yes. The layer you promote is marked as made by an agent and unreviewed. The\nsame mark is on get_delineation's `promoted_layer`. Give the user the link (`ui_url`): the layer is on the map in\nPromoted catchments.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "authored_method": {
+          "default": "",
+          "description": "One short phrase saying why you are promoting these catchments. Shown to the person who reviews it.",
+          "type": "string"
+        },
+        "delineation_id": {
+          "description": "`delineation_id` of a line a person has confirmed",
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "replace": {
+          "default": false,
+          "description": "True only after the user said yes to replacing the contents of the line's promoted layer with the catchments as they are now (maps and prints that show the layer then show the new catchments).",
+          "type": "boolean"
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. Limits: title (1-200 characters) and url (http or https, at most 2000 characters) are required; locator (a page or table, e.g. 'p. 42' or 'Table 5-2') is optional, at most 100 characters. At most 20 entries. Pass it beside the method whenever you cite a document."
+        }
+      },
+      "required": [
+        "project_id",
+        "delineation_id"
+      ],
+      "type": "object"
+    },
+    "name": "promote_catchments",
+    "title": "Promote a confirmed line's catchments to a layer"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Propose a drainage barrier, opening or excluded ground"
     },
     "description": "Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is\nNOT applied: a person accepts it on the map, and only then does the drainage analysis use it.\n\nUse it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning says \"draw a drainage\nbarrier\" or \"draw a drainage opening\" and gives `where`), or when you can say exactly where water really goes and\nthe terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and\ngive them the link (`ui_url`). Lines on the terrain change only after the person accepts it and they run again.",
