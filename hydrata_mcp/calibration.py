@@ -32,6 +32,18 @@ NO_COMPARISON_WORDS = (
 )
 
 
+# TASK-4071: an exclusion's `reason` is the engineer's free text, possibly a third party's on a
+# shared project, so it is DATA wherever these tools return it (the exclusion they write, each row's
+# `exclusion`, an observation's `history`). It is wrapped here, not by adding `reason` to the global
+# DATA_TEXT_KEYS: build_scenario's refusal `reason` is this server's own sentence and carries
+# instructions the agent must follow.
+def _reason_as_data(record):
+    """`record` (a dict, or anything else unchanged) with its string `reason` wrapped as data."""
+    if isinstance(record, dict) and isinstance(record.get("reason"), str):
+        record["reason"] = _data(record["reason"])
+    return record
+
+
 def _headline_sentence(headline) -> str | None:
     """TASK-3845 — the English headline from the API's numbers (the map words
     the same numbers per locale): '47 observations · 31 within ±0.30 m (66%) ·
@@ -183,11 +195,14 @@ async def get_observation_comparison(
                 f"run {run_id} has no row for layer {layer_id} fid {fid} in its comparison (check "
                 "the ids with list_observations; an observation just added is compared a few seconds later)"
             )
-        result["history"] = (
-            await client.get(_comparison_path(run_id, "history/"), params={"layer": layer_id, "fid": fid})
-        ).get("history")
+        history = (await client.get(_comparison_path(run_id, "history/"), params={"layer": layer_id, "fid": fid})).get(
+            "history"
+        )
+        result["history"] = [_reason_as_data(entry) for entry in history] if isinstance(history, list) else history
     if not include_series:
         _elide_series(rows)
+    for row in rows:
+        _reason_as_data(row.get("exclusion"))
     result["rows"] = rows
     result["row_count"] = len(rows)
     project_id, scenario_id = await _run_project_and_scenario(run_id, None)
@@ -285,6 +300,7 @@ async def set_observation_exclusion(
         {"layer": layer_id, "fid": fid, "excluded": excluded, "reason": reason},
         f"set_observation_exclusion on run {run_id}",
     )
+    _reason_as_data(result)
     project_id, scenario_id = await _run_project_and_scenario(run_id, None)
     if result.get("excluded"):
         say = (
