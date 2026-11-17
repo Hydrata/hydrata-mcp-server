@@ -239,6 +239,63 @@ def _phase_of(job: dict) -> str:
     return "error" if status in ("error", "cancelled") else "ready"
 
 
+SIDE_ARGUMENT_HELP = (
+    "The line's upstream side, looking along the line from its start to its end: 'left' or 'right' puts the whole line "
+    "on that side; 'automatic' (the default for a new line) lets Hydrata take, for each section of the line, the side "
+    "most ground arrives from, flipping only where a flip brings in at least five times the Minimum catchment area more "
+    "than it gives up. Ground on a section's downstream side makes no catchment and is reported as left out. Pass a side "
+    "only when the person told you which side the water comes from; the reply always names the side used per section."
+)
+SIDES_NOT_AVAILABLE = (
+    "This result was made before lines had an upstream side, so both sides of the line count. Run it again "
+    "(delineate_catchments with this delineation_id and mode) to get its sections."
+)
+
+
+def _sections_doc(doc: dict) -> list | None:
+    """The API's sections (None for a result made before sides), each with its chainages as text; no geometry."""
+    sections = doc.get("sections")
+    if sections is None:
+        return None
+    out = []
+    for s in sections:
+        item = {k: v for k, v in s.items() if k != "geometry"}
+        out.append(_with_text(item, ("from_chainage_m", "from_chainage"), ("to_chainage_m", "to_chainage")))
+    return out
+
+
+def _sides_words(doc: dict) -> str | None:
+    """The side used for each section, the ground left out, and who chose the sides, in one paragraph (None with no result)."""
+    if not doc.get("shown_result"):
+        return None
+    sections = doc.get("sections")
+    if sections is None:
+        return SIDES_NOT_AVAILABLE
+    if not sections:
+        return None
+    each = "; ".join(
+        f"{_chainage_text(s.get('from_chainage_m'))} to {_chainage_text(s.get('to_chainage_m'))}: {s.get('side')} side "
+        f"({float(s.get('taken_ha') or 0):,.1f} ha taken in, {float(s.get('left_out_ha') or 0):,.1f} ha left out)"
+        for s in sections
+    )
+    count = len(sections)
+    sides = doc.get("sides") or {}
+    who = (
+        "The sides were set by hand."
+        if sides.get("set_by_hand")
+        else "Hydrata chose them: each section takes the side most ground arrives from, and a flip is made only where it "
+        "pays for itself."
+    )
+    words = (
+        f"Upstream side (looking along the line from its start to its end), {count} section{'' if count == 1 else 's'}: "
+        f"{each}. {who}"
+    )
+    left_out = (doc.get("ground_left_out") or {}).get("sentence")
+    if left_out:
+        words += f" {left_out}"
+    return words
+
+
 def _result(doc: dict) -> dict:
     """The tool result block of a read of one delineation: the API's fields, chainages with their text, sentences."""
     names = _names(doc)
@@ -271,6 +328,9 @@ def _result(doc: dict) -> dict:
             for m in doc.get("meets_line_twice") or []
         ],
         "warnings": [_with_text(w, ("chainage_m", "chainage")) for w in doc.get("warnings") or []],
+        "sections": _sections_doc(doc),
+        "sides": doc.get("sides"),
+        "ground_left_out": doc.get("ground_left_out"),
         "ignored_diversions": doc.get("ignored_diversions") or [],
         "job": doc.get("job"),
         "drainage_analysis": doc.get("drainage_analysis"),
@@ -320,6 +380,9 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
         )
         if _is_fast_screen(shown):
             parts.append(f"{FAST_SCREEN_CAVEAT} {FAST_SCREEN_PROFILE}")
+    sides = _sides_words(doc)
+    if sides:
+        parts.append(sides)
     copied = _copied_from_text(line)
     if copied:
         parts.append(copied)
@@ -464,6 +527,7 @@ async def delineate_catchments(
         "screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast "
         "screen again.",
     ] = None,
+    side: Annotated[Literal["left", "right", "automatic"] | None, SIDE_ARGUMENT_HELP] = None,
     estimate_only: Annotated[
         bool,
         "True runs nothing: it returns the estimate (cells, working resolution, where it runs, expected time range, "
@@ -484,7 +548,11 @@ async def delineate_catchments(
     confirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool
     that deletes a delineation or moves its line.
 
-    With `delineation_id`: changing the name, start chainage or either area regroups the stored result without
+    The line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless
+    you pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a
+    result names the side used per section; relay it.
+
+    With `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without
     repeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and
     marked check again until a person checks them; say so. A delineation a person made or confirmed is refused in
     words. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata
@@ -509,6 +577,7 @@ async def delineate_catchments(
             estimate_only,
             method,
             clean_sources,
+            side,
         )
 
     if estimate_only:
@@ -562,6 +631,7 @@ async def delineate_catchments(
         ("min_area_ha", min_area_ha),
         ("max_divert_area_ha", max_divert_area_ha),
         ("terrain_id", terrain_id),
+        ("side", side),
     ):
         if value is not None:
             payload[key] = value
@@ -593,6 +663,12 @@ async def delineate_catchments(
     say = (
         f"The {MODE_WORDS[chosen]} delineation '{_data(name.strip())}' (id {new_id}) has started on {where}. "
         "An agent made it, so it is unreviewed: only a person confirms it, in the browser. " + _estimate_words(estimate)
+    )
+    say += (
+        f" Upstream side: {side} for the whole line, as asked."
+        if side in ("left", "right")
+        else " Upstream side: Hydrata will take, for each section of the line, the side most ground arrives from; the "
+        "result names the side used per section."
     )
     if chosen == "full":
         say += " High resolution can take many hours: no fast screen is made by this call, and the person can close the map."
@@ -630,6 +706,7 @@ async def _change(
     estimate_only,
     method,
     clean_sources,
+    side=None,
 ) -> str:
     base = f"/projects/{project_id}/delineations/{delineation_id}/"
     if line is not None:
@@ -658,13 +735,14 @@ async def _change(
         ("start_chainage_m", start_chainage_m),
         ("min_area_ha", min_area_ha),
         ("max_divert_area_ha", max_divert_area_ha),
+        ("side", side),
     ):
         if value is not None:
             changes[key] = value
     if not changes and mode is None:
         raise ToolError(
-            "Nothing to change: give a name, start_chainage_m, min_area_ha or max_divert_area_ha, or mode='full' to "
-            "start the full run. Nothing was sent."
+            "Nothing to change: give a name, start_chainage_m, min_area_ha, max_divert_area_ha or side, or mode='full' "
+            "to start the full run. Nothing was sent."
         )
     doc = None
     if changes:

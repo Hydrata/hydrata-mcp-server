@@ -1247,3 +1247,120 @@ async def test_drainage_analysis_wait_the_estimate_names_the_grid_whose_analysis
     say = data["say_to_user"]
     assert f"High resolution (mode 'full'): {OUT_OF_DATE}" in say
     assert say.count("drainage analysis") == 1
+
+
+# ---------------------------------------------------------------------------
+# TASK-4463 (epic 4445 W4.4): sides and sections in the line tools
+# ---------------------------------------------------------------------------
+LEFT_OUT = "8.7 ha below the line drains back across it and is left out."
+SECTIONS = [
+    {
+        "index": 0,
+        "side": "right",
+        "from_distance_m": 0.0,
+        "to_distance_m": 81.0,
+        "from_chainage_m": 5000.0,
+        "to_chainage_m": 5081.0,
+        "left_ha": 0.4,
+        "right_ha": 12.5,
+        "taken_ha": 12.5,
+        "left_out_ha": 0.4,
+        "sides_close": False,
+        "catchments": [101],
+        "geometry": {"type": "LineString", "coordinates": LINE[:2]},
+    },
+    {
+        "index": 1,
+        "side": "left",
+        "from_distance_m": 81.0,
+        "to_distance_m": 900.0,
+        "from_chainage_m": 5081.0,
+        "to_chainage_m": 5900.0,
+        "left_ha": 3.2,
+        "right_ha": 8.3,
+        "taken_ha": 3.2,
+        "left_out_ha": 8.3,
+        "sides_close": False,
+        "catchments": [102],
+        "geometry": {"type": "LineString", "coordinates": LINE[1:]},
+    },
+]
+
+
+def _sided(**over):
+    fields = {
+        "sections": copy.deepcopy(SECTIONS),
+        "sides": {"available": True, "set_by_hand": False, "flip_cost_ha": 5.0, "rule": "rule", "layout": None},
+        "ground_left_out": {"area_ha": 8.7, "sentence": LEFT_OUT},
+    }
+    return _doc(**{**fields, **over})
+
+
+@respx.mock
+async def test_sections_get_delineation_names_the_side_used_per_section_and_the_ground_left_out(_server):
+    _mock_project()
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_sided()))
+    data = await _read(_server, timeout_seconds=0)
+    say = data["say_to_user"]
+    assert "CH 5+000 to CH 5+081: right side (12.5 ha taken in, 0.4 ha left out)" in say
+    assert "CH 5+081 to CH 5+900: left side (3.2 ha taken in, 8.3 ha left out)" in say
+    assert "2 sections" in say and "Hydrata chose them" in say
+    assert LEFT_OUT in say
+    assert [s["side"] for s in data["sections"]] == ["right", "left"]
+    assert data["sections"][1]["from_chainage"] == "CH 5+081" and "geometry" not in data["sections"][0]
+    assert data["ground_left_out"]["area_ha"] == 8.7 and data["sides"]["set_by_hand"] is False
+
+
+@respx.mock
+async def test_sections_set_by_hand_are_named_as_such(_server):
+    _mock_project()
+    doc = _sided(
+        sides={"available": True, "set_by_hand": True, "layout": [{"from_chainage_m": 5000.0, "side": "left"}]}
+    )
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    say = (await _read(_server, timeout_seconds=0))["say_to_user"]
+    assert "The sides were set by hand." in say and "Hydrata chose them" not in say
+
+
+@respx.mock
+async def test_sections_a_result_made_before_sides_says_to_run_it_again(_server):
+    _mock_project()
+    doc = _doc(sections=None, sides={"available": False, "set_by_hand": False}, ground_left_out=None)
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = await _read(_server, timeout_seconds=0)
+    assert data["sections"] is None
+    assert "made before lines had an upstream side" in data["say_to_user"]
+
+
+@respx.mock
+async def test_sections_an_agent_passes_a_side_for_a_new_line_and_is_told_which(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    post = respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "side": "left"}))
+    assert json.loads(post.calls[0].request.content)["side"] == "left"
+    assert "Upstream side: left for the whole line, as asked." in data["say_to_user"]
+    plain = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))
+    assert "side" not in json.loads(post.calls[1].request.content)
+    assert "the side most ground arrives from" in plain["say_to_user"]
+
+
+@respx.mock
+async def test_sections_an_agent_changes_the_side_of_its_own_line_without_a_run(_server):
+    _mock_project()
+    patch = respx.patch(ONE).mock(return_value=httpx.Response(200, json=_sided()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "side": "automatic"}
+        )
+    )
+    assert json.loads(patch.calls[0].request.content) == {"side": "automatic"}
+    assert not any("/run/" in str(c.request.url) for c in respx.calls)
+    assert data["outcome"] == "changed"
+    assert "CH 5+000 to CH 5+081: right side" in data["say_to_user"] and LEFT_OUT in data["say_to_user"]
+
+
+async def test_sections_side_is_one_of_left_right_or_automatic(_server):
+    args = {**NEW_ARGS, "side": "uphill"}
+    text = _tool_error_text(await _call_as_caller(_server, "delineate_catchments", args))
+    assert "side" in text

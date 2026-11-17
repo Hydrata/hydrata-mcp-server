@@ -806,7 +806,7 @@
       "readOnlyHint": false,
       "title": "Make catchments from a delineation line, or change its settings"
     },
-    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nWith `delineation_id`: changing the name, start chainage or either area regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.",
+    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -898,6 +898,23 @@
         "project_id": {
           "description": "The project ID (Contributor rights)",
           "type": "integer"
+        },
+        "side": {
+          "anyOf": [
+            {
+              "enum": [
+                "left",
+                "right",
+                "automatic"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The line's upstream side, looking along the line from its start to its end: 'left' or 'right' puts the whole line on that side; 'automatic' (the default for a new line) lets Hydrata take, for each section of the line, the side most ground arrives from, flipping only where a flip brings in at least five times the Minimum catchment area more than it gives up. Ground on a section's downstream side makes no catchment and is reported as left out. Pass a side only when the person told you which side the water comes from; the reply always names the side used per section."
         },
         "sources": {
           "anyOf": [
