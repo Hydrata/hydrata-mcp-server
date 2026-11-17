@@ -60,6 +60,13 @@ BOUNDARY_RULE = (
     "drainage point (5 working cells long, never under 20 m). The delineation line itself is not open."
 )
 PERSON_ONLY = "Only a person in the browser can tick a diversion, check one again, or confirm a delineation."
+# TASK-4456 (epic 4445 W2.7): the terrain's drainage analysis, being prepared or out of date. The API's ``drainage_analysis``
+# carries the sentence (a line's read for its run's grid; the estimate per grid); these are the same words, for an API that
+# sends a state without one.
+DRAINAGE_WORDS = {
+    "being_prepared": "This terrain's drainage analysis is being prepared. A run on it waits for it, then goes on.",
+    "out_of_date": "This terrain's drainage analysis is out of date. The next run works it out again, so it takes longer.",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +225,13 @@ def _copied_from_text(line: dict) -> str | None:
     )
 
 
+def _drainage_sentence(status) -> str | None:
+    """The one sentence about the terrain's drainage analysis, when it is being prepared or out of date; else None."""
+    if not isinstance(status, dict) or status.get("state") not in DRAINAGE_WORDS:
+        return None
+    return str(status.get("sentence") or DRAINAGE_WORDS[status["state"]]).strip()
+
+
 def _phase_of(job: dict) -> str:
     status = job.get("status")
     if status in LIVE_STATUSES:
@@ -259,6 +273,7 @@ def _result(doc: dict) -> dict:
         "warnings": [_with_text(w, ("chainage_m", "chainage")) for w in doc.get("warnings") or []],
         "ignored_diversions": doc.get("ignored_diversions") or [],
         "job": doc.get("job"),
+        "drainage_analysis": doc.get("drainage_analysis"),
         "omitted": OMITTED,
     }
     shown = doc.get("shown_result")
@@ -356,6 +371,9 @@ def _estimate_words(estimate: dict) -> str:
             reason = str(e.get("cannot_run_reason") or "").strip()
             text += f" The {MODE_WORDS[mode]} run CANNOT run here: {reason}{'' if reason.endswith('.') else '.'}"
         out.append(text)
+        drainage = _drainage_sentence(e.get("drainage_analysis"))
+        if drainage:
+            out.append(f"{MODE_WORDS[mode]}: {drainage}")
     note = (estimate.get("quick") or {}).get("note")
     copy = (
         " High resolution on this line makes a copy of it, '<name> (high res)', and runs there; the fast screen stays "
@@ -394,7 +412,10 @@ def _refused(body, status: int, what: str, project_id=None, asked_id=None) -> di
 
 def _estimate_summary(estimate: dict) -> dict:
     return {
-        m: {k: (estimate.get(m) or {}).get(k) for k in ("cells", "runs_on", "can_run", "expected_seconds")}
+        m: {
+            **{k: (estimate.get(m) or {}).get(k) for k in ("cells", "runs_on", "can_run", "expected_seconds")},
+            "drainage_analysis": ((estimate.get(m) or {}).get("drainage_analysis") or {}).get("state"),
+        }
         for m in ("quick", "full")
     }
 
@@ -753,6 +774,9 @@ async def _change(
                 )
             )
     parts.extend(_read_words(doc, result, ticks))
+    drainage = _drainage_sentence(doc.get("drainage_analysis"))
+    if drainage and drainage not in " ".join(parts):
+        parts.append(drainage)
     await _hand_back(
         result,
         project_id,
@@ -804,7 +828,9 @@ async def get_delineation(
     first look: say so, and offer High resolution before the person relies on it; its profile is not available) or
     'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High
     resolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's
-    progress, elapsed time, expected finish, where it runs and whether it was handed to Batch. Read-only.
+    progress, elapsed time, expected finish, where it runs and whether it was handed to Batch. `drainage_analysis` says
+    whether the terrain's drainage analysis is being prepared (the run waits for it) or out of date (the next run works it
+    out again), with the sentence to relay. Read-only.
     """
 
     async def fetch():
@@ -877,6 +903,9 @@ async def get_delineation(
                 f"The High resolution run did not finish: {full_run.get('error') or 'it was cancelled'} The result shown "
                 f"({_kind(shown)}) is unchanged and usable."
             )
+    drainage = _drainage_sentence(doc.get("drainage_analysis"))
+    if drainage:
+        parts.append(drainage)
     if timed_out and not shown:
         result["next_step"] = f"Call get_delineation(project_id={project_id}, delineation_id={delineation_id}) again."
         if cap_spent:
@@ -899,6 +928,7 @@ async def get_delineation(
         "diversions_to_check": doc.get("diversions_to_check") or 0,
         "shown_result": (shown or {}).get("mode"),
         "resolution": _kind(shown) if shown else None,
+        "drainage_analysis": (doc.get("drainage_analysis") or {}).get("state"),
     }
     await _hand_back(result, project_id, summary, " ".join(parts), panel="catchments", line=delineation_id)
     return json.dumps(result, indent=2)

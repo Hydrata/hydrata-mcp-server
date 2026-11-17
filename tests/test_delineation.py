@@ -1172,3 +1172,78 @@ async def test_a_boundary_from_a_fast_screen_says_so(_server):
         )
     )
     assert data["outcome"] == "made" and "from a fast screen (low resolution)" in data["say_to_user"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-4456 (epic 4445 W2.7): the terrain's drainage analysis, being prepared or out of date, in the line tools
+# ---------------------------------------------------------------------------
+BEING_PREPARED = "This terrain's drainage analysis is being prepared. A run on it waits for it, then goes on."
+OUT_OF_DATE = "This terrain's drainage analysis is out of date. The next run works it out again, so it takes longer."
+
+
+def _drainage(state, sentence=None, **extra):
+    return {"state": state, "grid": "quick", "reason": None, "line_waiting": False, "sentence": sentence, **extra}
+
+
+@respx.mock
+async def test_drainage_analysis_wait_a_line_waiting_for_it_says_so(_server):
+    _mock_project()
+    waiting = _doc(
+        shown_result=None,
+        catchments=[],
+        job=_job("running", step="Waiting for the terrain's drainage analysis to be prepared", progress=0.0),
+        drainage_analysis=_drainage("being_prepared", BEING_PREPARED, line_waiting=True),
+    )
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=waiting))
+    data = await _read(_server, timeout_seconds=0)
+    assert data["outcome"] == "timed_out"
+    assert data["drainage_analysis"]["state"] == "being_prepared" and data["drainage_analysis"]["line_waiting"] is True
+    assert BEING_PREPARED in data["say_to_user"]
+    assert data["summary"]["drainage_analysis"] == "being_prepared"
+
+
+@respx.mock
+async def test_drainage_analysis_wait_an_out_of_date_analysis_is_relayed_with_the_result(_server):
+    _mock_project()
+    doc = _doc(drainage_analysis=_drainage("out_of_date", OUT_OF_DATE, reason="method_version"))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = await _read(_server, timeout_seconds=0)
+    assert data["outcome"] == "ready" and data["drainage_analysis"]["reason"] == "method_version"
+    assert OUT_OF_DATE in data["say_to_user"]
+
+
+@respx.mock
+async def test_drainage_analysis_wait_a_current_analysis_adds_no_sentence(_server):
+    _mock_project()
+    for doc in (_doc(drainage_analysis=_drainage("current")), _doc()):  # an older API has no field at all
+        respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+        data = await _read(_server, timeout_seconds=0)
+        assert "drainage analysis" not in data["say_to_user"]
+
+
+@respx.mock
+async def test_drainage_analysis_wait_a_new_line_on_a_terrain_being_prepared_is_told_it_waits(_server):
+    _mock_project()
+    estimate = _estimate()
+    estimate["quick"]["drainage_analysis"] = _drainage("being_prepared", BEING_PREPARED)
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=estimate))
+    respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))
+    assert data["outcome"] == "started" and BEING_PREPARED in data["say_to_user"]
+    assert data["summary"]["estimate"]["quick"]["drainage_analysis"] == "being_prepared"
+
+
+@respx.mock
+async def test_drainage_analysis_wait_the_estimate_names_the_grid_whose_analysis_is_out_of_date(_server):
+    _mock_project()
+    estimate = _estimate()
+    estimate["full"]["drainage_analysis"] = _drainage("out_of_date", OUT_OF_DATE, grid="full", reason="wbt_version")
+    respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json=estimate))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "estimate_only": True}
+        )
+    )
+    say = data["say_to_user"]
+    assert f"High resolution (mode 'full'): {OUT_OF_DATE}" in say
+    assert say.count("drainage analysis") == 1
