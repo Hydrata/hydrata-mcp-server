@@ -1695,6 +1695,104 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Propose a drainage barrier, opening or excluded ground"
+    },
+    "description": "Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is\nNOT applied: a person accepts it on the map, and only then does the drainage analysis use it.\n\nUse it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning says \"draw a drainage\nbarrier\" or \"draw a drainage opening\" and gives `where`), or when you can say exactly where water really goes and\nthe terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and\ngive them the link (`ui_url`). Lines on the terrain change only after the person accepts it and they run again.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "area": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For excluded ground drawn by you: the ring as [[lon, lat], ...] (at least 3 points; it is closed for you)."
+        },
+        "delineation_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The line the person should look at; the link opens it."
+        },
+        "from_import_check": {
+          "default": false,
+          "description": "For excluded ground: propose the extrapolated ground the terrain's import check marked (no `area`).",
+          "type": "boolean"
+        },
+        "kind": {
+          "description": "drainage_barrier: a line water cannot cross (an embankment the terrain does not hold); drainage_opening: a line water passes through (a culvert or gap the terrain does not show), which can grow a catchment; excluded_ground: ground left out of the drainage analysis.",
+          "enum": [
+            "drainage_barrier",
+            "drainage_opening",
+            "excluded_ground"
+          ],
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a barrier or an opening: the line as [[lon, lat], ...] (at least 2 points, WGS84). For an opening, from where the water is to where it goes; for a barrier, across the way the water should not go."
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "reason": {
+          "description": "One or two sentences the person reads before accepting: what you saw (for example the warning's sentence) and why this fixes it.",
+          "type": "string"
+        },
+        "terrain_id": {
+          "description": "The terrain the correction belongs to (a delineation's `line.terrain_id`)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "kind",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "propose_drainage_correction",
+    "title": "Propose a drainage barrier, opening or excluded ground"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,

@@ -334,6 +334,8 @@ def _result(doc: dict) -> dict:
         "ignored_diversions": doc.get("ignored_diversions") or [],
         "job": doc.get("job"),
         "drainage_analysis": doc.get("drainage_analysis"),
+        # epic 4445 W5.1: the terrain's drainage corrections changed since this line was run (the API's sentence)
+        "drainage_changed": doc.get("drainage_changed"),
         "omitted": OMITTED,
     }
     shown = doc.get("shown_result")
@@ -984,6 +986,9 @@ async def get_delineation(
     drainage = _drainage_sentence(doc.get("drainage_analysis"))
     if drainage:
         parts.append(drainage)
+    changed = doc.get("drainage_changed")
+    if isinstance(changed, dict) and changed.get("sentence"):
+        parts.append(changed["sentence"])
     if timed_out and not shown:
         result["next_step"] = f"Call get_delineation(project_id={project_id}, delineation_id={delineation_id}) again."
         if cap_spent:
@@ -1167,4 +1172,114 @@ async def use_catchments_as_boundary(
         panel="catchments",
         line=delineation_id,
     )
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Epic 4445 W5.4 (TASK-4467, D16): an agent proposes a drainage correction; a person accepts it on the map
+# ---------------------------------------------------------------------------
+CORRECTION_WORDS = {
+    "drainage_barrier": "drainage barrier",
+    "drainage_opening": "drainage opening",
+    "excluded_ground": "excluded ground",
+}
+PROPOSAL_RULE = (
+    "A drainage correction changes where the drainage analysis sends water for every line on the terrain, so an agent "
+    "only proposes one: it waits until a person accepts it on the map (Catchments, Drainage corrections), and nothing "
+    "changes before then. It never changes the terrain a flood model runs on."
+)
+
+
+@_tool("propose_drainage_correction")
+async def propose_drainage_correction(
+    project_id: Annotated[int, "The project ID (Editor rights)"],
+    terrain_id: Annotated[int, "The terrain the correction belongs to (a delineation's `line.terrain_id`)"],
+    kind: Annotated[
+        Literal["drainage_barrier", "drainage_opening", "excluded_ground"],
+        "drainage_barrier: a line water cannot cross (an embankment the terrain does not hold); drainage_opening: a "
+        "line water passes through (a culvert or gap the terrain does not show), which can grow a catchment; "
+        "excluded_ground: ground left out of the drainage analysis.",
+    ],
+    reason: Annotated[
+        str,
+        "One or two sentences the person reads before accepting: what you saw (for example the warning's sentence) and "
+        "why this fixes it.",
+    ],
+    line: Annotated[
+        list[list[float]] | None,
+        "For a barrier or an opening: the line as [[lon, lat], ...] (at least 2 points, WGS84). For an opening, from "
+        "where the water is to where it goes; for a barrier, across the way the water should not go.",
+    ] = None,
+    area: Annotated[
+        list[list[float]] | None,
+        "For excluded ground drawn by you: the ring as [[lon, lat], ...] (at least 3 points; it is closed for you).",
+    ] = None,
+    from_import_check: Annotated[
+        bool, "For excluded ground: propose the extrapolated ground the terrain's import check marked (no `area`)."
+    ] = False,
+    delineation_id: Annotated[int | None, "The line the person should look at; the link opens it."] = None,
+) -> str:
+    """Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is
+    NOT applied: a person accepts it on the map, and only then does the drainage analysis use it.
+
+    Use it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning says "draw a drainage
+    barrier" or "draw a drainage opening" and gives `where`), or when you can say exactly where water really goes and
+    the terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and
+    give them the link (`ui_url`). Lines on the terrain change only after the person accepts it and they run again.
+    """
+    words = CORRECTION_WORDS.get(kind)
+    if words is None:
+        raise ToolError("kind must be drainage_barrier, drainage_opening or excluded_ground. Nothing was sent.")
+    why = reason.strip() if isinstance(reason, str) else ""
+    if not why or len(why) > 200:
+        raise ToolError("reason must be one or two sentences (1 to 200 characters) the person reads. Nothing was sent.")
+    payload: dict = {"kind": kind, "note": why}
+    if kind == "excluded_ground":
+        if from_import_check:
+            if area:
+                raise ToolError("Give either from_import_check or area, not both. Nothing was sent.")
+            payload["from_import_check"] = True
+        else:
+            ring = _lon_lat_pairs(area, "area", 3)
+            if ring[0] != ring[-1]:
+                ring.append(list(ring[0]))
+            payload["geometry"] = {"type": "Polygon", "coordinates": [ring]}
+    else:
+        if area or from_import_check:
+            raise ToolError(f"A {words} is a line: give `line`, not `area` or from_import_check. Nothing was sent.")
+        payload["geometry"] = {"type": "LineString", "coordinates": _lon_lat_pairs(line, "line", 2)}
+    path = f"/projects/{project_id}/terrain/{terrain_id}/drainage-corrections/"
+    body, status = await client.post(path, json=payload, raise_for_status=False)
+    if status >= 500:
+        raise ToolError(f"Hydrata API returned {status} for POST {path}: {str(body)[:300]}")
+    links = {"panel": "catchments", "line": delineation_id}
+    if status >= 400:
+        result = _refused(body, status, f"the {words} proposal")
+        await _hand_back(result, project_id, {"http_status": status}, result.pop("say_to_user"), **links)
+        return json.dumps(result, indent=2)
+    answer = body if isinstance(body, dict) else {}
+    proposal = answer.get("correction") or {}
+    waiting = proposal.get("status") == "proposed"
+    result = {
+        "outcome": "proposed" if waiting else "stored",
+        "status": "waiting" if waiting else proposal.get("status"),
+        "http_status": status,
+        "proposal": proposal,
+        "proposals_waiting": sum(1 for c in answer.get("corrections") or [] if c.get("status") == "proposed"),
+        "rule": PROPOSAL_RULE,
+    }
+    if waiting:
+        say = (
+            f"I proposed a {words} on terrain {terrain_id} (proposal {proposal.get('id')}): "
+            f"{_data(str(proposal.get('note') or why))} It is waiting for you to accept it on the map: open the link, "
+            "then Catchments, Drainage corrections, and Accept or Reject it. Nothing changes until you accept it; after "
+            "that, each line on the terrain says to run it again."
+        )
+    else:
+        say = (
+            f"Hydrata stored the {words} on terrain {terrain_id} (correction {proposal.get('id')}) without waiting for a "
+            "person. Tell the user what changed."
+        )
+    summary = {"proposal_id": proposal.get("id"), "kind": kind, "status": result["status"]}
+    await _hand_back(result, project_id, summary, say, **links)
     return json.dumps(result, indent=2)
