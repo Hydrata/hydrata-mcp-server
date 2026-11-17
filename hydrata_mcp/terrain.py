@@ -414,7 +414,7 @@ async def get_terrain(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling before it returns `timed_out` "
-        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
+        "(default 110, ceiling 110: hydrata.com's edge cuts a longer silent call). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
@@ -710,8 +710,8 @@ async def create_terrain_from_source(
     title: Annotated[str, "Terrain title (default: the source name and box)"] = "",
     timeout_seconds: Annotated[
         int,
-        "How long this call keeps polling the import before it returns `timed_out` (default 180, "
-        "ceiling 200). 0 = start it and return at once; then call get_terrain.",
+        "How long this call keeps polling the import before it returns `timed_out` (default 110, "
+        "ceiling 110). 0 = start it and return at once; then call get_terrain.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
 ) -> str:
@@ -1005,7 +1005,7 @@ async def get_terrain_merge(
     analysis_surface_id: Annotated[int, "`analysis_surface_id` from merge_terrains"],
     timeout_seconds: Annotated[
         int,
-        "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200). "
+        "How long this call keeps polling before it returns `timed_out` (default 110, ceiling 110). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,

@@ -54,8 +54,8 @@ OBSERVATION_PHOTO_KEYS = frozenset(
         "photo_base64",
     }
 )
-# One add_observations call POSTs one observation at a time; prod's /mcp/ proxy
-# cuts a call at 300 s, so a batch is bounded well inside that.
+# One add_observations call POSTs one observation at a time; hydrata.com's edge cuts
+# a silent call at 120 s (TASK-4514), so a batch is bounded to stay inside that.
 ADD_OBSERVATIONS_MAX = 200
 
 
@@ -120,7 +120,7 @@ async def create_observation_layer(
         "Metres ADDED to every stage on the layer to bring it onto the terrain datum. "
         "Required for vertical_datum=local; null means 0 otherwise",
     ] = None,
-    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 200)"] = 120,
+    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 110)"] = 110,
     poll_interval_seconds: Annotated[float, "Seconds between layer polls"] = 2.0,
 ) -> str:
     """Create a flood observation layer in a project and wait for its map layer.
@@ -283,7 +283,7 @@ async def add_observations(
     if len(observations) > ADD_OBSERVATIONS_MAX:
         raise ToolError(
             f"{len(observations)} observations in one call; send at most {ADD_OBSERVATIONS_MAX} "
-            "per call (the call must finish inside the proxy's 300 s)"
+            "per call (the call must finish inside the edge's 120 s)"
         )
     for index, row in enumerate(observations):
         if not isinstance(row, dict):

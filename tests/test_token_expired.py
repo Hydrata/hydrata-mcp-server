@@ -97,10 +97,10 @@ class TestWaitCap:
                 connect_server, _jwt(exp=int(time.time()) + 60), "get_run_status", {"run_id": 9, "wait_seconds": 180}
             )
         )
-        # exp - now - 20 s: about 40 s of the 180 asked for, then the SAME result the 180 s ceiling gives.
+        # exp - now - 20 s: about 40 s of the 180 asked for, then the SAME result the 110 s ceiling gives.
         assert 38.0 <= data["waited_seconds"] <= 40.0 and 38.0 <= fake_clock.t <= 40.0
         assert data["timed_out"] is True and data["status"] == "computing"
-        assert "call get_run_status again with wait_seconds=180" in data["next_step"]
+        assert "call get_run_status again with wait_seconds=110" in data["next_step"]
         assert "error_code" not in data
         assert all(call.request.headers["authorization"].startswith("Bearer ") for call in route.calls)
 
@@ -128,7 +128,7 @@ class TestWaitCap:
             )
         )
         step = data["next_step"]
-        assert "call get_run_status again with wait_seconds=180" not in step
+        assert "call get_run_status again with wait_seconds=110" not in step
         assert "Do not call get_run_status again straight away" in step
         assert "next message" in step and "30 seconds" in step
         assert "reconnect" in step and "connect again" not in step.lower()
@@ -142,7 +142,7 @@ class TestWaitCap:
                 connect_server, _jwt(exp=int(time.time()) + 60), "get_run_status", {"run_id": 9, "wait_seconds": 180}
             )
         )
-        assert "call get_run_status again with wait_seconds=180" in data["next_step"]
+        assert "call get_run_status again with wait_seconds=110" in data["next_step"]
         assert "token_refresh_pending" not in data
 
     @respx.mock
@@ -205,7 +205,7 @@ class TestWaitCap:
         data = _tool_json(
             await _result(connect_server, CALLER_KEY, "get_run_status", {"run_id": 9, "wait_seconds": 180})
         )
-        assert data["waited_seconds"] == 180.0 and fake_clock.t == 180.0
+        assert data["waited_seconds"] == 110.0 and fake_clock.t == 110.0  # 180 asked, clamped (TASK-4514)
 
     @pytest.mark.parametrize("exp", ["soon", None, True, [1]])
     @respx.mock
