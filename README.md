@@ -28,7 +28,7 @@ Keys and connections are listed, and revoked, on the same Agent keys page. A run
 
 ## Tools
 
-Version 0.2.2 exposes forty-six tools, all listed below; twenty of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
+Version 0.2.3 exposes forty-six tools, all listed below; twenty of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
 
 | Tool | Description |
 |------|-------------|
