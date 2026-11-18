@@ -83,7 +83,7 @@
           "type": "integer"
         },
         "observations": {
-          "description": "Observations, each the API write body: subtype (flood_mark | timed_level | gauge_record | dry_point), name (required: a short label, e.g. the survey mark id), geometry {type: Point, coordinates: [lon, lat]} (or native x/y with srid), value_kind (stage | depth) + stage_m or depth_m, uncertainty_grade (H/M/L) or uncertainty_m, bound (exact | at_least | at_most), observed_start/observed_end (ISO 8601; naive times read in entry_timezone, by default the project's own zone), mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say which flood it is: a date window (observed_start / observed_end) or flood_name (ask the user; never guess a date); a gauge_record needs data_timeseries_id (+ gauge_zero_m). At most 200 per call",
+          "description": "Observations, each the API write body: subtype (flood_mark | timed_level | gauge_record | dry_point), name (required: a short label, e.g. the survey mark id), geometry {type: Point, coordinates: [lon, lat]} (or native x/y with srid), value_kind (stage | depth) + stage_m or depth_m, uncertainty_grade (H/M/L) or uncertainty_m, bound (exact | at_least | at_most), observed_start/observed_end (ISO 8601; naive times read in entry_timezone, by default the project's own zone), mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say which flood it is: a date window (observed_start / observed_end) or flood_name (ask the user; never guess a date); a gauge_record needs data_timeseries_id (+ gauge_zero_m). At most 100 per call",
           "items": {
             "additionalProperties": true,
             "type": "object"

@@ -30,6 +30,21 @@ async def test_wait_constants_fit_under_the_edge_timeout(_server):
     assert telemetry.CANCEL_BROKEN_AFTER_S == EDGE_TIMEOUT_S
 
 
+async def test_add_observations_batch_fits_under_the_edge_timeout(_server):
+    """TASK-4529: a full batch must finish inside the 110 s ceiling.
+
+    Measured 18-11-26 on the prod-shaped edge sandbox, box-local over 127.0.0.1:8081 (as prod's
+    MCP server calls the API): one POST per row at ~0.72 s median, so 200 rows took 145.4 s
+    (cut by the edge) and 100 rows 72.0 s. The cap is 100 and the tool text says so.
+    """
+    from hydrata_mcp import observations
+
+    assert observations.ADD_OBSERVATIONS_MAX == 100
+    doc = str(inspect.signature(observations.add_observations).parameters["observations"].annotation)
+    assert "At most 100 per call" in doc
+    assert "At most 200 per call" not in doc
+
+
 async def test_poll_until_clamps_oversized_timeout(_server):
     """A caller asking for 9999 s is clamped to the ceiling (never waits longer)."""
     clock = {"t": 0.0}

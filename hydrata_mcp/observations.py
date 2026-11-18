@@ -56,7 +56,9 @@ OBSERVATION_PHOTO_KEYS = frozenset(
 )
 # One add_observations call POSTs one observation at a time; hydrata.com's edge cuts
 # a silent call at 120 s (TASK-4514), so a batch is bounded to stay inside that.
-ADD_OBSERVATIONS_MAX = 200
+# TASK-4529, measured 18-11-26 box-local on the prod-shaped sandbox: ~0.72 s per row,
+# 200 rows 145.4 s (over the edge), 100 rows 72.0 s.
+ADD_OBSERVATIONS_MAX = 100
 
 
 def _photo_refusal(what: str) -> ToolError:
@@ -255,7 +257,7 @@ async def add_observations(
         "mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say "
         "which flood it is: a date window (observed_start / observed_end) or flood_name "
         "(ask the user; never guess a date); a gauge_record needs "
-        "data_timeseries_id (+ gauge_zero_m). At most 200 per call",
+        "data_timeseries_id (+ gauge_zero_m). At most 100 per call",
     ],
     srid: Annotated[
         int | None,
