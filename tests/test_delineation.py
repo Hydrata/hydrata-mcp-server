@@ -1122,6 +1122,17 @@ async def test_get_delineation_says_plainly_that_a_fast_screen_is_low_resolution
 
 
 @respx.mock
+async def test_get_delineation_says_a_lumped_fast_screen_shows_one_catchment_per_section(_server):
+    """TASK-4532: a fast screen is one whole catchment per section; an older fast screen (not lumped) does not say so."""
+    _mock_project()
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result={**FAST_SHOWN, "lumped": True})))
+    say = (await _read(_server, timeout_seconds=0))["say_to_user"]
+    assert "A fast screen shows one catchment per section of the line" in say
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result=FAST_SHOWN)))
+    assert "one catchment per section" not in (await _read(_server, timeout_seconds=0))["say_to_user"]
+
+
+@respx.mock
 async def test_get_delineation_says_high_resolution_and_which_line_a_copy_came_from(_server):
     _mock_project()
     high = {**FAST_SHOWN, "mode": "full", "coarsened": False, "fast_screen": False, "label": "High resolution"}

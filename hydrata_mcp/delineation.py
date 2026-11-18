@@ -53,6 +53,10 @@ FAST_SCREEN_CAVEAT = (
     "A fast screen is a first look at low resolution: tell the person so, and offer High resolution before they rely on "
     "it (it can still be used as the model boundary)."
 )
+FAST_SCREEN_LUMPED = (
+    "A fast screen shows one catchment per section of the line, with no smaller catchments, diversion suggestions or "
+    "shared-water points: High resolution gives those."
+)
 SUGGESTIONS_NOTE = (
     "Diversion suggestions are information only: a drain that could send one catchment's water to its neighbour. "
     "Only a person ticks one, in the browser; no tool applies, ticks or undoes a diversion."
@@ -417,6 +421,8 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
         )
         if _is_fast_screen(shown):
             parts.append(f"{FAST_SCREEN_CAVEAT} {FAST_SCREEN_PROFILE}")
+        if shown.get("lumped"):
+            parts.append(FAST_SCREEN_LUMPED)
     sides = _sides_words(doc)
     if sides:
         parts.append(sides)
