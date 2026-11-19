@@ -112,17 +112,17 @@
    "new": "Sides chosen automatically."
   },
   {
-   "name": "_promoted_words",
+   "name": "_adopted_words",
    "old": "Its catchments were promoted to the layer {title} ({alternate}) by {who} on {made_at}.",
-   "new": "Promoted to layer {title} ({alternate}) by {who} on {made_at}."
+   "new": "Adopted as layer {title} ({alternate}) by {who} on {made_at}."
   },
   {
-   "name": "_promoted_words (deleted)",
+   "name": "_adopted_words (deleted)",
    "old": " That layer has since been deleted; promote_catchments makes it again.",
-   "new": " Layer deleted since; promote_catchments remakes it."
+   "new": " Layer deleted since; adopt_catchments remakes it."
   },
   {
-   "name": "_promoted_words (unchanged)",
+   "name": "_adopted_words (unchanged)",
    "old": " The line has not changed since.",
    "new": " Line unchanged since."
   },
@@ -304,22 +304,22 @@
   {
    "name": "PROMOTE_RULE",
    "old": "A promoted layer is a snapshot of a CONFIRMED line's catchments, published as a layer of the project (name, chainage, area and where each drains), to style, print and share like any other layer. It does not follow later changes to the line; it is marked 'the line has changed since', and promoting again replaces its contents. Only a person confirms a line, in the browser. A layer an agent promotes is marked as made by an agent and unreviewed until a person promotes it again.",
-   "new": "A promoted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains). It does not follow later changes; promoting again replaces its contents. Only a person confirms a line. A layer an agent promotes is unreviewed until a person promotes it again."
+   "new": "A adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains). It does not follow later changes; adopting again replaces its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
   },
   {
-   "name": "promote_catchments (not confirmed)",
+   "name": "adopt_catchments (not confirmed)",
    "old": "Hydrata refused the promotion: {detail} Only a person confirms a line: ask the user to check the catchments and confirm the line in the browser (the link), then promote it.",
-   "new": "Promotion refused: {detail} Ask the user to check and confirm the line in the browser (the link), then promote."
+   "new": "Adoption refused: {detail} Ask the user to check and confirm the line in the browser (the link), then adopt."
   },
   {
-   "name": "promote_catchments (already)",
+   "name": "adopt_catchments (already)",
    "old": "This line's catchments are already a layer ({title}), and the line has (not) changed since (it was promoted). Promoting again replaces its contents, and maps and prints that show it will change: ask the user, and call promote_catchments again with replace=true only if they say yes. Nothing was changed.",
-   "new": "Already a layer ({title}); the line has (not) changed since. Promoting again replaces its contents and changes maps that show it. Ask the user; call promote_catchments with replace=true only on a yes. Nothing changed."
+   "new": "Already a layer ({title}); the line has (not) changed since. Adopting again replaces its contents and changes maps that show it. Ask the user; call adopt_catchments with replace=true only on a yes. Nothing changed."
   },
   {
-   "name": "promote_catchments (done)",
+   "name": "adopt_catchments (done)",
    "old": "I made / replaced the contents of the layer {title} ({alternate}) from the {n} catchments of delineation {id}: name, chainage, area and where each drains. It is on the map in {group}, to style, print and share like any other layer. It is a snapshot: it does not follow later changes to the line. It is marked as made by an agent and unreviewed until you promote it again yourself.",
-   "new": "I made / replaced the contents of the layer {title} ({alternate}) from the {n} catchments of delineation {id}. It is on the map in {group}. It is a snapshot: it does not follow later changes. It is unreviewed until you promote it again yourself."
+   "new": "I made / replaced the contents of the layer {title} ({alternate}) from the {n} catchments of delineation {id}. It is on the map in {group}. It is a snapshot: it does not follow later changes. It is unreviewed until you adopt it again yourself."
   },
   {
    "name": "CORRECTION_WORDS",

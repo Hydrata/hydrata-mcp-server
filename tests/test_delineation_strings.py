@@ -69,3 +69,21 @@ def test_nothing_mentions_print():
     assert "print" not in SOURCE.lower()
     for name in ("delineation.py",):
         assert not re.search(r"\bprints?\b", (SRC / name).read_text())
+
+
+def test_the_word_is_adopt_not_promote():
+    """TASK-4552 (operator, Gate 2b): 'Promoted catchments' is 'Adopted catchments'. Nothing an agent is sent says promote:
+    not a sentence, a rule, a tool name, a key of a result or an argument's help. What is left is the API's own route and
+    the keys this server reads from it (one word each)."""
+    from hydrata_mcp import delineation
+    from hydrata_mcp._common import TOOL_ANNOTATIONS
+
+    api_words = {"promote/", "promote/:", "promoted_layer", "promotions", "promoted_catchments", "PROMOTED_ALREADY"}
+    said = [x for x in SOURCE.split(" | ") if re.search("promot", x, re.I) and x.strip() not in api_words]
+    assert said == []
+    assert hasattr(delineation, "adopt_catchments") and not hasattr(delineation, "promote_catchments")
+    assert "adopt_catchments" in TOOL_ANNOTATIONS and "promote_catchments" not in TOOL_ANNOTATIONS
+    assert not re.search("promot", TOOL_ANNOTATIONS["adopt_catchments"][0], re.I)
+    for tool in json.loads((Path(__file__).parent / "snapshots" / "tools.json").read_text()):
+        assert not re.search("promot", json.dumps(tool), re.I), tool["name"]
+    assert not any(re.search("promot", str(row["new"]), re.I) for row in ROWS)

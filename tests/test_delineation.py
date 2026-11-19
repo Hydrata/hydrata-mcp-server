@@ -1449,13 +1449,13 @@ async def test_sections_side_is_one_of_left_right_or_automatic(_server):
 
 
 # ---------------------------------------------------------------------------
-# Epic 4445 W6.2 (TASK-4469; D8, D16): promote_catchments, and the line has changed since
+# Epic 4445 W6.2 (TASK-4469; D8, D16; TASK-4552 the word is adopt): adopt_catchments, and the line has changed since
 # ---------------------------------------------------------------------------
 PROMOTE = f"{ONE}promote/"
-CHANGED = "Line changed since promoted on 17-11-26."
-CHANGED_FIX = "Promote again to update the layer."
-AGENT_MARK = "Promoted by an agent, not reviewed."
-AGENT_FIX = "Promote again to review it."
+CHANGED = "Line changed since adopted on 17-11-26."
+CHANGED_FIX = "Adopt again to update the layer."
+AGENT_MARK = "Adopted by an agent, not reviewed."
+AGENT_FIX = "Adopt again to review it."
 
 
 def _promoted(**over):
@@ -1466,7 +1466,7 @@ def _promoted(**over):
         "gn_layer": 1930,
         "alternate": "geonode:pcat_42_9",
         "layer_exists": True,
-        "map_group": "Promoted catchments",
+        "map_group": "Adopted catchments",
         "delineation_id": 9,
         "line_name": "W4 line",
         "catchment_ids": [101, 102],
@@ -1476,7 +1476,7 @@ def _promoted(**over):
         "made_by_agent": True,
         "made_at": "2026-11-17T09:30:00+00:00",
         "unreviewed": True,
-        "authored_method": "Promoted from delineation 'W4 line' (id 9)",
+        "authored_method": "Adopted from delineation 'W4 line' (id 9)",
         "line_changed_since": False,
         "line_deleted": False,
         "sentences": [AGENT_MARK],
@@ -1504,7 +1504,7 @@ async def test_promote_catchments_makes_the_layer_and_says_it_is_unreviewed(_ser
             json={
                 "promoted_layer": _promoted(),
                 "replaced": False,
-                "method": "Promoted from delineation 'W4 line' (id 9): 2 catchments",
+                "method": "Adopted from delineation 'W4 line' (id 9): 2 catchments",
                 "vertices_before": 900,
                 "vertices_after": 400,
             },
@@ -1513,7 +1513,7 @@ async def test_promote_catchments_makes_the_layer_and_says_it_is_unreviewed(_ser
     data = _tool_json(
         await _call_as_caller(
             _server,
-            "promote_catchments",
+            "adopt_catchments",
             {"project_id": 42, "delineation_id": 9, "authored_method": "The engineer asked for a figure"},
         )
     )
@@ -1521,12 +1521,12 @@ async def test_promote_catchments_makes_the_layer_and_says_it_is_unreviewed(_ser
         "replace": False,
         "authored_method": "The engineer asked for a figure",
     }
-    assert data["outcome"] == "promoted" and data["replaced"] is False
-    layer = data["promoted_layer"]
+    assert data["outcome"] == "adopted" and data["replaced"] is False
+    layer = data["adopted_layer"]
     assert layer["alternate"] == "geonode:pcat_42_9" and layer["unreviewed"] is True
     assert "Catchments of W4 line" in layer["title"]  # wrapped as data where the envelope is on
     say = data["say_to_user"]
-    assert "Promoted catchments" in say and "snapshot" in say and "unreviewed" in say
+    assert "Adopted catchments" in say and "snapshot" in say and "unreviewed" in say
     assert data["ui_url"].endswith(MAP_URL) and "CONFIRMED" in data["rule"]
 
 
@@ -1542,9 +1542,9 @@ async def test_promote_catchments_is_refused_for_an_unconfirmed_line_and_says_a_
             },
         )
     )
-    data = _tool_json(await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9}))
+    data = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
     assert data["outcome"] == "refused" and data["error_code"] == "NOT_CONFIRMED" and data["http_status"] == 409
-    assert data["say_to_user"].startswith("Promotion refused: Confirm the line first: ")
+    assert data["say_to_user"].startswith("Adoption refused: Confirm the line first: ")
     assert "Ask the user to check and confirm the line in the browser" in data["say_to_user"]
     assert data["ui_url"].endswith(MAP_URL)
 
@@ -1558,24 +1558,24 @@ async def test_promote_catchments_again_asks_the_user_first_and_reads_the_change
                 409,
                 json={
                     "error_code": "PROMOTED_ALREADY",
-                    "detail": "This line's catchments are already the layer 'Catchments of W4 line', promoted on 17-11-26. "
-                    "Promoting again replaces its contents with the catchments as they are now; send replace: true to go "
+                    "detail": "This line's catchments are already the layer 'Catchments of W4 line', adopted on 17-11-26. "
+                    "Adopting again replaces its contents with the catchments as they are now; send replace: true to go "
                     "ahead.",
                     "promoted_layer": _promoted(line_changed_since=True, sentences=[CHANGED, AGENT_MARK]),
                 },
             ),
             httpx.Response(
                 200,
-                json={"promoted_layer": _promoted(promotions=2), "replaced": True, "method": "Promoted from ..."},
+                json={"promoted_layer": _promoted(promotions=2), "replaced": True, "method": "Adopted from ..."},
             ),
         ]
     )
-    refused = _tool_json(await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9}))
-    assert refused["error_code"] == "PROMOTED_ALREADY" and refused["promoted_layer"]["line_changed_since"] is True
+    refused = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert refused["error_code"] == "ADOPTED_ALREADY" and refused["adopted_layer"]["line_changed_since"] is True
     assert "Ask the user" in refused["say_to_user"] and "replace=true" in refused["say_to_user"]
     assert "the line has changed since" in refused["say_to_user"] and "print" not in refused["say_to_user"]
     done = _tool_json(
-        await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9, "replace": True})
+        await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9, "replace": True})
     )
     assert json.loads(post.calls[1].request.content) == {"replace": True}
     assert done["outcome"] == "replaced" and "replaced the contents of" in done["say_to_user"]
@@ -1589,8 +1589,8 @@ async def test_promote_get_delineation_reads_the_same_mark(_server):
     data = _tool_json(
         await _call_as_caller(_server, "get_delineation", {"project_id": 42, "delineation_id": 9, "timeout_seconds": 0})
     )
-    assert data["promoted_layer"]["line_changed_since"] is True
-    assert "W4 line" in data["promoted_layer"]["line_name"]
+    assert data["adopted_layer"]["line_changed_since"] is True
+    assert "W4 line" in data["adopted_layer"]["line_name"]
     assert CHANGED in data["say_to_user"] and AGENT_MARK in data["say_to_user"]
     assert "geonode:pcat_42_9" in data["say_to_user"]
 
@@ -1602,4 +1602,4 @@ async def test_promote_get_delineation_of_a_line_never_promoted_says_nothing_of_
     data = _tool_json(
         await _call_as_caller(_server, "get_delineation", {"project_id": 42, "delineation_id": 9, "timeout_seconds": 0})
     )
-    assert data["promoted_layer"] is None and "promoted" not in data["say_to_user"]
+    assert data["adopted_layer"] is None and "adopted" not in data["say_to_user"].lower()

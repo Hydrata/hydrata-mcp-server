@@ -56,7 +56,7 @@ WRITES = {
     "delineate_catchments": False,  # a delineation (unreviewed until a person confirms); never destructive
     "use_catchments_as_boundary": False,  # a new boundary input; nothing is overwritten
     "propose_drainage_correction": False,  # a proposal a person accepts on the map; nothing is applied (TASK-4467)
-    "promote_catchments": False,  # a new layer, or a replace the user said yes to (replace=true); TASK-4469
+    "adopt_catchments": False,  # a new layer, or a replace the user said yes to (replace=true); TASK-4469
     "convert_terrain_datum": False,  # makes a shifted copy; the source terrain is kept
     "finalize_terrain_upload": False,
     "presign_terrain_upload": False,
