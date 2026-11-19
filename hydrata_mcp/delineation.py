@@ -56,6 +56,8 @@ BOUNDARY_RULE = (
     "minimum). The line itself is not open."
 )
 PERSON_ONLY = "Only a person can tick or check a diversion, or confirm a delineation."
+# TASK-4545: a run on a confirmed line replaces the result a person confirmed (the Catchments pane's words before Run again)
+CONFIRMED_LAPSES = "This line is confirmed. Running it again lapses the confirmation."
 # TASK-4456 (epic 4445 W2.7): the terrain's drainage analysis, being prepared or out of date. The API's ``drainage_analysis``
 # carries the sentence (a line's read for its run's grid; the estimate per grid); these are the same words, for an API that
 # sends a state without one.
@@ -802,11 +804,18 @@ async def _change(
             raise ToolError(f"Hydrata API returned {status} for POST {base}run/: {str(body)[:300]}")
         if status >= 400:
             result = _refused(body, status, f"the {MODE_WORDS[mode]} run", project_id, delineation_id)
+            say = result.pop("say_to_user")
+            if status == 403:
+                # the person is sent to the browser to run it: when the line is confirmed, tell them what that costs
+                line_doc, read_status = await client.get_with_status(base)
+                if read_status == 200 and (line_doc.get("delineation") or {}).get("confirmed"):
+                    result["confirmed"] = True
+                    say += f" {CONFIRMED_LAPSES}"
             await _hand_back(
                 result,
                 project_id,
                 {"http_status": status},
-                result.pop("say_to_user"),
+                say,
                 panel="catchments",
                 line=delineation_id,
             )
@@ -860,6 +869,10 @@ async def _change(
                 )
             else:
                 parts.append("Fast screen running again.")
+            # the run's own answer holds the line as it stood when the run started; a copy leaves its source confirmed
+            if copy_id is None and (body.get("delineation") or {}).get("confirmed"):
+                result["confirmation_lapses"] = True
+                parts.append(CONFIRMED_LAPSES)
         else:
             result["outcome"] = "cannot_run"
             parts.append(

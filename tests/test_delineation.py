@@ -504,6 +504,78 @@ async def test_delineate_with_an_id_and_mode_full_where_the_site_has_no_lane_rel
     assert "did not start: " + NO_LANE + " Result unchanged." in data["say_to_user"]
 
 
+# TASK-4545 (epic 4445 W7.6.5): a run on a confirmed line lapses its confirmation, and the result says so in the pane's words
+CONFIRMED_LAPSES = "This line is confirmed. Running it again lapses the confirmation."
+CONFIRMED = {"confirmed": True, "confirmed_by": "engineer", "confirmed_at": "2026-11-17T09:00:00+00:00"}
+
+
+@respx.mock
+async def test_a_run_on_a_confirmed_line_says_the_confirmation_lapses(_server):
+    _mock_project()
+    running = _job("running", "full", runs_on="batch")
+    started = _summary(running)
+    started["delineation"] = {**started["delineation"], **CONFIRMED}  # as it stood when the run started
+    respx.post(RUN).mock(return_value=httpx.Response(202, json=started))
+    respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json=_estimate()))
+    read = respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(job=running)))
+    data = _tool_json(
+        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+    )
+    assert data["outcome"] == "started" and data["confirmation_lapses"] is True
+    assert CONFIRMED_LAPSES in data["say_to_user"]
+    assert read.call_count == 1  # read from the run's own answer: no extra read
+
+
+@respx.mock
+async def test_a_refused_run_on_a_confirmed_line_carries_the_same_sentence_for_the_person(_server):
+    _mock_project()
+    detail = "Only a person in the browser can change this delineation: a person made it or has confirmed it."
+    respx.post(RUN).mock(return_value=httpx.Response(403, json={"error_code": "AGENT_KEY_SCOPE", "detail": detail}))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_confirmed_doc()))
+    data = _tool_json(
+        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+    )
+    assert data["outcome"] == "refused" and data["confirmed"] is True
+    say = data["say_to_user"]
+    assert detail in say and "ask the user" in say.lower() and say.endswith(CONFIRMED_LAPSES)
+
+
+@respx.mock
+async def test_a_run_on_a_line_that_is_not_confirmed_says_nothing_of_a_confirmation_lapsing(_server):
+    _mock_project()
+    running = _job("running", "full", runs_on="batch")
+    respx.post(RUN).mock(return_value=httpx.Response(202, json=_summary(running)))
+    respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json=_estimate()))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(job=running)))
+    data = _tool_json(
+        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+    )
+    assert "confirmation_lapses" not in data and "lapses" not in data["say_to_user"]
+
+
+@respx.mock
+async def test_a_refused_run_on_a_persons_unconfirmed_line_says_nothing_of_a_confirmation_lapsing(_server):
+    _mock_project()
+    detail = "Only a person in the browser can change this delineation: a person made it or has confirmed it."
+    respx.post(RUN).mock(return_value=httpx.Response(403, json={"error_code": "AGENT_KEY_SCOPE", "detail": detail}))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "quick"})
+    )
+    assert data["outcome"] == "refused" and "confirmed" not in data and "lapses" not in data["say_to_user"]
+
+
+@respx.mock
+async def test_a_refused_run_whose_line_cannot_be_read_is_still_the_refusal(_server):
+    _mock_project()
+    respx.post(RUN).mock(return_value=httpx.Response(403, json={"error_code": "AGENT_KEY_SCOPE", "detail": "No."}))
+    respx.get(ONE).mock(return_value=httpx.Response(404, json={"detail": "Not found."}))
+    data = _tool_json(
+        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+    )
+    assert data["outcome"] == "refused" and "lapses" not in data["say_to_user"]
+
+
 # ---------------------------------------------------------------------------
 # get_delineation: waits like get_terrain_merge
 # ---------------------------------------------------------------------------
