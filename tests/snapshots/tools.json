@@ -83,7 +83,7 @@
           "type": "integer"
         },
         "observations": {
-          "description": "Observations, each the API write body: subtype (flood_mark | timed_level | gauge_record | dry_point), name (required: a short label, e.g. the survey mark id), geometry {type: Point, coordinates: [lon, lat]} (or native x/y with srid), value_kind (stage | depth) + stage_m or depth_m, uncertainty_grade (H/M/L) or uncertainty_m, bound (exact | at_least | at_most), observed_start/observed_end (ISO 8601; naive times read in entry_timezone, by default the project's own zone), mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say which flood it is: a date window (observed_start / observed_end) or flood_name (ask the user; never guess a date); a gauge_record needs data_timeseries_id (+ gauge_zero_m). At most 200 per call",
+          "description": "Observations, each the API write body: subtype (flood_mark | timed_level | gauge_record | dry_point), name (required: a short label, e.g. the survey mark id), geometry {type: Point, coordinates: [lon, lat]} (or native x/y with srid), value_kind (stage | depth) + stage_m or depth_m, uncertainty_grade (H/M/L) or uncertainty_m, bound (exact | at_least | at_most), observed_start/observed_end (ISO 8601; naive times read in entry_timezone, by default the project's own zone), mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say which flood it is: a date window (observed_start / observed_end) or flood_name (ask the user; never guess a date); a gauge_record needs data_timeseries_id (+ gauge_zero_m). At most 100 per call",
           "items": {
             "additionalProperties": true,
             "type": "object"
@@ -203,8 +203,8 @@
           "type": "integer"
         },
         "timeout_seconds": {
-          "default": 180,
-          "description": "How long this call keeps polling the upload before it returns `timed_out` (default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). 0 = one status read, no waiting.",
+          "default": 110,
+          "description": "How long this call keeps polling the upload before it returns `timed_out` (default 110, ceiling 110: hydrata.com's edge cuts a longer silent call). 0 = one status read, no waiting.",
           "type": "integer"
         }
       },
@@ -254,8 +254,8 @@
           "type": "integer"
         },
         "timeout_seconds": {
-          "default": 180,
-          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). 0 = one status read, no waiting.",
+          "default": 110,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 110, ceiling 110: hydrata.com's edge cuts a longer silent call). 0 = one status read, no waiting.",
           "type": "integer"
         }
       },
@@ -412,8 +412,8 @@
           "type": "integer"
         },
         "timeout_seconds": {
-          "default": 120,
-          "description": "How long to wait for the map layer (clamped to 200)",
+          "default": 110,
+          "description": "How long to wait for the map layer (clamped to 110)",
           "type": "integer"
         },
         "title": {
@@ -671,8 +671,8 @@
           "type": "string"
         },
         "timeout_seconds": {
-          "default": 180,
-          "description": "How long this call keeps polling the import before it returns `timed_out` (default 180, ceiling 200). 0 = start it and return at once; then call get_terrain.",
+          "default": 110,
+          "description": "How long this call keeps polling the import before it returns `timed_out` (default 110, ceiling 110). 0 = start it and return at once; then call get_terrain.",
           "type": "integer"
         },
         "title": {
@@ -1125,8 +1125,8 @@
           "type": "integer"
         },
         "timeout_seconds": {
-          "default": 180,
-          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200). 0 = one read, no waiting.",
+          "default": 110,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 110, ceiling 110). 0 = one read, no waiting.",
           "type": "integer"
         },
         "wait_for_full_run": {
@@ -1304,7 +1304,7 @@
       "readOnlyHint": true,
       "title": "Poll a run's status"
     },
-    "description": "Status of a simulation run, optionally waiting for it to move.\n\nUse this instead of get_run. Returns: id, status, `phase`, status_detail,\nprogress_pct (0-100), eta_seconds, error_message, compute_backend, `stability`\n(a complete run's, see get_run) and `say_to_user`.\n\nFOLLOWING A RUN FROM CHAT: call with wait_seconds=180. The call returns as soon\nas the status, phase or progress (5 points) changes, or after 180 s, whichever is\nfirst. Then RELAY `say_to_user` to the person (one short line after every call) and call\nagain. Do not sleep or wait yourself between calls: the wait happens inside this\ncall. After about 10 minutes of this in one turn, stop and tell the person to ask\nyou for the status: you cannot watch the run between their messages, and Hydrata\nemails them when it finishes. If the answer has `token_refresh_pending: true`, your sign-in\nis being refreshed: do not call again at once, follow `next_step`.\n\n`phase` is never empty: it is `status`, except `preparing_inputs` while a\n`computing` run has no progress yet (it is downloading its input package\nand building the domain — minutes on a big model; this is NOT a stall).\nTerminal states: complete, error, cancelled. A waiting call returns at once\non a terminal state.",
+    "description": "Status of a simulation run, optionally waiting for it to move.\n\nUse this instead of get_run. Returns: id, status, `phase`, status_detail,\nprogress_pct (0-100), eta_seconds, error_message, compute_backend, `stability`\n(a complete run's, see get_run) and `say_to_user`.\n\nFOLLOWING A RUN FROM CHAT: call with wait_seconds=110. The call returns as soon\nas the status, phase or progress (5 points) changes, or after 110 s, whichever is\nfirst. Then RELAY `say_to_user` to the person (one short line after every call) and call\nagain. Do not sleep or wait yourself between calls: the wait happens inside this\ncall. After about 10 minutes of this in one turn, stop and tell the person to ask\nyou for the status: you cannot watch the run between their messages, and Hydrata\nemails them when it finishes. If the answer has `token_refresh_pending: true`, your sign-in\nis being refreshed: do not call again at once, follow `next_step`.\n\n`phase` is never empty: it is `status`, except `preparing_inputs` while a\n`computing` run has no progress yet (it is downloading its input package\nand building the domain — minutes on a big model; this is NOT a stall).\nTerminal states: complete, error, cancelled. A waiting call returns at once\non a terminal state.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1314,7 +1314,7 @@
         },
         "wait_seconds": {
           "default": 0,
-          "description": "Wait up to this many seconds for the run to move before answering (max 180, the proven ceiling; larger values are clamped). Returns early when the status, the phase or the progress (by 5 points) changes. Default 0: answer at once.",
+          "description": "Wait up to this many seconds for the run to move before answering (max 110, the ceiling; larger values are clamped). Returns early when the status, the phase or the progress (by 5 points) changes. Default 0: answer at once.",
           "type": "integer"
         }
       },
@@ -1390,8 +1390,8 @@
           "description": "The terrain ID from finalize_terrain_upload. Omit to follow the project's newest terrain."
         },
         "timeout_seconds": {
-          "default": 180,
-          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). 0 = one status read, no waiting.",
+          "default": 110,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 110, ceiling 110: hydrata.com's edge cuts a longer silent call). 0 = one status read, no waiting.",
           "type": "integer"
         }
       },
@@ -1429,8 +1429,8 @@
           "type": "integer"
         },
         "timeout_seconds": {
-          "default": 180,
-          "description": "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200). 0 = one status read, no waiting.",
+          "default": 110,
+          "description": "How long this call keeps polling before it returns `timed_out` (default 110, ceiling 110). 0 = one status read, no waiting.",
           "type": "integer"
         }
       },
@@ -2097,13 +2097,13 @@
       "readOnlyHint": false,
       "title": "Start a simulation run (spends compute)"
     },
-    "description": "Start a flood simulation run for a built scenario.\n\nWAIT FOR THE GO-AHEAD: this spends compute, so before you call it give the\nperson the ui_url and WAIT for their explicit go-ahead to start the run;\nreviewed inputs are not a go-ahead, and never start a run on your own say-so.\n\nNeeds a launch-level agent key (a run spends compute); a read or draft key\ngets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the\nsite's Agent keys page (/agents/).\n\nThe scenario must be in 'built' status. Returns 202 with the new run.\nThe run transitions through: built → queued → computing → processing → complete.\n\nAfter starting, tell the person how they will hear about the end (`say_to_user` says it:\nyou cannot watch the run after your reply; Hydrata emails them when it completes or\nfails). If the run is estimated at under about 10 minutes, keep following it with\nget_run_status(wait_seconds=180) and report the completion yourself in the same turn.\nPoll get_run_status to track progress. Returns 409\nif the scenario is not in the correct state. The returned run record has\nits presigned `s3_*_url` links elided (6-hour capabilities).\n\nINPUT REVIEW (Hydrata enforces it): while an input you wrote is not reviewed by\nthe user, the run is not started - `outcome` `unreviewed_inputs`,\n`error_code` UNREVIEWED_INPUTS, a `ui_url` to the scenario's review screen.\nA run built from inputs other than the ones reviewed now answers\n`outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with\nrebuild=true, then start it again.\n\nHOW THE RUN IS PAID: a started run's answer carries `quote` (what the\nuser is charged; `0.00` inside the daily free band), `quote_list_price` (the run's\nreal price, the same figure the map and billing show) and `paid_by` (`free_band` or\n`credit`), and `say_to_user` states them. Say that figure, never another: the only\nprice you can quote is `quote` / `quote_list_price` (built run) or `quote_estimate`\n(before a build, always called an estimate).\n\nSPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not\nfit your agent key's monthly spend limit (default $0), or that Hydrata\ncannot price, is NOT started. The result is then a normal (non-error)\nanswer with `outcome` `consent_required`, `error_code` CONSENT_REQUIRED,\n`quoted_cost_usd` and `consent_url`: give the user the link and the price\n(`say_to_user`). Only they can approve, in their browser. Then do NOT call\nstart_simulation again for this run: poll get_run_status(run_id) — the run\nleaves `built` once they press the button. (With consent_timeout_seconds > 0\nthis call polls the run itself and answers `outcome` `consented`, with the\nrun, if they approve within that time.)",
+    "description": "Start a flood simulation run for a built scenario.\n\nWAIT FOR THE GO-AHEAD: this spends compute, so before you call it give the\nperson the ui_url and WAIT for their explicit go-ahead to start the run;\nreviewed inputs are not a go-ahead, and never start a run on your own say-so.\n\nNeeds a launch-level agent key (a run spends compute); a read or draft key\ngets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key on the\nsite's Agent keys page (/agents/).\n\nThe scenario must be in 'built' status. Returns 202 with the new run.\nThe run transitions through: built → queued → computing → processing → complete.\n\nAfter starting, tell the person how they will hear about the end (`say_to_user` says it:\nyou cannot watch the run after your reply; Hydrata emails them when it completes or\nfails). If the run is estimated at under about 10 minutes, keep following it with\nget_run_status(wait_seconds=110) and report the completion yourself in the same turn.\nPoll get_run_status to track progress. Returns 409\nif the scenario is not in the correct state. The returned run record has\nits presigned `s3_*_url` links elided (6-hour capabilities).\n\nINPUT REVIEW (Hydrata enforces it): while an input you wrote is not reviewed by\nthe user, the run is not started - `outcome` `unreviewed_inputs`,\n`error_code` UNREVIEWED_INPUTS, a `ui_url` to the scenario's review screen.\nA run built from inputs other than the ones reviewed now answers\n`outcome` `run_invalidated` (RUN_INVALIDATED): build_scenario with\nrebuild=true, then start it again.\n\nHOW THE RUN IS PAID: a started run's answer carries `quote` (what the\nuser is charged; `0.00` inside the daily free band), `quote_list_price` (the run's\nreal price, the same figure the map and billing show) and `paid_by` (`free_band` or\n`credit`), and `say_to_user` states them. Say that figure, never another: the only\nprice you can quote is `quote` / `quote_list_price` (built run) or `quote_estimate`\n(before a build, always called an estimate).\n\nSPEND CONSENT (Hydrata enforces it; you cannot): a run whose quote does not\nfit your agent key's monthly spend limit (default $0), or that Hydrata\ncannot price, is NOT started. The result is then a normal (non-error)\nanswer with `outcome` `consent_required`, `error_code` CONSENT_REQUIRED,\n`quoted_cost_usd` and `consent_url`: give the user the link and the price\n(`say_to_user`). Only they can approve, in their browser. Then do NOT call\nstart_simulation again for this run: poll get_run_status(run_id) — the run\nleaves `built` once they press the button. (With consent_timeout_seconds > 0\nthis call polls the run itself and answers `outcome` `consented`, with the\nrun, if they approve within that time.)",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "consent_timeout_seconds": {
           "default": 0,
-          "description": "When the run needs the person's consent (CONSENT_REQUIRED), how long this call keeps polling the run for their click before it returns (ceiling 200). Default 0: return the consent link at once, so you can give it to them — they cannot press a button they have not been shown.",
+          "description": "When the run needs the person's consent (CONSENT_REQUIRED), how long this call keeps polling the run for their click before it returns (ceiling 110). Default 0: return the consent link at once, so you can give it to them — they cannot press a button they have not been shown.",
           "type": "integer"
         },
         "poll_interval_seconds": {

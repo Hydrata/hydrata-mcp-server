@@ -28,7 +28,7 @@ Keys and connections are listed, and revoked, on the same Agent keys page. A run
 
 ## Tools
 
-Version 0.2.2 exposes forty-six tools, all listed below; twenty of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
+Version 0.2.3 exposes forty-six tools, all listed below; twenty of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
 
 | Tool | Description |
 |------|-------------|
@@ -73,7 +73,7 @@ Version 0.2.2 exposes forty-six tools, all listed below; twenty of them only rea
 | `build_scenario` | Build the scenario package; shows the estimate first and needs `confirm=true` above 100,000 triangles; polls `computed_status` to built; never re-posts a build that is in flight or already built (`rebuild=true` to force one); surfaces the server's 422 refusals (MESH_TOO_LARGE, BOUNDARY_NO_EXTERNAL, MESH_REGION_UNITS_UNMARKED) verbatim; a missing/empty/perimeter-less boundary sends the human to the map to draw or fix it; summary = triangle count + re-priced cost |
 | `create_observation_layer` | Create a flood observation layer (project-level, never a scenario input) with its vertical datum (`terrain`, `AHD`, `EGM2008`, `ellipsoidal`, or `local` + `datum_offset_m`); waits for the map layer (`ready`, bounded); the link frames it in the Observations group |
 | `list_observations` | A project's flood observation layers, or one layer's observations — `fid`, subtype, stage/depth, sigma, bound, observed window in UTC, datum status (`unknown` = not scored), `photo_count` and `problems` |
-| `add_observations` | Add Flood marks, Timed levels, Gauge records and Dry points (up to 200 per call; `srid` for native coordinates, `entry_timezone` for naive times); the API validates each one, refused rows come back with the field that is wrong while the rest land |
+| `add_observations` | Add Flood marks, Timed levels, Gauge records and Dry points (up to 100 per call; `srid` for native coordinates, `entry_timezone` for naive times); the API validates each one, refused rows come back with the field that is wrong while the rest land |
 | `update_observation` | Edit one observation (PATCH of the fields given; validated against the stored observation) |
 | `delete_observation` | Delete one observation and its photos |
 | `add_observation_photo_link` | Attach a photo to an observation as a reference link only (stored, never fetched); a photo FILE is refused with the UI path — the engineer uploads files in the photo strip on the observation's form in the map |

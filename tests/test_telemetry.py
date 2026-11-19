@@ -413,8 +413,10 @@ class _Ctx:
     message = type("M", (), {"name": "list_projects", "arguments": {}})()
 
 
-@pytest.mark.parametrize(("elapsed", "outcome"), [(5, "invalid"), (289, "invalid"), (290, "broken"), (299, "broken")])
-async def test_tool_call_record_cancelled_call_is_broken_only_after_290s(capsys, monkeypatch, elapsed, outcome):
+# TASK-4514: the hydrata.com edge cuts a silent origin request at 120 s, so a cancel at or after 120 s
+# is our own slowness (broken); anything sooner is the client walking away (invalid).
+@pytest.mark.parametrize(("elapsed", "outcome"), [(5, "invalid"), (119, "invalid"), (120, "broken"), (299, "broken")])
+async def test_tool_call_record_cancelled_call_is_broken_only_after_120s(capsys, monkeypatch, elapsed, outcome):
     import asyncio
 
     start = 1000.0
@@ -425,7 +427,7 @@ async def test_tool_call_record_cancelled_call_is_broken_only_after_290s(capsys,
         return start if len(calls) == 1 else start + elapsed  # the start stamp, then every later read
 
     # Patch the recorder's own clock, never time.monotonic: the event loop reads that too, and on CI
-    # its read took the fake start stamp (the 290 s case came out "invalid").
+    # its read took the fake start stamp (the 290 s case came out "invalid" before TASK-4514).
     monkeypatch.setattr(telemetry, "_clock", fake_clock)
 
     async def cancelled(_context):
@@ -443,7 +445,8 @@ async def test_tool_call_record_cancelled_inside_a_wrapped_error_is_found_in_the
     wrapped = ToolError("Error calling tool")
     wrapped.__cause__ = asyncio.CancelledError()
     assert telemetry.classify_exception(wrapped, 3)[:3] == ("invalid", None, "CANCELLED")
-    assert telemetry.classify_exception(wrapped, 300)[0] == "broken"
+    assert telemetry.classify_exception(wrapped, 119)[0] == "invalid"
+    assert telemetry.classify_exception(wrapped, 120)[0] == "broken"
 
 
 @respx.mock

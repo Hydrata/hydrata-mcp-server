@@ -595,7 +595,7 @@ async def attach_input_layer(
     timeout_seconds: Annotated[
         int,
         "How long this call keeps polling the upload before it returns `timed_out` "
-        "(default 180, ceiling 200 — claude.ai cuts a tool call at 240 s). "
+        "(default 110, ceiling 110: hydrata.com's edge cuts a longer silent call). "
         "0 = one status read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,

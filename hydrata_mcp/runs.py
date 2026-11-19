@@ -34,7 +34,7 @@ async def start_simulation(
     consent_timeout_seconds: Annotated[
         int,
         "When the run needs the person's consent (CONSENT_REQUIRED), how long this "
-        "call keeps polling the run for their click before it returns (ceiling 200). "
+        "call keeps polling the run for their click before it returns (ceiling 110). "
         "Default 0: return the consent link at once, so you can give it to them — "
         "they cannot press a button they have not been shown.",
     ] = 0,
@@ -56,7 +56,7 @@ async def start_simulation(
     After starting, tell the person how they will hear about the end (`say_to_user` says it:
     you cannot watch the run after your reply; Hydrata emails them when it completes or
     fails). If the run is estimated at under about 10 minutes, keep following it with
-    get_run_status(wait_seconds=180) and report the completion yourself in the same turn.
+    get_run_status(wait_seconds=110) and report the completion yourself in the same turn.
     Poll get_run_status to track progress. Returns 409
     if the scenario is not in the correct state. The returned run record has
     its presigned `s3_*_url` links elided (6-hour capabilities).
@@ -250,7 +250,7 @@ async def _await_consent(scenario_id, refusal: dict, timeout_seconds, poll_inter
 # ---------------------------------------------------------------------------
 # Tool 5: get_run_status
 # ---------------------------------------------------------------------------
-RUN_WAIT_MAX_SECONDS = 180  # TASK-4063's proven ceiling (nginx /mcp/ 300 s; a 180 s call survived claude.ai)
+RUN_WAIT_MAX_SECONDS = 110  # TASK-4514: fits under the hydrata.com edge's origin timeout (Decision 873)
 RUN_TERMINAL_STATUSES = ("complete", "error", "cancelled")
 RUN_WAIT_PROGRESS_POINTS = 5.0  # a long-poll returns early when progress moves this far
 RUN_WAIT_POLL_INTERVAL_SECONDS = 5.0
@@ -271,8 +271,8 @@ async def get_run_status(
     run_id: Annotated[int, "The run ID"],
     wait_seconds: Annotated[
         int,
-        "Wait up to this many seconds for the run to move before answering (max 180, "
-        "the proven ceiling; larger values are clamped). Returns early when the status, "
+        "Wait up to this many seconds for the run to move before answering (max 110, "
+        "the ceiling; larger values are clamped). Returns early when the status, "
         "the phase or the progress (by 5 points) changes. Default 0: answer at once.",
     ] = 0,
 ) -> str:
@@ -282,8 +282,8 @@ async def get_run_status(
     progress_pct (0-100), eta_seconds, error_message, compute_backend, `stability`
     (a complete run's, see get_run) and `say_to_user`.
 
-    FOLLOWING A RUN FROM CHAT: call with wait_seconds=180. The call returns as soon
-    as the status, phase or progress (5 points) changes, or after 180 s, whichever is
+    FOLLOWING A RUN FROM CHAT: call with wait_seconds=110. The call returns as soon
+    as the status, phase or progress (5 points) changes, or after 110 s, whichever is
     first. Then RELAY `say_to_user` to the person (one short line after every call) and call
     again. Do not sleep or wait yourself between calls: the wait happens inside this
     call. After about 10 minutes of this in one turn, stop and tell the person to ask
@@ -328,7 +328,7 @@ async def get_run_status(
                 data["next_step"] = TOKEN_REFRESH_NEXT_STEP.format(tool="get_run_status")
             elif data.get("status") not in RUN_TERMINAL_STATUSES:
                 data["next_step"] = (
-                    "Relay say_to_user now, then call get_run_status again with wait_seconds=180. "
+                    "Relay say_to_user now, then call get_run_status again with wait_seconds=110. "
                     "After about 10 minutes in this turn, stop and tell the person to ask you for the status."
                 )
     return json.dumps(_elide_presigned(data), indent=2)

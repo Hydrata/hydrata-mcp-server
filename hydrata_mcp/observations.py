@@ -54,9 +54,11 @@ OBSERVATION_PHOTO_KEYS = frozenset(
         "photo_base64",
     }
 )
-# One add_observations call POSTs one observation at a time; prod's /mcp/ proxy
-# cuts a call at 300 s, so a batch is bounded well inside that.
-ADD_OBSERVATIONS_MAX = 200
+# One add_observations call POSTs one observation at a time; hydrata.com's edge cuts
+# a silent call at 120 s (TASK-4514), so a batch is bounded to stay inside that.
+# TASK-4529, measured 18-11-26 box-local on the prod-shaped sandbox: ~0.72 s per row,
+# 200 rows 145.4 s (over the edge), 100 rows 72.0 s.
+ADD_OBSERVATIONS_MAX = 100
 
 
 def _photo_refusal(what: str) -> ToolError:
@@ -120,7 +122,7 @@ async def create_observation_layer(
         "Metres ADDED to every stage on the layer to bring it onto the terrain datum. "
         "Required for vertical_datum=local; null means 0 otherwise",
     ] = None,
-    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 200)"] = 120,
+    timeout_seconds: Annotated[int, "How long to wait for the map layer (clamped to 110)"] = 110,
     poll_interval_seconds: Annotated[float, "Seconds between layer polls"] = 2.0,
 ) -> str:
     """Create a flood observation layer in a project and wait for its map layer.
@@ -255,7 +257,7 @@ async def add_observations(
         "mark_type, flood_name, source, licence, notes; a flood_mark or dry_point must say "
         "which flood it is: a date window (observed_start / observed_end) or flood_name "
         "(ask the user; never guess a date); a gauge_record needs "
-        "data_timeseries_id (+ gauge_zero_m). At most 200 per call",
+        "data_timeseries_id (+ gauge_zero_m). At most 100 per call",
     ],
     srid: Annotated[
         int | None,
@@ -283,7 +285,7 @@ async def add_observations(
     if len(observations) > ADD_OBSERVATIONS_MAX:
         raise ToolError(
             f"{len(observations)} observations in one call; send at most {ADD_OBSERVATIONS_MAX} "
-            "per call (the call must finish inside the proxy's 300 s)"
+            "per call (the call must finish inside the edge's 120 s)"
         )
     for index, row in enumerate(observations):
         if not isinstance(row, dict):

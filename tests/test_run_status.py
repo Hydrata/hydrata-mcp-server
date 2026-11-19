@@ -150,8 +150,10 @@ class TestWaitSeconds:
         respx.get(f"{BASE}/runs/9/status/").mock(return_value=_status(progress_pct=20, eta_seconds=600))
         with _Clock(_server) as clock:
             data = json.loads(await _server.get_run_status(run_id=9, wait_seconds=9999))
-        assert data["timed_out"] is True and data["waited_seconds"] == 180.0 and clock.t == 180.0
-        assert "wait_seconds=180" in data["next_step"] and "10 minutes" in data["next_step"]
+        assert (
+            data["timed_out"] is True and data["waited_seconds"] == 110.0 and clock.t == 110.0
+        )  # 180 asked, clamped (TASK-4514)
+        assert "wait_seconds=110" in data["next_step"] and "10 minutes" in data["next_step"]
         assert "20%" in data["say_to_user"]
 
 

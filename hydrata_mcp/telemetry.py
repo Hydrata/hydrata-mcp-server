@@ -13,8 +13,8 @@ systemd journals stdout; promtail ships it (job=hydrata-mcp, kind label) to Loki
   refusal. ``HydrataAPIError`` is raised for EVERY 4xx and 5xx; the class alone says nothing.
   ok / refused (a 4xx, the kill-switch 503 AGENT_PAUSED, a returned ``http_status`` >= 400) /
   invalid (unknown tool, bad arguments, a tool-side refusal with no status, a call the client
-  cancelled in under 290 s) / broken (any other 5xx, timeout, connect error, an unexpected
-  exception in our own code, a cancelled call that ran 290 s or more).
+  cancelled in under 120 s) / broken (any other 5xx, timeout, connect error, an unexpected
+  exception in our own code, a cancelled call that ran 120 s or more).
 * NO VALUES. Never a tool result, argument value, token or presigned URL. Ids (project,
   scenario, run) are the only argument-derived fields. Argument samples are a separate,
   capped record (``kind=sample``).
@@ -57,9 +57,10 @@ CLIENT_TEXT_MAX = 200
 REQUEST_ID_MAX = 64
 AGENT_PAUSED = "AGENT_PAUSED"
 CANCELLED = "CANCELLED"
-# nginx proxy_read_timeout is 300 s: a call cancelled at or after this was cut off by our own
-# slowness; anything sooner is the client walking away (TASK-4082).
-CANCEL_BROKEN_AFTER_S = 290
+# hydrata.com's CloudFront edge cuts a silent origin request at 120 s (TASK-4514; it was nginx's
+# five-minute proxy cut): a call cancelled at or after this was cut off by our own slowness; anything sooner is
+# the client walking away (TASK-4082).
+CANCEL_BROKEN_AFTER_S = 120
 
 OK, REFUSED, INVALID, BROKEN = "ok", "refused", "invalid", "broken"
 

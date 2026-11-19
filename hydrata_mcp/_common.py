@@ -309,7 +309,7 @@ mcp = FastMCP(
         "the user makes). "
         "FOLLOWING A RUN: get_run_status returns say_to_user (stage, percent, time left); relay it to the "
         "person after every poll, never poll silently. To follow a run from chat call get_run_status with "
-        "wait_seconds=180: the wait happens inside the call (it returns early when the status, phase or "
+        "wait_seconds=110: the wait happens inside the call (it returns early when the status, phase or "
         "progress moves), so never sleep between calls; post one line after each call; after about 10 "
         "minutes in one turn stop and tell the person to ask you for status. You cannot watch a run "
         "between turns, so when you start a run say up front how the person will hear: "

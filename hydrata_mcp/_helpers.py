@@ -132,14 +132,15 @@ def _elide_presigned(value):
 # Bounded polling — ONE loop for every tool that waits on the platform
 # (get_terrain, attach_input_layer, build_scenario).
 #
-# Why bounded, and why 180/200 (TASK-4063): prod's nginx proxies /mcp/ with a 300 s
-# proxy_read_timeout (geonode-https.j2). A tool call cut by the proxy returns
+# Why bounded, and why 110 (TASK-4514, epic 4509 Decision 873; was 180/200 from
+# TASK-4063): hydrata.com sits behind a CloudFront edge whose origin response
+# timeout is 120 s, the account quota. A tool call cut by the edge returns
 # NOTHING to the agent, so a call that stops early, reports `timed_out` with
 # the last status and lets the agent re-call is strictly better than a longer
 # one. Values above the ceiling are clamped rather than refused.
 # ---------------------------------------------------------------------------
-POLL_DEFAULT_TIMEOUT_SECONDS = 180
-POLL_MAX_TIMEOUT_SECONDS = 200
+POLL_DEFAULT_TIMEOUT_SECONDS = 110
+POLL_MAX_TIMEOUT_SECONDS = 110
 
 
 def _token_cap_spent() -> bool:
@@ -174,7 +175,7 @@ async def _poll_until(fetch, is_terminal, timeout_seconds, poll_interval_seconds
     least once (timeout 0 = one read, no wait); a terminal value on the last
     read wins over the bound. The sleep is min(interval, remaining) — the W1a
     round-1 sweep's Tier-A finding: an uncapped interval longer than what was
-    left overshot the bound (and prod's 300 s proxy cut).
+    left overshot the bound (and the edge's cut).
     TASK-4204: the bound is also capped at the caller's token ``exp`` minus 20 s (client.token_wait_budget), so
     a long wait ends with the same resumable `timed_out` answer before the token ages out.
     """

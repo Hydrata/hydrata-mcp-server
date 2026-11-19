@@ -934,7 +934,7 @@ async def get_delineation(
     delineation_id: Annotated[int, "`delineation_id` from delineate_catchments"],
     timeout_seconds: Annotated[
         int,
-        "How long this call keeps polling before it returns `timed_out` (default 180, ceiling 200). "
+        "How long this call keeps polling before it returns `timed_out` (default 110, ceiling 110). "
         "0 = one read, no waiting.",
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
