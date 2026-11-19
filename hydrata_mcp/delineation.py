@@ -1219,9 +1219,9 @@ async def use_catchments_as_boundary(
 # Epic 4445 W6.2 (TASK-4469; D8, D16): adopt a confirmed line's catchments as a GeoNode layer
 # ---------------------------------------------------------------------------
 ADOPT_RULE = (
-    "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains). It does "
-    "not follow later changes; adopting again replaces its contents. Only a person confirms a line. A layer an agent "
-    "adopts is unreviewed until a person adopts it again."
+    "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains) and the "
+    "line itself, drawn as the Catchments panel drew them. It does not follow later changes; adopting again replaces "
+    "its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
 )
 
 

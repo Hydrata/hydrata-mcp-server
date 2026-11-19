@@ -302,9 +302,9 @@
    "new": "Warnings, relay every one: "
   },
   {
-   "name": "PROMOTE_RULE",
+   "name": "ADOPT_RULE",
    "old": "A promoted layer is a snapshot of a CONFIRMED line's catchments, published as a layer of the project (name, chainage, area and where each drains), to style, print and share like any other layer. It does not follow later changes to the line; it is marked 'the line has changed since', and promoting again replaces its contents. Only a person confirms a line, in the browser. A layer an agent promotes is marked as made by an agent and unreviewed until a person promotes it again.",
-   "new": "A adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains). It does not follow later changes; adopting again replaces its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
+   "new": "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains) and the line itself, drawn as the Catchments panel drew them. It does not follow later changes; adopting again replaces its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
   },
   {
    "name": "adopt_catchments (not confirmed)",
