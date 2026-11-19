@@ -38,26 +38,22 @@ BOUNDARY = f"{ONE}boundary/"
 LINE = [[151.7280, -32.9100], [151.7300, -32.9120], [151.7330, -32.9125]]
 MAP_URL = "/catalogue/#/map/77?panel=catchments&line=9"
 
-NO_LANE = (
-    "This terrain is too large to be worked out on the web server, and the cloud compute that large terrains "
-    "need is not set up on this site yet. Nothing was run."
-)
-# the API's own sentences (TASK-4405 wording: each leads with the chainage it applies to)
-WARN_CREST = (
-    "CH 0+100 to CH 0+320: 220 m of the 900 m line is on a ridge or built ground (ground falls away on both sides). "
-    "Water cannot reach the line there, so those catchments are merged or wrong. Redraw the line at the toe or in the "
-    "channel."
-)
-WARN_SHARE = (
-    "CH 5+081 (high point): water from the catchment draining at CH 5+040 spills into the one draining at CH 5+300 "
-    "after ponding 0.12 m. Both areas are uncertain."
-)
-WARN_EDGE = (
-    "CH 5+300: the terrain ends inside the catchment draining here, so its area is at least 3.2 ha. Add terrain beyond "
-    "the edge for the full area."
-)
+NO_LANE = "Terrain too large for the web server, and cloud compute is not set up on this site. Nothing was run."
+# the API's own sentences (TASK-4535: each leads with the chainage it applies to; what to do is `fix_sentence` beside it)
+WARN_CREST = "CH 0+100 to CH 0+320: 220 m on a ridge. Catchments there are wrong."
+FIX_CREST = "Redraw at the toe or channel."
+WARN_SHARE = "CH 5+081: CH 5+040 spills into CH 5+300 after 0.12 m ponding. Areas uncertain."
+WARN_EDGE = "CH 5+300: terrain ends inside this catchment. Area is at least 3.2 ha."
+FIX_EDGE = "Add terrain past the edge."
 WARNINGS = [
-    {"code": "line_on_a_crest", "sentence": WARN_CREST, "distance_m": 100.0, "chainage_m": 100.0, "catchments": []},
+    {
+        "code": "line_on_a_crest",
+        "sentence": WARN_CREST,
+        "fix_sentence": FIX_CREST,
+        "distance_m": 100.0,
+        "chainage_m": 100.0,
+        "catchments": [],
+    },
     {
         "code": "neighbours_can_share_water",
         "sentence": WARN_SHARE,
@@ -69,6 +65,7 @@ WARNINGS = [
     {
         "code": "catchment_cut_by_terrain_edge",
         "sentence": WARN_EDGE,
+        "fix_sentence": FIX_EDGE,
         "distance_m": 300.0,
         "chainage_m": 5300.0,
         "catchments": [102],
@@ -241,7 +238,7 @@ def _estimate(full_can_run=True):
         "expected_seconds": {"low": 1, "high": 45},
         "can_take_hours": False,
         "may_move_to_batch": False,
-        "note": "Flat or built-up ground is slower than sloping ground.",
+        "note": "Flat or built-up ground is slower.",
     }
     full = dict(quick, mode="full", cells=13_700_000, working_resolution_m=1.0, runs_on="batch")
     full.update(
@@ -444,9 +441,9 @@ async def test_delineate_with_an_id_says_a_persons_ticks_were_reapplied_and_need
         )
     )
     say = data["say_to_user"]
-    assert "re-applied" in say and "check" in say and "only a person" in say.lower()
+    assert "1 ticked diversion to check again. Only a person can tick or check a diversion, or confirm" in say
     assert "re-run" not in say  # a settings change is a regroup, not a re-run (TASK-4424)
-    assert "after the catchments changed" in say
+    assert "Give the user the link. It cannot be confirmed until they are checked." in say
     assert data["diversions_to_check"] == 1
 
 
@@ -487,7 +484,7 @@ async def test_delineate_with_an_id_and_mode_full_starts_the_full_run_and_never_
         and data["estimate"]["full"]["runs_on"] == "batch"
     )
     say = data["say_to_user"]
-    assert "many hours" in say and "High resolution" in say and "close the map" in say
+    assert "up to about 24 h" in say and "High resolution started on AWS Batch" in say and "close the map" in say
     # the shown result is already high resolution (not coarsened), so it ran in place: no copy
     assert data["created_copy"] is False and data["delineation_id"] == 9 and "copy" not in say
     assert "stays usable" in say
@@ -504,7 +501,7 @@ async def test_delineate_with_an_id_and_mode_full_where_the_site_has_no_lane_rel
         await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
     )
     assert data["outcome"] == "cannot_run" and NO_LANE in data["say_to_user"]
-    assert "The result shown is unchanged" in data["say_to_user"]
+    assert "did not start: " + NO_LANE + " Result unchanged." in data["say_to_user"]
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +539,7 @@ async def test_get_delineation_counts_every_suggestion_and_how_many_are_shallow(
     respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
     data = await _read(_server, timeout_seconds=30, poll_interval_seconds=0)
     say = data["say_to_user"]
-    assert "1 diversion suggested (information only), 0 with a drain 2 m deep or less" in say
+    assert "1 suggested, 0 with a drain 2 m deep or less" in say
     assert "0 suggested" not in say
     assert "1 diversion applied" in say and "1 diversions" not in say
 
@@ -591,8 +588,9 @@ async def test_get_delineation_quick_result_is_ready_while_a_full_run_reports_it
     assert run["expected_finish_at"] == "2026-11-14T16:00:00+00:00" and run["status"] == "running"
     assert data["shown_result"]["mode"] == "quick"
     say = data["say_to_user"]
-    assert "2 h 1 min" in say and "4 h" in say and "later" in say and "handed" in say
-    assert "The result shown (high resolution) is usable meanwhile" in say
+    assert "2 h 1 min" in say and "4 h" in say and "later" in say and "moved from the web server to Batch" in say
+    assert "% processed" in say and "full-resolution" not in say
+    assert "The result shown (high resolution) stays usable" in say
 
 
 @respx.mock
@@ -696,8 +694,9 @@ async def test_every_warning_reaches_the_agent_in_words(_server):
     data = await _read(_server, timeout_seconds=0)
     got = [w["sentence"] for w in data["warnings"]]
     assert got == [WARN_CREST, WARN_SHARE, WARN_EDGE]
-    assert data["warnings_in_words"] == got
-    for sentence in got:
+    # TASK-4535: what to do about a warning is the API's fix_sentence, relayed straight after its sentence
+    assert data["warnings_in_words"] == [f"{WARN_CREST} {FIX_CREST}", WARN_SHARE, f"{WARN_EDGE} {FIX_EDGE}"]
+    for sentence in data["warnings_in_words"]:
         assert sentence in data["say_to_user"]
     # every shares-water flag, and every watercourse that meets the line twice, has its own sentence
     assert len(data["shares_water"]) == 1 and "can share water" in data["shares_water"][0]["sentence"]
@@ -705,11 +704,13 @@ async def test_every_warning_reaches_the_agent_in_words(_server):
     assert len(data["meets_line_twice"]) == 1 and "reaches the line again" in data["meets_line_twice"][0]["sentence"]
     assert data["meets_line_twice"][0]["chainage"] == "CH 5+700"
     # TASK-4405: the same plain wording as the API's sentences, nothing narrative or hedged
-    assert data["shares_water"][0]["sentence"].startswith("CH 5+081 (high point): ")
-    assert data["shares_water"][0]["sentence"].endswith("Both areas are uncertain.")
+    assert data["shares_water"][0]["sentence"].startswith("CH 5+081: ")
+    assert data["shares_water"][0]["sentence"].endswith(" m ponding. Areas uncertain.")
     assert "reaches the line again at CH 5+700, in " in data["meets_line_twice"][0]["sentence"]
     lower = next(c for c in data["catchments"] if c.get("area_is_lower_bound"))
-    assert "the terrain ends inside this catchment" in lower["area_note"]
+    assert (
+        lower["area_note"] == "Area is at least 3.2 ha: terrain ends inside this catchment. Add terrain past the edge."
+    )
     words = [data["shares_water"][0]["sentence"], data["meets_line_twice"][0]["sentence"], lower["area_note"]]
     for text in words:
         for phrase in ("whole story", " only ", "would ", "treat both", "treat it", "may be shared"):
@@ -817,7 +818,7 @@ async def test_use_catchments_as_boundary_makes_it_and_says_what_is_open_and_unr
     assert "Closed (Reflective)" in say and "Transmissive" in say and "drainage point" in say
     assert "unreviewed" in say and "delineation" in say and "update_scenario" in say
     assert "boundary=55" in say and "nothing is built or run" in say.lower()
-    assert "boundary" in data["boundary_rule"].lower()
+    assert data["boundary_rule"].startswith("Closed (Reflective) except a short Transmissive stretch")
 
 
 @respx.mock
@@ -845,9 +846,8 @@ async def test_use_catchments_as_boundary_relays_the_notes_with_names_as_data(_s
     assert data["enclosed_not_ticked_ha"] == 6.0 and len(data["diverted_openings"]) == 1
     assert len(data["notes"]) == 2
     say = data["say_to_user"]
-    assert "6.0 ha that is not in a ticked catchment (between or inside them)" in say
-    assert "keeps its own opening: its diversion to" in say and "is not modelled" in say
-    assert "Upper creek keeps its own opening: its diversion to W4 line CH 0+300 is not modelled." in say
+    assert "Tell the person: 6.0 ha inside the boundary is not in a ticked catchment." in say
+    assert "Upper creek keeps its opening. Its diversion is not modelled." in say
     assert data["summary"]["enclosed_not_ticked_ha"] == 6.0 and data["summary"]["diverted_openings"] == 1
     # over the MCP transport a catchment's name (a person may have typed it) is wrapped as data
     async with _asgi_client(_server) as c:
@@ -859,7 +859,7 @@ async def test_use_catchments_as_boundary_relays_the_notes_with_names_as_data(_s
             ),
         )
     text = _parse(resp)["result"]["content"][0]["text"]
-    assert "<untrusted-data>Upper creek</untrusted-data> keeps its own opening" in text
+    assert "<untrusted-data>Upper creek</untrusted-data> keeps its opening. Its diversion is not modelled." in text
 
 
 @respx.mock
@@ -1001,7 +1001,7 @@ def test_ui_url_for_a_delineation_is_panel_catchments_and_line(env_vars):
     reload_server()
     from hydrata_mcp import _helpers
 
-    assert _helpers.HAND_BACK_PARAM_ORDER == ("panel", "layer", "scenario", "run", "kind", "line")
+    assert _helpers.HAND_BACK_PARAM_ORDER == ("panel", "layer", "scenario", "run", "kind", "line", "proposal")
     url = _helpers._ui_url(77, panel="catchments", line=9)
     assert url.endswith("/catalogue/#/map/77?panel=catchments&line=9")
 
@@ -1082,8 +1082,8 @@ async def test_high_resolution_on_a_fast_screen_reports_the_copy_and_sends_the_a
     assert "delineation_id=12" in data["next_step"] and data["ui_url"].endswith("panel=catchments&line=12")
     assert data["summary"]["delineation_id"] == 12 and data["summary"]["created_copy"] is True
     say = data["say_to_user"]
-    assert "does not replace the fast screen" in say and "made a copy" in say
-    assert "delineation 12" in say and "(delineation 9) stays as it is" in say
+    assert "High resolution runs on a copy, W4 line (high res) (delineation 12)." in say
+    assert "The fast screen (delineation 9) stays. Read delineation 12 from now on." in say
     assert "W4 line (high res)" in say and "copy of delineation 9 (W4 line)" in say
     # the line names are a person's words: wrapped as data on the wire
     assert "<untrusted-data>W4 line (high res)</untrusted-data>" in text
@@ -1114,11 +1114,11 @@ async def test_get_delineation_says_plainly_that_a_fast_screen_is_low_resolution
     data = await _read(_server, timeout_seconds=0)
     assert data["resolution"] == "fast screen (low resolution)" and data["profile_available"] is False
     assert data["summary"]["resolution"] == "fast screen (low resolution)"
-    assert "profile is not available" in data["omitted"] and "profile" not in data
+    assert "Fast screen: no ground profile anywhere." in data["omitted"] and "profile" not in data
     say = data["say_to_user"]
-    assert "Shown result: fast screen (low resolution)" in say
+    assert "Fast screen (low resolution) at " in say
     assert "first look at low resolution" in say and "offer High resolution" in say
-    assert "Run High resolution to see the profile" in say
+    assert "Fast screen: no ground profile anywhere. Run High resolution to see it." in say
 
 
 @respx.mock
@@ -1144,7 +1144,7 @@ async def test_get_delineation_says_high_resolution_and_which_line_a_copy_came_f
     assert data["resolution"] == "high resolution" and data["profile_available"] is True
     assert data["derived_from"]["id"] == 9
     say = data["say_to_user"]
-    assert "Shown result: high resolution" in say and "fast screen" in say  # the source's fast screen, kept
+    assert "High resolution at " in say and "Its fast screen is kept." in say  # the source's fast screen, kept
     assert "High resolution copy of delineation 9 (W4 line)" in say
     assert "first look" not in say
 
@@ -1169,7 +1169,7 @@ async def test_the_estimate_says_high_resolution_makes_a_copy(_server):
     )
     say = data["say_to_user"]
     assert "Fast screen (mode 'quick', low resolution)" in say and "High resolution (mode 'full')" in say
-    assert "makes a copy of it" in say
+    assert "High resolution runs on a copy, '<name> (high res)'. The fast screen stays." in say
 
 
 @respx.mock
@@ -1182,14 +1182,14 @@ async def test_a_boundary_from_a_fast_screen_says_so(_server):
             _server, "use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101, 102]}
         )
     )
-    assert data["outcome"] == "made" and "from a fast screen (low resolution)" in data["say_to_user"]
+    assert data["outcome"] == "made" and "From a fast screen: tell the person" in data["say_to_user"]
 
 
 # ---------------------------------------------------------------------------
 # TASK-4456 (epic 4445 W2.7): the terrain's drainage analysis, being prepared or out of date, in the line tools
 # ---------------------------------------------------------------------------
-BEING_PREPARED = "This terrain's drainage analysis is being prepared. A run on it waits for it, then goes on."
-OUT_OF_DATE = "This terrain's drainage analysis is out of date. The next run works it out again, so it takes longer."
+BEING_PREPARED = "Drainage analysis is being prepared. Runs wait for it."
+OUT_OF_DATE = "Drainage analysis is out of date. Next run takes longer."
 
 
 def _drainage(state, sentence=None, **extra):
@@ -1257,13 +1257,13 @@ async def test_drainage_analysis_wait_the_estimate_names_the_grid_whose_analysis
     )
     say = data["say_to_user"]
     assert f"High resolution (mode 'full'): {OUT_OF_DATE}" in say
-    assert say.count("drainage analysis") == 1
+    assert say.count("Drainage analysis") == 1
 
 
 # ---------------------------------------------------------------------------
 # TASK-4463 (epic 4445 W4.4): sides and sections in the line tools
 # ---------------------------------------------------------------------------
-LEFT_OUT = "8.7 ha below the line drains back across it and is left out."
+LEFT_OUT = "8.7 ha below the line drains back across it. Left out."
 SECTIONS = [
     {
         "index": 0,
@@ -1313,9 +1313,8 @@ async def test_sections_get_delineation_names_the_side_used_per_section_and_the_
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_sided()))
     data = await _read(_server, timeout_seconds=0)
     say = data["say_to_user"]
-    assert "CH 5+000 to CH 5+081: right side (12.5 ha taken in, 0.4 ha left out)" in say
-    assert "CH 5+081 to CH 5+900: left side (3.2 ha taken in, 8.3 ha left out)" in say
-    assert "2 sections" in say and "Hydrata chose them" in say
+    assert "Upstream side, 2 sections: CH 5+000 to CH 5+081: right, 12.5 ha in, 0.4 ha out; " in say
+    assert "CH 5+081 to CH 5+900: left, 3.2 ha in, 8.3 ha out. Sides chosen automatically." in say
     assert LEFT_OUT in say
     assert [s["side"] for s in data["sections"]] == ["right", "left"]
     assert data["sections"][1]["from_chainage"] == "CH 5+081" and "geometry" not in data["sections"][0]
@@ -1330,7 +1329,7 @@ async def test_sections_set_by_hand_are_named_as_such(_server):
     )
     respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
     say = (await _read(_server, timeout_seconds=0))["say_to_user"]
-    assert "The sides were set by hand." in say and "Hydrata chose them" not in say
+    assert "Sides set by hand." in say and "chosen automatically" not in say
 
 
 @respx.mock
@@ -1340,7 +1339,7 @@ async def test_sections_a_result_made_before_sides_says_to_run_it_again(_server)
     respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
     data = await _read(_server, timeout_seconds=0)
     assert data["sections"] is None
-    assert "made before lines had an upstream side" in data["say_to_user"]
+    assert "No upstream-side sections: this result predates them. Run it again" in data["say_to_user"]
 
 
 @respx.mock
@@ -1350,10 +1349,10 @@ async def test_sections_an_agent_passes_a_side_for_a_new_line_and_is_told_which(
     post = respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
     data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "side": "left"}))
     assert json.loads(post.calls[0].request.content)["side"] == "left"
-    assert "Upstream side: left for the whole line, as asked." in data["say_to_user"]
+    assert "Upstream side: left, as asked." in data["say_to_user"]
     plain = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))
     assert "side" not in json.loads(post.calls[1].request.content)
-    assert "the side most ground arrives from" in plain["say_to_user"]
+    assert "Upstream side: automatic. The result names the side per section." in plain["say_to_user"]
 
 
 @respx.mock
@@ -1368,7 +1367,7 @@ async def test_sections_an_agent_changes_the_side_of_its_own_line_without_a_run(
     assert json.loads(patch.calls[0].request.content) == {"side": "automatic"}
     assert not any("/run/" in str(c.request.url) for c in respx.calls)
     assert data["outcome"] == "changed"
-    assert "CH 5+000 to CH 5+081: right side" in data["say_to_user"] and LEFT_OUT in data["say_to_user"]
+    assert "CH 5+000 to CH 5+081: right, " in data["say_to_user"] and LEFT_OUT in data["say_to_user"]
 
 
 async def test_sections_side_is_one_of_left_right_or_automatic(_server):
@@ -1381,13 +1380,10 @@ async def test_sections_side_is_one_of_left_right_or_automatic(_server):
 # Epic 4445 W6.2 (TASK-4469; D8, D16): promote_catchments, and the line has changed since
 # ---------------------------------------------------------------------------
 PROMOTE = f"{ONE}promote/"
-CHANGED = (
-    "The line has changed since these catchments were promoted on 17-11-26. Promote again to bring the layer up to date; "
-    "until then it stays as it was."
-)
-AGENT_MARK = (
-    "An agent promoted this layer and no person has reviewed it yet. A person reviews it by promoting it again."
-)
+CHANGED = "Line changed since promoted on 17-11-26."
+CHANGED_FIX = "Promote again to update the layer."
+AGENT_MARK = "Promoted by an agent, not reviewed."
+AGENT_FIX = "Promote again to review it."
 
 
 def _promoted(**over):
@@ -1412,6 +1408,7 @@ def _promoted(**over):
         "line_changed_since": False,
         "line_deleted": False,
         "sentences": [AGENT_MARK],
+        "fix_sentences": [AGENT_FIX],
     }
     layer.update(over)
     return layer
@@ -1469,14 +1466,15 @@ async def test_promote_catchments_is_refused_for_an_unconfirmed_line_and_says_a_
             409,
             json={
                 "error_code": "NOT_CONFIRMED",
-                "detail": "Confirm the line before promoting its catchments: only a confirmed line's catchments become a "
-                "layer, so nothing unreviewed is published.",
+                "detail": "Confirm the line first: only a confirmed line's catchments become a layer.",
             },
         )
     )
     data = _tool_json(await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9}))
     assert data["outcome"] == "refused" and data["error_code"] == "NOT_CONFIRMED" and data["http_status"] == 409
-    assert "Only a person confirms a line" in data["say_to_user"] and data["ui_url"].endswith(MAP_URL)
+    assert data["say_to_user"].startswith("Promotion refused: Confirm the line first: ")
+    assert "Ask the user to check and confirm the line in the browser" in data["say_to_user"]
+    assert data["ui_url"].endswith(MAP_URL)
 
 
 @respx.mock
@@ -1502,8 +1500,8 @@ async def test_promote_catchments_again_asks_the_user_first_and_reads_the_change
     )
     refused = _tool_json(await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9}))
     assert refused["error_code"] == "PROMOTED_ALREADY" and refused["promoted_layer"]["line_changed_since"] is True
-    assert "ask the user" in refused["say_to_user"] and "replace=true" in refused["say_to_user"]
-    assert "the line has changed since" in refused["say_to_user"]
+    assert "Ask the user" in refused["say_to_user"] and "replace=true" in refused["say_to_user"]
+    assert "the line has changed since" in refused["say_to_user"] and "print" not in refused["say_to_user"]
     done = _tool_json(
         await _call_as_caller(_server, "promote_catchments", {"project_id": 42, "delineation_id": 9, "replace": True})
     )

@@ -320,10 +320,9 @@ FLAGGED = {
     "geometry": MARKED,
     "can_leave_out": True,
     "excluded_ground_id": None,
-    "sentence": "About 42% of this terrain looks like extrapolated ground: flat-sided triangles reaching its edge, not "
-    "surveyed ground. Catchments over it are not real.",
-    "agent_note": 'Only a person can leave this ground out, on the map (Catchments or the scenario panel, "Leave this '
-    'ground out"). Tell the user what was found and let them decide.',
+    "sentence": "42% of this terrain is extrapolated ground. Catchments over it are not real.",
+    "fix_sentence": "Leave it out, or keep a real surface.",
+    "agent_note": "Only a person can leave this ground out, in Catchments. Tell the user.",
 }
 
 
@@ -340,7 +339,10 @@ class TestGetTerrainExtrapolatedGround:
         )
         say = data["say_to_user"] if "say_to_user" in data else json.dumps(data)
         assert "extrapolated ground" in say
-        assert "Only a person can leave this ground out of the drainage analysis" in say
+        assert (
+            "Catchments over it are not real. Leave it out, or keep a real surface. Only a person can leave this ground out, in Catchments. Tell the user."
+            in say
+        )
         warning = data["summary"]["extrapolated_ground"]
         assert warning["state"] == "flagged" and warning["fraction"] == pytest.approx(0.4165)
         # the agent reads the warning, not the map geometry (a person sees that on the map)
@@ -355,8 +357,7 @@ class TestGetTerrainExtrapolatedGround:
             "can_leave_out": False,
             "excluded_ground_id": 3,
             "agent_note": None,
-            "sentence": "The extrapolated ground (42% of this terrain) is left out of the drainage analysis as excluded "
-            "ground. Catchments end where it starts. The terrain itself is not changed.",
+            "sentence": "42% of this terrain is left out as excluded ground.",
         }
         respx.get(f"{BASE}/projects/42/terrain/7/").mock(
             return_value=httpx.Response(200, json=_terrain(7, "ready", gn_layer=1, extrapolated_ground=left_out))
@@ -367,7 +368,7 @@ class TestGetTerrainExtrapolatedGround:
             )
         )
         say = json.dumps(data)
-        assert "left out of the drainage analysis as excluded ground" in say
+        assert "42% of this terrain is left out as excluded ground." in say
         assert data["summary"]["extrapolated_ground"]["state"] == "left_out"
 
     @respx.mock

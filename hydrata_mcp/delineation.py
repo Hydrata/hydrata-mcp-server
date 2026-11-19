@@ -39,40 +39,41 @@ from .terrain import _lon_lat_pairs
 
 LIVE_STATUSES = ("pending", "running")
 # What stays on the screen: the drawing data. The agent reads the ground itself with terrain_profile.
-OMITTED = (
-    "The drawing data (the ground profile along the line, each catchment's polygon, the line's own vertices) is left "
-    "on the map; use terrain_profile to read the ground along a line."
-)
+OMITTED = "Profile, polygons and line vertices stay on the map. Use terrain_profile for the ground along a line."
 FAST_SCREEN = "fast screen (low resolution)"
 HIGH_RES = "high resolution"
-FAST_SCREEN_PROFILE = (
-    "This is a fast screen: its ground profile is not available anywhere (not on the map either), because the coarsened "
-    "ground misleads. Run High resolution to see the profile."
-)
+FAST_SCREEN_PROFILE = "Fast screen: no ground profile anywhere. Run High resolution to see it."
 FAST_SCREEN_CAVEAT = (
-    "A fast screen is a first look at low resolution: tell the person so, and offer High resolution before they rely on "
-    "it (it can still be used as the model boundary)."
+    "Fast screen: a first look at low resolution. Say so and offer High resolution. It can still be the model boundary."
 )
 FAST_SCREEN_LUMPED = (
     "A fast screen shows one catchment per section of the line, with no smaller catchments, diversion suggestions or "
     "shared-water points: High resolution gives those."
 )
-SUGGESTIONS_NOTE = (
-    "Diversion suggestions are information only: a drain that could send one catchment's water to its neighbour. "
-    "Only a person ticks one, in the browser; no tool applies, ticks or undoes a diversion."
-)
+SUGGESTIONS_NOTE = "Diversion suggestions are information only. Only a person ticks one, in the browser."
 BOUNDARY_RULE = (
-    "The boundary is Closed (Reflective) everywhere except a short open stretch, typed Transmissive, at each included "
-    "drainage point (5 working cells long, never under 20 m). The delineation line itself is not open."
+    "Closed (Reflective) except a short Transmissive stretch at each included drainage point (5 working cells, 20 m "
+    "minimum). The line itself is not open."
 )
-PERSON_ONLY = "Only a person in the browser can tick a diversion, check one again, or confirm a delineation."
+PERSON_ONLY = "Only a person can tick or check a diversion, or confirm a delineation."
 # TASK-4456 (epic 4445 W2.7): the terrain's drainage analysis, being prepared or out of date. The API's ``drainage_analysis``
 # carries the sentence (a line's read for its run's grid; the estimate per grid); these are the same words, for an API that
 # sends a state without one.
 DRAINAGE_WORDS = {
-    "being_prepared": "This terrain's drainage analysis is being prepared. A run on it waits for it, then goes on.",
-    "out_of_date": "This terrain's drainage analysis is out of date. The next run works it out again, so it takes longer.",
+    "being_prepared": "Drainage analysis is being prepared. Runs wait for it.",
+    "out_of_date": "Drainage analysis is out of date. Next run takes longer.",
 }
+
+
+def _with_fix(doc) -> str | None:
+    """A warning's or refusal's sentence with what to do about it (the API's `fix_sentence`, TASK-4535) after it."""
+    if not isinstance(doc, dict):
+        return None
+    sentence = doc.get("sentence") or doc.get("detail")
+    if not isinstance(sentence, str) or not sentence:
+        return None
+    fix = doc.get("fix_sentence")
+    return f"{sentence} {fix}" if isinstance(fix, str) and fix else sentence
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +128,7 @@ def _catchment_doc(c: dict) -> dict:
         out["arrival_point"] = _with_text(c["arrival_point"], ("chainage_m", "chainage"))
     if c.get("area_is_lower_bound"):
         out["area_note"] = (
-            f"Its area is at least {_m(c.get('area_ha'))} ha: the terrain ends inside this catchment, so its true area is "
-            "larger. Add terrain beyond the edge for the full area."
+            f"Area is at least {_m(c.get('area_ha'))} ha: terrain ends inside this catchment. Add terrain past the edge."
         )
     return out
 
@@ -144,13 +144,17 @@ def _shares_sentence(item: dict, names: dict) -> str:
     height = item.get("pass_height_m")
     measured = isinstance(height, (int, float)) and not isinstance(height, bool)
     if item.get("where") == "upstream":
-        lead = f"{pair} can share water upstream of the line"
-        how = f"; the ground between them is {height:.2f} m above the channel" if measured else ""
+        said = (
+            f"{pair}: {height:.2f} m rise between them upstream of the line"
+            if measured
+            else f"{pair} can share water upstream of the line"
+        )
     else:
         at = _chainage_text(item.get("pass_chainage_m"))
-        lead = f"{f'{at} (high point): ' if at else ''}{pair} can share water"
-        how = f"; water ponds {height:.2f} m before it spills from one into the other" if measured else ""
-    return f"{lead}{how}. Both areas are uncertain."
+        said = f"{f'{at}: ' if at else ''}{pair} can share water" + (
+            f" after {height:.2f} m ponding" if measured else ""
+        )
+    return f"{said}. Areas uncertain."
 
 
 def _meets_twice_sentence(item: dict, names: dict) -> str:
@@ -158,8 +162,8 @@ def _meets_twice_sentence(item: dict, names: dict) -> str:
     here = _data(str(names.get(item.get("catchment"), item.get("catchment"))))
     again = _data(str(names.get(item.get("meets_again_in"), item.get("meets_again_in"))))
     return (
-        f"{here}: water leaving its drainage point reaches the line again at {_chainage_text(item.get('chainage_m'))}, "
-        f"in {again}. The area of {again} does not include the area of {here}."
+        f"{here}: outflow reaches the line again at {_chainage_text(item.get('chainage_m'))}, in {again}. "
+        "Its area is not counted there."
     )
 
 
@@ -171,18 +175,13 @@ def _ticks_text(doc: dict) -> str | None:
     parts = []
     if to_check:
         parts.append(
-            f"{to_check} diversion{' a person ticked was' if to_check == 1 else 's a person ticked were'} re-applied "
-            "after the catchments changed and must be checked again"
+            "1 ticked diversion to check again" if to_check == 1 else f"{to_check} ticked diversions to check again"
         )
     if remembered:
         parts.append(
-            f"{len(remembered)} more tick{' is' if len(remembered) == 1 else 's are'} remembered but not applied now "
-            "(the catchments it joins are grouped away by these settings)"
+            f"{len(remembered)} more tick{'' if len(remembered) == 1 else 's'} remembered, not applied at these settings"
         )
-    return (
-        "; ".join(parts)
-        + f". {PERSON_ONLY} Tell the user to open the link and check them; the delineation cannot be confirmed until then."
-    )
+    return "; ".join(parts) + f". {PERSON_ONLY} Give the user the link. It cannot be confirmed until they are checked."
 
 
 def _full_run_doc(job: dict) -> dict:
@@ -221,13 +220,13 @@ def _kind(shown) -> str:
 
 
 def _copied_from_text(line: dict) -> str | None:
-    """'It is the High resolution copy of delineation 7 (<name>)...' for a copy, else None. The name is a person's words."""
+    """'High resolution copy of delineation 7 (<name>)...' for a copy, else None. The name is a person's words."""
     source = line.get("derived_from") if isinstance(line, dict) else None
     if not isinstance(source, dict) or source.get("id") is None:
         return None
     return (
-        f"It is the High resolution copy of delineation {source.get('id')} ({_data(str(source.get('name')))}), whose "
-        "fast screen is kept for comparison."
+        f"High resolution copy of delineation {source.get('id')} ({_data(str(source.get('name')))}). "
+        "Its fast screen is kept."
     )
 
 
@@ -246,15 +245,13 @@ def _phase_of(job: dict) -> str:
 
 
 SIDE_ARGUMENT_HELP = (
-    "The line's upstream side, looking along the line from its start to its end: 'left' or 'right' puts the whole line "
-    "on that side; 'automatic' (the default for a new line) lets Hydrata take, for each section of the line, the side "
-    "most ground arrives from, flipping only where a flip brings in at least five times the Minimum catchment area more "
-    "than it gives up. Ground on a section's downstream side makes no catchment and is reported as left out. Pass a side "
-    "only when the person told you which side the water comes from; the reply always names the side used per section."
+    "Upstream side looking from the line's start to its end: 'left', 'right', or 'automatic' (default: each section "
+    "takes the side most ground arrives from). Pass a side only when the person said which side the water comes from. "
+    "The reply names the side per section."
 )
 SIDES_NOT_AVAILABLE = (
-    "This result was made before lines had an upstream side, so both sides of the line count. Run it again "
-    "(delineate_catchments with this delineation_id and mode) to get its sections."
+    "No upstream-side sections: this result predates them. Run it again (delineate_catchments with this "
+    "delineation_id and mode)."
 )
 
 
@@ -280,22 +277,14 @@ def _sides_words(doc: dict) -> str | None:
     if not sections:
         return None
     each = "; ".join(
-        f"{_chainage_text(s.get('from_chainage_m'))} to {_chainage_text(s.get('to_chainage_m'))}: {s.get('side')} side "
-        f"({float(s.get('taken_ha') or 0):,.1f} ha taken in, {float(s.get('left_out_ha') or 0):,.1f} ha left out)"
+        f"{_chainage_text(s.get('from_chainage_m'))} to {_chainage_text(s.get('to_chainage_m'))}: {s.get('side')}, "
+        f"{float(s.get('taken_ha') or 0):,.1f} ha in, {float(s.get('left_out_ha') or 0):,.1f} ha out"
         for s in sections
     )
     count = len(sections)
     sides = doc.get("sides") or {}
-    who = (
-        "The sides were set by hand."
-        if sides.get("set_by_hand")
-        else "Hydrata chose them: each section takes the side most ground arrives from, and a flip is made only where it "
-        "pays for itself."
-    )
-    words = (
-        f"Upstream side (looking along the line from its start to its end), {count} section{'' if count == 1 else 's'}: "
-        f"{each}. {who}"
-    )
+    who = "Sides set by hand." if sides.get("set_by_hand") else "Sides chosen automatically."
+    words = f"Upstream side, {count} section{'' if count == 1 else 's'}: {each}. {who}"
     left_out = (doc.get("ground_left_out") or {}).get("sentence")
     if left_out:
         words += f" {left_out}"
@@ -355,7 +344,7 @@ def _result(doc: dict) -> dict:
     source = line.get("derived_from")
     if isinstance(source, dict) and source.get("id") is not None:
         out["derived_from"] = {"id": source.get("id"), "name": _data(str(source.get("name")))}
-    out["warnings_in_words"] = [w.get("sentence") for w in out["warnings"] if w.get("sentence")]
+    out["warnings_in_words"] = [_with_fix(w) for w in out["warnings"] if w.get("sentence")]
     return out
 
 
@@ -375,31 +364,30 @@ def _promoted_words(layer) -> str | None:
     promoted it and no person has reviewed it), to relay."""
     if not isinstance(layer, dict):
         return None
-    who = "an agent" if layer.get("made_by_agent") else f"a person ({layer.get('made_by')})"
-    text = (
-        f"Its catchments were promoted to the layer {layer.get('title')} ({layer.get('alternate')}) by {who} on "
-        f"{layer.get('made_at')}."
-    )
+    who = "an agent" if layer.get("made_by_agent") else layer.get("made_by")
+    text = f"Promoted to layer {layer.get('title')} ({layer.get('alternate')}) by {who} on {layer.get('made_at')}."
     if layer.get("layer_exists") is False:
-        text += " That layer has since been deleted; promote_catchments makes it again."
-    sentences = [x for x in layer.get("sentences") or [] if isinstance(x, str) and x]
+        text += " Layer deleted since; promote_catchments remakes it."
+    fixes = layer.get("fix_sentences") or []
+    sentences = [
+        f"{x} {fixes[i]}" if i < len(fixes) and isinstance(fixes[i], str) and fixes[i] else x
+        for i, x in enumerate(layer.get("sentences") or [])
+        if isinstance(x, str) and x
+    ]
     if sentences:
         text += " Relay: " + " ".join(sentences)
     elif not layer.get("line_changed_since"):
-        text += " The line has not changed since."
+        text += " Line unchanged since."
     return text
 
 
 def _who(doc: dict) -> str:
     d = doc.get("delineation") or {}
     if d.get("confirmed"):
-        return f"A person ({_data(str(d.get('confirmed_by')))}) confirmed it on {d.get('confirmed_at')}."
+        return f"Confirmed by {_data(str(d.get('confirmed_by')))} on {d.get('confirmed_at')}."
     if d.get("agent_authored"):
-        return (
-            "An agent made it and no person has confirmed it, so it is unreviewed: only a person confirms it, in the "
-            "browser."
-        )
-    return f"A person ({_data(str(d.get('created_by')))}) made it; no person has confirmed it yet."
+        return "Made by an agent, unreviewed. Only a person confirms it, in the browser."
+    return f"Made by {_data(str(d.get('created_by')))}. Not confirmed."
 
 
 def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
@@ -407,17 +395,17 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     shown = doc.get("shown_result") or {}
     parts = []
     if shown:
-        coarse = ", coarsened to the web server's limit" if shown.get("coarsened") else ""
+        count = tally.get("catchments")
         diverted = tally.get("diverted", 0) or 0
         # every suggestion listed; the API's tally.suggested counts only the shallow ones (a drain 2 m deep or less)
         suggested = len(doc.get("suggestions") or [])
         shallow = tally.get("suggested", 0) or 0
+        kind = _kind(shown)
         parts.append(
-            f"Delineation {line.get('id')} ({_data(str(line.get('name')))}) has {tally.get('catchments')} catchments "
-            f"totalling {tally.get('total_area_ha', 0):.1f} ha; {diverted} diversion{'' if diverted == 1 else 's'} applied, "
-            f"{suggested} diversion{'' if suggested == 1 else 's'} suggested (information only), {shallow} with a drain "
-            f"2 m deep or less. Shown result: {_kind(shown)}, worked at "
-            f"{_m(shown.get('working_resolution_m'))} m on a {_m(shown.get('terrain_resolution_m'))} m terrain{coarse}."
+            f"Delineation {line.get('id')} ({_data(str(line.get('name')))}): {count} catchment{'' if count == 1 else 's'}, "
+            f"{tally.get('total_area_ha', 0):.1f} ha. {diverted} diversion{'' if diverted == 1 else 's'} applied, "
+            f"{suggested} suggested, {shallow} with a drain 2 m deep or less. {kind[0].upper()}{kind[1:]} at "
+            f"{_m(shown.get('working_resolution_m'))} m on a {_m(shown.get('terrain_resolution_m'))} m terrain."
         )
         if _is_fast_screen(shown):
             parts.append(f"{FAST_SCREEN_CAVEAT} {FAST_SCREEN_PROFILE}")
@@ -439,22 +427,16 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     if words:
         parts.append("Warnings, relay every one: " + " ".join(f"({i}) {w}" for i, w in enumerate(words, start=1)))
     else:
-        parts.append("The API raised no warnings.")
+        parts.append("No warnings.")
     if result["shares_water"]:
-        parts.append(
-            f"{len(result['shares_water'])} pair(s) of neighbouring catchments can share water: both areas of each pair are "
-            "uncertain."
-        )
+        parts.append(f"{len(result['shares_water'])} pair(s) can share water. Their areas are uncertain.")
     replaced = shown.get("replaced") if shown.get("mode") == "full" else None
     if isinstance(replaced, dict):
         lost = (replaced.get("not_carried_over") or {}).get("catchments") or []
         if lost:
-            parts.append(
-                f"The new high resolution result replaced the earlier one on this line; {len(lost)} catchment(s) of the "
-                "earlier result have no match in it."
-            )
+            parts.append(f"New high resolution result. {len(lost)} earlier catchment(s) have no match.")
         if replaced.get("confirmation_lapsed"):
-            parts.append("The new result lapsed an earlier confirmation: a person needs to confirm again.")
+            parts.append("Confirmation lapsed. A person must confirm again.")
     return parts
 
 
@@ -469,12 +451,12 @@ def _estimate_words(estimate: dict) -> str:
         high = (e.get("expected_seconds") or {}).get("high")
         where = "AWS Batch" if e.get("runs_on") == "batch" else "the web server"
         text = (
-            f"{MODE_WORDS[mode]}: about {e.get('cells'):,} cells at {_m(e.get('working_resolution_m'))} m on {where}, "
-            f"expected {_duration(low)} to {_duration(high)}"
-            f"{', it can take hours' if e.get('can_take_hours') else ''}"
+            f"{MODE_WORDS[mode]}: {e.get('cells'):,} cells at {_m(e.get('working_resolution_m'))} m on {where}, "
+            f"{_duration(low)} to {_duration(high)}"
+            f"{', can take hours' if e.get('can_take_hours') else ''}"
         )
         if e.get("may_move_to_batch"):
-            text += " (a web-server run that overruns is handed to Batch)"
+            text += " (moves to Batch if it overruns)"
         text += "."
         if not e.get("can_run"):
             reason = str(e.get("cannot_run_reason") or "").strip()
@@ -485,25 +467,24 @@ def _estimate_words(estimate: dict) -> str:
             out.append(f"{MODE_WORDS[mode]}: {drainage}")
     note = (estimate.get("quick") or {}).get("note")
     copy = (
-        " High resolution on this line makes a copy of it, '<name> (high res)', and runs there; the fast screen stays "
-        "as it is, for comparison."
+        " High resolution runs on a copy, '<name> (high res)'. The fast screen stays."
         if estimate.get("full_makes_copy")
         else ""
     )
-    return "Estimate (a range, not a promise). " + " ".join(out) + (f" {note}" if note else "") + copy
+    return "Estimate (a range). " + " ".join(out) + (f" {note}" if note else "") + copy
 
 
 def _refused(body, status: int, what: str, project_id=None, asked_id=None) -> dict:
     reply = body if isinstance(body, dict) else {"response": body}
-    sentence = reply.get("detail") or reply.get("error") or reply.get("error_code") or f"HTTP {status}"
+    sentence = _with_fix(reply) or reply.get("error") or reply.get("error_code") or f"HTTP {status}"
     out = {
         "outcome": "refused",
         "http_status": status,
         "error_code": reply.get("error_code"),
         "hydrata_reply": reply,
         "say_to_user": (
-            f"Hydrata refused {what}: {sentence} Nothing was changed. If this is a person's delineation or one a "
-            "person confirmed, ask the user to change it in the browser."
+            f"Refused {what}: {sentence} Nothing changed. For a person's or a confirmed delineation, ask the user to "
+            "change it in the browser."
         ),
     }
     running = reply.get("delineation_id")
@@ -514,7 +495,7 @@ def _refused(body, status: int, what: str, project_id=None, asked_id=None) -> di
             f"Read the running copy with get_delineation(project_id={project_id}, delineation_id={running})."
         )
         out["say_to_user"] = (
-            f"Hydrata refused {what}: {sentence} Nothing was changed. Follow delineation {running} with get_delineation."
+            f"Refused {what}: {sentence} Nothing changed. Follow delineation {running} with get_delineation."
         )
     return out
 
@@ -661,7 +642,7 @@ async def delineate_catchments(
             result,
             project_id,
             {"mode": chosen, "estimate": _estimate_summary(estimate)},
-            f"The {MODE_WORDS[chosen]} run cannot start, so no delineation was made: {sentence} "
+            f"{MODE_WORDS[chosen]} cannot start. No delineation was made: {sentence} "
             + (
                 "Do the fast screen instead (mode='quick'): " + _estimate_words(estimate)
                 if chosen == "full" and (estimate.get("quick") or {}).get("can_run")
@@ -707,21 +688,20 @@ async def delineate_catchments(
     }
     where = "AWS Batch" if job.get("runs_on") == "batch" else "the web server"
     say = (
-        f"The {MODE_WORDS[chosen]} delineation '{_data(name.strip())}' (id {new_id}) has started on {where}. "
-        "An agent made it, so it is unreviewed: only a person confirms it, in the browser. " + _estimate_words(estimate)
+        f"{MODE_WORDS[chosen]} delineation '{_data(name.strip())}' (id {new_id}) started on {where}. "
+        "Made by an agent, unreviewed: only a person confirms it. " + _estimate_words(estimate)
     )
     say += (
-        f" Upstream side: {side} for the whole line, as asked."
+        f" Upstream side: {side}, as asked."
         if side in ("left", "right")
-        else " Upstream side: Hydrata will take, for each section of the line, the side most ground arrives from; the "
-        "result names the side used per section."
+        else " Upstream side: automatic. The result names the side per section."
     )
     if chosen == "full":
-        say += " High resolution can take many hours: no fast screen is made by this call, and the person can close the map."
+        say += " High resolution can take many hours. No fast screen is made. The person can close the map."
     else:
         say += (
-            " The fast screen takes seconds to a couple of minutes; I will read it and tell you the catchments and every "
-            "warning. It is a first look at low resolution: offer High resolution before the person relies on it."
+            " The fast screen takes seconds to minutes. It is a first look: offer High resolution before the person "
+            "relies on it."
         )
     await _hand_back(
         result,
@@ -847,7 +827,7 @@ async def _change(
         parts.append(
             "Changed "
             + ", ".join(f"{k} to {_data(str(v)) if k == 'name' else v}" for k, v in changes.items())
-            + ": the result was regrouped without a new run (the terrain step was not repeated)."
+            + ": regrouped without a new run."
         )
     if mode is not None:
         result["estimate"] = estimate
@@ -858,10 +838,8 @@ async def _change(
             result["source_delineation_id"] = delineation_id
             copy_name = _data(str((doc.get("line") or {}).get("name")))
             parts.append(
-                f"High resolution does not replace the fast screen: Hydrata made a copy of the line, {copy_name} "
-                f"(delineation {copy_id}), and runs High resolution on the copy. The fast screen (delineation "
-                f"{delineation_id}) stays as it is, so the person can compare the two. From now on read delineation "
-                f"{copy_id}."
+                f"High resolution runs on a copy, {copy_name} (delineation {copy_id}). The fast screen (delineation "
+                f"{delineation_id}) stays. Read delineation {copy_id} from now on."
             )
         live = (run_job or {}).get("status") in LIVE_STATUSES
         if live:
@@ -875,26 +853,21 @@ async def _change(
             if mode == "full":
                 where = "AWS Batch" if (run_job or {}).get("runs_on") == "batch" else "the web server"
                 parts.append(
-                    f"The High resolution run has started on {where} at the terrain's own resolution. It can take many "
-                    "hours (up to about 24), and the person can close the map."
-                    + (
-                        ""
-                        if copy_id is not None
-                        else " The result shown on this line stays usable meanwhile; the new one replaces it when it finishes."
-                    )
+                    f"High resolution started on {where}. It can take up to about 24 h. The person can close the map."
+                    + ("" if copy_id is not None else " The result shown stays usable until the new one replaces it.")
                     + " "
                     + _estimate_words(estimate)
                 )
             else:
-                parts.append("The fast screen (low resolution) is running again.")
+                parts.append("Fast screen running again.")
         else:
             result["outcome"] = "cannot_run"
             parts.append(
-                f"The {MODE_WORDS[mode]} run did not start: {(run_job or {}).get('error') or 'Hydrata gave no reason'} "
+                f"{MODE_WORDS[mode]} did not start: {(run_job or {}).get('error') or 'Hydrata gave no reason.'} "
                 + (
-                    f"The copy (delineation {copy_id}) has no result; the fast screen (delineation {delineation_id}) is unchanged."
+                    f"Copy {copy_id} has no result. Fast screen {delineation_id} is unchanged."
                     if copy_id is not None
-                    else "The result shown is unchanged."
+                    else "Result unchanged."
                 )
             )
     parts.extend(_read_words(doc, result, ticks))
@@ -992,16 +965,15 @@ async def get_delineation(
 
     parts = []
     if outcome == "error":
-        sentence = job.get("error") or (
-            "The run was cancelled." if status == "cancelled" else "Nothing has run on this delineation yet."
-        )
+        sentence = job.get("error") or ("Run cancelled." if status == "cancelled" else "Nothing has run yet.")
         parts.append(
-            f"The delineation did not finish: {sentence} Tell the user; delineate_catchments with this delineation_id and mode can run it again."
+            f"Run did not finish: {sentence} Tell the user. delineate_catchments with this delineation_id and mode runs "
+            "it again."
         )
     elif not shown:
         parts.append(
-            f"The {'High resolution' if full_job else 'fast screen'} delineation is still being made ({phase}, {job.get('progress', 0):.0f}% through, {_duration(job.get('elapsed_s'))} so far); "
-            "I am still waiting on it: read it again with get_delineation."
+            f"{'High resolution' if full_job else 'Fast screen'}: {job.get('progress', 0):.0f}% processed. "
+            f"{_duration(job.get('elapsed_s'))} ({phase}). Read again with get_delineation."
         )
     if shown:
         parts.extend(_read_words(doc, result, _ticks_text(doc)))
@@ -1009,30 +981,29 @@ async def get_delineation(
         where = "AWS Batch" if full_run.get("runs_on") == "batch" else "the web server"
         if live:
             parts.append(
-                f"A full-resolution run is going on {where}: {full_run.get('progress', 0):.0f}% through, "
-                f"{_duration(full_run.get('elapsed_s'))} elapsed"
+                f"High resolution on {where}: {full_run.get('progress', 0):.0f}% processed. "
+                f"{_duration(full_run.get('elapsed_s'))}"
                 + (
-                    f", expected to finish about {_duration(full_run.get('expected_remaining_s'))} from now "
+                    f", finish in about {_duration(full_run.get('expected_remaining_s'))} "
                     f"({full_run.get('expected_finish_at')})"
                     if full_run.get("expected_finish_at")
-                    else ", with no finish time yet"
+                    else ", no finish time yet"
                 )
-                + (", handed over from the web server to Batch" if full_run.get("handed_over") else "")
-                + f". The result shown ({_kind(shown)}) is usable meanwhile; the new result replaces it when it finishes "
-                "and keeps ids, names and diversions. High resolution can take many hours: do not wait in a loop; tell "
-                "the person and read again later."
+                + (", moved from the web server to Batch" if full_run.get("handed_over") else "")
+                + f". The result shown ({_kind(shown)}) stays usable; the new one keeps ids, names and diversions. "
+                "Do not wait in a loop: tell the person and read again later."
             )
         else:
             parts.append(
-                f"The High resolution run did not finish: {full_run.get('error') or 'it was cancelled'} The result shown "
-                f"({_kind(shown)}) is unchanged and usable."
+                f"High resolution did not finish: {full_run.get('error') or 'Run cancelled.'} The result shown "
+                f"({_kind(shown)}) is unchanged."
             )
     drainage = _drainage_sentence(doc.get("drainage_analysis"))
     if drainage:
         parts.append(drainage)
     changed = doc.get("drainage_changed")
     if isinstance(changed, dict) and changed.get("sentence"):
-        parts.append(changed["sentence"])
+        parts.append(_with_fix(changed))
     if timed_out and not shown:
         result["next_step"] = f"Call get_delineation(project_id={project_id}, delineation_id={delineation_id}) again."
         if cap_spent:
@@ -1062,8 +1033,8 @@ async def get_delineation(
 
 
 # The API's boundary notes (TASK-4430), written here from its data so a catchment's name (a person may have typed it) is wrapped
-ENCLOSED_NOTE = "The boundary takes in {ha:.1f} ha that is not in a ticked catchment (between or inside them)."
-OPENING_NOTE = "{name} keeps its own opening: its diversion to {neighbour} is not modelled."
+ENCLOSED_NOTE = "{ha:.1f} ha inside the boundary is not in a ticked catchment."
+OPENING_NOTE = "{name} keeps its opening. Its diversion is not modelled."
 
 
 def _boundary_notes(made: dict) -> tuple[list, list]:
@@ -1083,7 +1054,7 @@ def _boundary_notes(made: dict) -> tuple[list, list]:
             "diverted_to_name": _data(str(item.get("diverted_to_name"))),
         }
         openings.append(opening)
-        notes.append(OPENING_NOTE.format(name=opening["name"], neighbour=opening["diverted_to_name"]))
+        notes.append(OPENING_NOTE.format(name=opening["name"]))
     return notes, openings
 
 
@@ -1174,31 +1145,24 @@ async def use_catchments_as_boundary(
     open_total = sum(x.get("length_m") or 0 for x in stretches if isinstance(x, dict))
     say = (
         f"Made boundary '{_data(str(boundary.get('title')))}' (input {boundary.get('id')}, {boundary.get('feature_count')} "
-        f"features, a ring {_m(made.get('perimeter_m'))} m round) from catchments {', '.join(used)}. It is Closed "
-        f"(Reflective) everywhere except short open stretches, typed Transmissive, at each included drainage point "
-        f"({len(stretches)} stretch{'es' if len(stretches) != 1 else ''}, {_m(open_total)} m in all; each about "
-        f"{_m(made.get('open_stretch_m'))} m, and stretches that overlap join into one). The boundary is unreviewed"
-        + (", and so is the delineation (no person has confirmed it)" if unreviewed_delineation else "")
-        + ": nothing is built or run until a person reviews them in the browser. To model with it, attach it to a "
-        f"scenario with update_scenario(boundary={boundary.get('id')}), then give the user the link."
+        f"features, {_m(made.get('perimeter_m'))} m round) from catchments {', '.join(used)}. Closed (Reflective) "
+        f"except {len(stretches)} Transmissive stretch{'es' if len(stretches) != 1 else ''} at the drainage points, "
+        f"{_m(open_total)} m in all. The boundary is unreviewed"
+        + (", and so is the delineation" if unreviewed_delineation else "")
+        + ": nothing is built or run until a person reviews it. To model with it: "
+        f"update_scenario(boundary={boundary.get('id')}), then give the user the link."
     )
     parts = [say]
     if notes:
-        parts.append("Tell the person what the boundary takes in, and why: " + " ".join(notes))
+        parts.append("Tell the person: " + " ".join(notes))
     if _is_fast_screen(doc.get("shown_result")):
-        parts.append(
-            "These catchments are from a fast screen (low resolution): tell the person, and that a High resolution run "
-            "of the line may move the boundary."
-        )
+        parts.append("From a fast screen: tell the person a High resolution run may move the boundary.")
     ticks = _ticks_text(doc)
     if ticks:
         parts.append(ticks)
     words = result["warnings_in_words"]
     if words:
-        parts.append(
-            "Warnings about this delineation, relay every one: "
-            + " ".join(f"({i}) {w}" for i, w in enumerate(words, start=1))
-        )
+        parts.append("Warnings, relay every one: " + " ".join(f"({i}) {w}" for i, w in enumerate(words, start=1)))
     await _hand_back(
         result,
         project_id,
@@ -1223,11 +1187,9 @@ async def use_catchments_as_boundary(
 # Epic 4445 W6.2 (TASK-4469; D8, D16): promote a confirmed line's catchments to a GeoNode layer
 # ---------------------------------------------------------------------------
 PROMOTE_RULE = (
-    "A promoted layer is a snapshot of a CONFIRMED line's catchments, published as a layer of the project (name, chainage, "
-    "area and where each drains), to style, print and share like any other layer. It does not follow later changes to the "
-    "line; it is marked 'the line has changed since', and promoting again replaces its contents. Only a person confirms a "
-    "line, in the browser. A layer an agent promotes is marked as made by an agent and unreviewed until a person promotes "
-    "it again."
+    "A promoted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains). It does "
+    "not follow later changes; promoting again replaces its contents. Only a person confirms a line. A layer an agent "
+    "promotes is unreviewed until a person promotes it again."
 )
 
 
@@ -1238,14 +1200,14 @@ async def promote_catchments(
     replace: Annotated[
         bool,
         "True only after the user said yes to replacing the contents of the line's promoted layer with the catchments as "
-        "they are now (maps and prints that show the layer then show the new catchments).",
+        "they are now (maps that show the layer then show the new catchments).",
     ] = False,
     authored_method: Annotated[
         str, "One short phrase saying why you are promoting these catchments. Shown to the person who reviews it."
     ] = "",
     sources: Annotated[list[dict] | None, SOURCES_ARGUMENT_HELP] = None,
 ) -> str:
-    """Promote a confirmed line's catchments to a GeoNode layer of the project: a snapshot to style, print and share.
+    """Promote a confirmed line's catchments to a GeoNode layer of the project: a snapshot to style and share.
 
     Refused unless a person has confirmed the line (ask them to, in the browser). When the line already has a promoted
     layer, the call is refused with that layer and its 'the line has changed since' mark: ask the user, and call again
@@ -1271,22 +1233,17 @@ async def promote_catchments(
         code = reply.get("error_code")
         if code == "NOT_CONFIRMED":
             say = (
-                f"Hydrata refused the promotion: {reply.get('detail')} Only a person confirms a line: ask the user to "
-                "check the catchments and confirm the line in the browser (the link), then promote it."
+                f"Promotion refused: {reply.get('detail')} Ask the user to check and confirm the line in the browser "
+                "(the link), then promote."
             )
         elif code == "PROMOTED_ALREADY":
             layer = _promoted_doc(reply.get("promoted_layer"))
             result["promoted_layer"] = layer
             changed = bool(layer and layer.get("line_changed_since"))
             say = (
-                f"This line's catchments are already a layer{' (' + str(layer.get('title')) + ')' if layer else ''}"
-                + (
-                    ", and the line has changed since it was promoted"
-                    if changed
-                    else ", and the line has not changed since"
-                )
-                + ". Promoting again replaces its contents, and maps and prints that show it will change: ask the user, "
-                "and call promote_catchments again with replace=true only if they say yes. Nothing was changed."
+                f"Already a layer{' (' + str(layer.get('title')) + ')' if layer else ''}; the line has "
+                f"{'' if changed else 'not '}changed since. Promoting again replaces its contents and changes maps that "
+                "show it. Ask the user; call promote_catchments with replace=true only on a yes. Nothing changed."
             )
         else:
             say = result.pop("say_to_user")
@@ -1308,12 +1265,11 @@ async def promote_catchments(
     what = "replaced the contents of" if replaced else "made"
     say = (
         f"I {what} the layer {layer.get('title')} ({layer.get('alternate')}) from the {layer.get('feature_count')} "
-        f"catchments of delineation {delineation_id}: name, chainage, area and where each drains. It is on the map in "
-        f"{layer.get('map_group') or 'Promoted catchments'}, to style, print and share like any other layer. It is a "
-        "snapshot: it does not follow later changes to the line."
+        f"catchments of delineation {delineation_id}. It is on the map in "
+        f"{layer.get('map_group') or 'Promoted catchments'}. It is a snapshot: it does not follow later changes."
     )
     if layer.get("unreviewed"):
-        say += " It is marked as made by an agent and unreviewed until you promote it again yourself."
+        say += " It is unreviewed until you promote it again yourself."
     summary = {
         "promoted_layer_id": layer.get("id"),
         "gn_layer": layer.get("gn_layer"),
@@ -1334,9 +1290,8 @@ CORRECTION_WORDS = {
     "excluded_ground": "excluded ground",
 }
 PROPOSAL_RULE = (
-    "A drainage correction changes where the drainage analysis sends water for every line on the terrain, so an agent "
-    "only proposes one: it waits until a person accepts it on the map (Catchments, Drainage corrections), and nothing "
-    "changes before then. It never changes the terrain a flood model runs on."
+    "An agent only proposes a drainage correction. Nothing changes until a person accepts it on the map. It never "
+    "changes the terrain a flood model runs on."
 )
 
 
@@ -1367,15 +1322,20 @@ async def propose_drainage_correction(
     from_import_check: Annotated[
         bool, "For excluded ground: propose the extrapolated ground the terrain's import check marked (no `area`)."
     ] = False,
-    delineation_id: Annotated[int | None, "The line the person should look at; the link opens it."] = None,
+    delineation_id: Annotated[
+        int | None,
+        "The line the person should look at; the link opens it when it is on this terrain. Omit it and Hydrata picks a "
+        "line on the terrain (the newest confirmed, else the newest).",
+    ] = None,
 ) -> str:
     """Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is
     NOT applied: a person accepts it on the map, and only then does the drainage analysis use it.
 
-    Use it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning says "draw a drainage
-    barrier" or "draw a drainage opening" and gives `where`), or when you can say exactly where water really goes and
-    the terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and
-    give them the link (`ui_url`). Lines on the terrain change only after the person accepts it and they run again.
+    Use it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning's `fix` is
+    `drainage_barrier` or `drainage_opening`, with `fix_sentence`, `where` and the cut or fill `geometry`), or when you
+    can say exactly where water really goes and the terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and
+    give them the link (`ui_url`): it opens a line on this terrain (`line_to_open`, named in the sentence) with the
+    proposal. Lines on the terrain change only after the person accepts it and they run again.
     """
     words = CORRECTION_WORDS.get(kind)
     if words is None:
@@ -1398,6 +1358,8 @@ async def propose_drainage_correction(
         if area or from_import_check:
             raise ToolError(f"A {words} is a line: give `line`, not `area` or from_import_check. Nothing was sent.")
         payload["geometry"] = {"type": "LineString", "coordinates": _lon_lat_pairs(line, "line", 2)}
+    if delineation_id is not None:
+        payload["delineation_id"] = delineation_id
     path = f"/projects/{project_id}/terrain/{terrain_id}/drainage-corrections/"
     body, status = await client.post(path, json=payload, raise_for_status=False)
     if status >= 500:
@@ -1410,6 +1372,17 @@ async def propose_drainage_correction(
     answer = body if isinstance(body, dict) else {}
     proposal = answer.get("correction") or {}
     waiting = proposal.get("status") == "proposed"
+    # TASK-4535 (finding F4): the API names a line on THIS terrain (the one asked for when it is on it, else the newest
+    # confirmed, else the newest; null with no line). An older API names none: the line asked for, if any.
+    picked = answer["line_to_open"] if "line_to_open" in answer else {"id": delineation_id}
+    picked = picked if isinstance(picked, dict) and picked.get("id") is not None else None
+    if picked and picked.get("name") is not None:
+        picked = {"id": picked["id"], "name": _data(str(picked["name"]))}
+    links = {
+        "panel": "catchments",
+        "line": (picked or {}).get("id"),
+        "proposal": proposal.get("id") if waiting else None,
+    }
     result = {
         "outcome": "proposed" if waiting else "stored",
         "status": "waiting" if waiting else proposal.get("status"),
@@ -1419,16 +1392,26 @@ async def propose_drainage_correction(
         "rule": PROPOSAL_RULE,
     }
     if waiting:
-        say = (
-            f"I proposed a {words} on terrain {terrain_id} (proposal {proposal.get('id')}): "
-            f"{_data(str(proposal.get('note') or why))} It is waiting for you to accept it on the map: open the link, "
-            "then Catchments, Drainage corrections, and Accept or Reject it. Nothing changes until you accept it; after "
-            "that, each line on the terrain says to run it again."
-        )
+        result["line_to_open"] = picked
+        note = _data(str(proposal.get("note") or why))
+        if picked:
+            named = f"line {picked['name']}" if picked.get("name") else f"delineation {picked['id']}"
+            say = (
+                f"I proposed a {words} on terrain {terrain_id} (proposal {proposal.get('id')}, {named}): {note} "
+                "Open the link and Accept or Reject it under Notices, Agent. Nothing changes until you accept."
+            )
+        else:
+            title = answer.get("terrain_title")
+            terrain = f"the terrain {_data(str(title))}" if title else f"terrain {terrain_id}"
+            say = (
+                f"I proposed a {words} on terrain {terrain_id} (proposal {proposal.get('id')}): {note} "
+                f"This terrain has no line: open Catchments and choose {terrain}, then Accept or Reject it under "
+                "Notices, Agent. Nothing changes until you accept."
+            )
     else:
         say = (
-            f"Hydrata stored the {words} on terrain {terrain_id} (correction {proposal.get('id')}) without waiting for a "
-            "person. Tell the user what changed."
+            f"Stored the {words} on terrain {terrain_id} (correction {proposal.get('id')}) without waiting for a person. "
+            "Tell the user."
         )
     summary = {"proposal_id": proposal.get("id"), "kind": kind, "status": result["status"]}
     await _hand_back(result, project_id, summary, say, **links)

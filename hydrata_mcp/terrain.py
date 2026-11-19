@@ -405,10 +405,7 @@ def _without_inferred_guess(record: dict) -> dict:
 
 
 # TASK-4459 (D16): the agent's own words, not the API's: leaving ground out overrules the terrain, so a person does it.
-EXTRAPOLATED_PERSON_ONLY = (
-    'Only a person can leave this ground out of the drainage analysis, on the map ("Leave this ground out"). '
-    "Tell the user what was found and let them decide."
-)
+EXTRAPOLATED_PERSON_ONLY = "Only a person can leave this ground out, in Catchments. Tell the user."
 
 
 def _without_marked_ground(record):
@@ -566,7 +563,10 @@ async def get_terrain(
                 "record their answer with set_levels_datum."
             )
         if extrapolated and extrapolated.get("state") == "flagged":
-            say += f" WARNING: {_data(extrapolated.get('sentence'))} {EXTRAPOLATED_PERSON_ONLY}"
+            fix = extrapolated.get("fix_sentence")
+            say += (
+                f" WARNING: {_data(extrapolated.get('sentence'))} {f'{fix} ' if fix else ''}{EXTRAPOLATED_PERSON_ONLY}"
+            )
         elif extrapolated and extrapolated.get("state") == "left_out":
             say += f" {_data(extrapolated.get('sentence'))}"
     elif outcome == "error":

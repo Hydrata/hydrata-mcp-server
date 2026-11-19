@@ -914,7 +914,7 @@
             }
           ],
           "default": null,
-          "description": "The line's upstream side, looking along the line from its start to its end: 'left' or 'right' puts the whole line on that side; 'automatic' (the default for a new line) lets Hydrata take, for each section of the line, the side most ground arrives from, flipping only where a flip brings in at least five times the Minimum catchment area more than it gives up. Ground on a section's downstream side makes no catchment and is reported as left out. Pass a side only when the person told you which side the water comes from; the reply always names the side used per section."
+          "description": "Upstream side looking from the line's start to its end: 'left', 'right', or 'automatic' (default: each section takes the side most ground arrives from). Pass a side only when the person said which side the water comes from. The reply names the side per section."
         },
         "sources": {
           "anyOf": [
@@ -1700,7 +1700,7 @@
       "readOnlyHint": false,
       "title": "Promote a confirmed line's catchments to a layer"
     },
-    "description": "Promote a confirmed line's catchments to a GeoNode layer of the project: a snapshot to style, print and share.\n\nRefused unless a person has confirmed the line (ask them to, in the browser). When the line already has a promoted\nlayer, the call is refused with that layer and its 'the line has changed since' mark: ask the user, and call again\nwith replace=true only if they say yes. The layer you promote is marked as made by an agent and unreviewed. The\nsame mark is on get_delineation's `promoted_layer`. Give the user the link (`ui_url`): the layer is on the map in\nPromoted catchments.",
+    "description": "Promote a confirmed line's catchments to a GeoNode layer of the project: a snapshot to style and share.\n\nRefused unless a person has confirmed the line (ask them to, in the browser). When the line already has a promoted\nlayer, the call is refused with that layer and its 'the line has changed since' mark: ask the user, and call again\nwith replace=true only if they say yes. The layer you promote is marked as made by an agent and unreviewed. The\nsame mark is on get_delineation's `promoted_layer`. Give the user the link (`ui_url`): the layer is on the map in\nPromoted catchments.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1719,7 +1719,7 @@
         },
         "replace": {
           "default": false,
-          "description": "True only after the user said yes to replacing the contents of the line's promoted layer with the catchments as they are now (maps and prints that show the layer then show the new catchments).",
+          "description": "True only after the user said yes to replacing the contents of the line's promoted layer with the catchments as they are now (maps that show the layer then show the new catchments).",
           "type": "boolean"
         },
         "sources": {
@@ -1756,7 +1756,7 @@
       "readOnlyHint": false,
       "title": "Propose a drainage barrier, opening or excluded ground"
     },
-    "description": "Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is\nNOT applied: a person accepts it on the map, and only then does the drainage analysis use it.\n\nUse it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning says \"draw a drainage\nbarrier\" or \"draw a drainage opening\" and gives `where`), or when you can say exactly where water really goes and\nthe terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and\ngive them the link (`ui_url`). Lines on the terrain change only after the person accepts it and they run again.",
+    "description": "Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is\nNOT applied: a person accepts it on the map, and only then does the drainage analysis use it.\n\nUse it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning's `fix` is\n`drainage_barrier` or `drainage_opening`, with `fix_sentence`, `where` and the cut or fill `geometry`), or when you\ncan say exactly where water really goes and the terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and\ngive them the link (`ui_url`): it opens a line on this terrain (`line_to_open`, named in the sentence) with the\nproposal. Lines on the terrain change only after the person accepts it and they run again.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1788,7 +1788,7 @@
             }
           ],
           "default": null,
-          "description": "The line the person should look at; the link opens it."
+          "description": "The line the person should look at; the link opens it when it is on this terrain. Omit it and Hydrata picks a line on the terrain (the newest confirmed, else the newest)."
         },
         "from_import_check": {
           "default": false,

@@ -216,7 +216,7 @@ async def _poll_until(fetch, is_terminal, timeout_seconds, poll_interval_seconds
 # `hand_back_error` rather than hiding the result.
 # ---------------------------------------------------------------------------
 # TASK-4404 (epic 4274): `line` is a delineation line id, read with panel=catchments (gmc handBackParamsEpic, TASK-4399).
-HAND_BACK_PARAM_ORDER = ("panel", "layer", "scenario", "run", "kind", "line")
+HAND_BACK_PARAM_ORDER = ("panel", "layer", "scenario", "run", "kind", "line", "proposal")
 
 
 def _ui_origin() -> str:
