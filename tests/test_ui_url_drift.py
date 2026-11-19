@@ -16,7 +16,8 @@ import pytest
 
 from tests.helpers import reload_server
 
-FE_PARAMS = ("panel", "layer", "scenario", "run", "kind", "line")
+# TASK-4535 (finding F4): `proposal` rides with `line` on a drainage-correction proposal's link
+FE_PARAMS = ("panel", "layer", "scenario", "run", "kind", "line", "proposal")
 # panel=<value> the FE opens (PANEL_ACTIONS keys in handBackParamsEpic.js)
 FE_PANELS = ("inputs", "scenarios", "results", "hydrology", "input-review", "input-upload")
 # TASK-4399: the FE opens this one through a computed key ([DELINEATION_PAGE]), so the file scan below cannot see it.

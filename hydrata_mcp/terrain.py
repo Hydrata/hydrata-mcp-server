@@ -404,6 +404,22 @@ def _without_inferred_guess(record: dict) -> dict:
     return cleaned
 
 
+# TASK-4459 (D16): the agent's own words, not the API's: leaving ground out overrules the terrain, so a person does it.
+EXTRAPOLATED_PERSON_ONLY = "Only a person can leave this ground out, in Catchments. Tell the user."
+
+
+def _without_marked_ground(record):
+    """``record`` with its `extrapolated_ground` cut to what an agent reads: the marked ground's geometry is for the
+    person's map (and can be tens of kB), and the API's note to agents is not relayed as data (TASK-4459)."""
+    extrapolated = record.get("extrapolated_ground") if isinstance(record, dict) else None
+    if not isinstance(extrapolated, dict):
+        return record
+    return {
+        **record,
+        "extrapolated_ground": {k: v for k, v in extrapolated.items() if k not in ("geometry", "agent_note")},
+    }
+
+
 @_tool("get_terrain")
 async def get_terrain(
     project_id: Annotated[int, "The project ID"],
@@ -433,6 +449,10 @@ async def get_terrain(
     still `creating`/`styling`; several calls in a row is expected. `error` is
     terminal — the import failed and no default input rows were seeded; upload
     a corrected GeoTIFF as a new terrain.
+
+    A ready terrain whose import check found extrapolated ground (flat-sided triangles padding it out to its
+    edge, not surveyed ground) carries `extrapolated_ground` (`state` `flagged` or `left_out`) and a WARNING in
+    `say_to_user`: relay it. Only the person can leave that ground out of the drainage analysis, on the map.
 
     `ready` is written by the import task; the project's default input rows
     (Boundary 01, Friction 01, Inflow 01, Rainfall 01, Building 01,
@@ -507,6 +527,15 @@ async def get_terrain(
     summary["levels_datum"] = levels
     if mismatch:
         summary["levels_datum_mismatch"] = mismatch
+    # TASK-4459 (epic 4445 W3.3, D11, D16): the import check's extrapolated ground. The agent reads the warning; the
+    # marked ground's geometry is for the map, so it is not relayed. Leaving it out is a person's act on the map.
+    record = _without_marked_ground(record)
+    extrapolated = record.get("extrapolated_ground") if isinstance(record.get("extrapolated_ground"), dict) else None
+    if extrapolated:
+        result["terrain"] = record
+        summary["extrapolated_ground"] = {
+            k: extrapolated.get(k) for k in ("state", "fraction", "cells", "excluded_ground_id")
+        }
     if outcome == "ready":
         nodata = record.get("nodata_fraction")
         nodata = f"{nodata:.1%}" if isinstance(nodata, (int, float)) else "an unknown share"
@@ -533,6 +562,13 @@ async def get_terrain(
                 " The project has no levels datum yet: find out from the user which datum their levels are on, and "
                 "record their answer with set_levels_datum."
             )
+        if extrapolated and extrapolated.get("state") == "flagged":
+            fix = extrapolated.get("fix_sentence")
+            say += (
+                f" WARNING: {_data(extrapolated.get('sentence'))} {f'{fix} ' if fix else ''}{EXTRAPOLATED_PERSON_ONLY}"
+            )
+        elif extrapolated and extrapolated.get("state") == "left_out":
+            say += f" {_data(extrapolated.get('sentence'))}"
     elif outcome == "error":
         say = "The terrain import failed; the GeoTIFF needs fixing and uploading again."
     elif outcome == "not_found":
@@ -1056,7 +1092,7 @@ async def get_terrain_merge(
         "elapsed_seconds": elapsed,
         "analysis_surface_id": analysis_surface_id,
         "terrain_id": terrain_id,
-        "terrain": terrain,
+        "terrain": _without_marked_ground(terrain),
     }
     if failure is not None:
         result["error"] = _data(str(failure))

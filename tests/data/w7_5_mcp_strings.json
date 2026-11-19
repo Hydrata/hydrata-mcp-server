@@ -1,0 +1,350 @@
+{
+ "_about": "Section 5 (sentences an agent relays) of deploy docs/reports/2026-11-17-drainage-analysis-networks/w7.5-strings.md (TASK-4530), as TASK-4535 applied it: old text to new. One row differs from the table: the read's lead keeps the words '2 m deep or less' (the operator asked for words, not symbols).",
+ "rows": [
+  {
+   "name": "OMITTED",
+   "old": "The drawing data (the ground profile along the line, each catchment's polygon, the line's own vertices) is left on the map; use terrain_profile to read the ground along a line.",
+   "new": "Profile, polygons and line vertices stay on the map. Use terrain_profile for the ground along a line."
+  },
+  {
+   "name": "FAST_SCREEN",
+   "old": "fast screen (low resolution)",
+   "new": "(unchanged)"
+  },
+  {
+   "name": "HIGH_RES",
+   "old": "high resolution",
+   "new": "(unchanged)"
+  },
+  {
+   "name": "FAST_SCREEN_PROFILE",
+   "old": "This is a fast screen: its ground profile is not available anywhere (not on the map either), because the coarsened ground misleads. Run High resolution to see the profile.",
+   "new": "Fast screen: no ground profile anywhere. Run High resolution to see it."
+  },
+  {
+   "name": "FAST_SCREEN_CAVEAT",
+   "old": "A fast screen is a first look at low resolution: tell the person so, and offer High resolution before they rely on it (it can still be used as the model boundary).",
+   "new": "Fast screen: a first look at low resolution. Say so and offer High resolution. It can still be the model boundary."
+  },
+  {
+   "name": "SUGGESTIONS_NOTE",
+   "old": "Diversion suggestions are information only: a drain that could send one catchment's water to its neighbour. Only a person ticks one, in the browser; no tool applies, ticks or undoes a diversion.",
+   "new": "Diversion suggestions are information only. Only a person ticks one, in the browser."
+  },
+  {
+   "name": "BOUNDARY_RULE",
+   "old": "The boundary is Closed (Reflective) everywhere except a short open stretch, typed Transmissive, at each included drainage point (5 working cells long, never under 20 m). The delineation line itself is not open.",
+   "new": "Closed (Reflective) except a short Transmissive stretch at each included drainage point (5 working cells, 20 m minimum). The line itself is not open."
+  },
+  {
+   "name": "PERSON_ONLY",
+   "old": "Only a person in the browser can tick a diversion, check one again, or confirm a delineation.",
+   "new": "Only a person can tick or check a diversion, or confirm a delineation."
+  },
+  {
+   "name": "DRAINAGE_WORDS",
+   "old": "This terrain's drainage analysis is being prepared. A run on it waits for it, then goes on. / This terrain's drainage analysis is out of date. The next run works it out again, so it takes longer.",
+   "new": "Drainage analysis is being prepared. Runs wait for it. / Drainage analysis is out of date. Next run takes longer."
+  },
+  {
+   "name": "_shares_sentence (on the line)",
+   "old": "{at} (high point): {a} and {b} can share water; water ponds {h} m before it spills from one into the other. Both areas are uncertain.",
+   "new": "{at}: {a} and {b} can share water after {h} m ponding. Areas uncertain."
+  },
+  {
+   "name": "_shares_sentence (upstream)",
+   "old": "{a} and {b} can share water upstream of the line; the ground between them is {h} m above the channel. Both areas are uncertain.",
+   "new": "{a} and {b}: {h} m rise between them upstream of the line. Areas uncertain."
+  },
+  {
+   "name": "_meets_twice_sentence",
+   "old": "{here}: water leaving its drainage point reaches the line again at {ch}, in {again}. The area of {again} does not include the area of {here}.",
+   "new": "{here}: outflow reaches the line again at {ch}, in {again}. Its area is not counted there."
+  },
+  {
+   "name": "_ticks_text (to check)",
+   "old": "{n} diversions a person ticked were re-applied after the catchments changed and must be checked again",
+   "new": "{n} ticked diversions to check again"
+  },
+  {
+   "name": "_ticks_text (remembered)",
+   "old": "{n} more ticks are remembered but not applied now (the catchments it joins are grouped away by these settings)",
+   "new": "{n} more ticks remembered, not applied at these settings"
+  },
+  {
+   "name": "_ticks_text (tail)",
+   "old": "{PERSON_ONLY} Tell the user to open the link and check them; the delineation cannot be confirmed until then.",
+   "new": "{PERSON_ONLY} Give the user the link. It cannot be confirmed until they are checked."
+  },
+  {
+   "name": "_copied_from_text",
+   "old": "It is the High resolution copy of delineation {id} ({name}), whose fast screen is kept for comparison.",
+   "new": "High resolution copy of delineation {id} ({name}). Its fast screen is kept."
+  },
+  {
+   "name": "SIDE_ARGUMENT_HELP",
+   "old": "The line's upstream side, looking along the line from its start to its end: 'left' or 'right' puts the whole line on that side; 'automatic' (the default for a new line) lets Hydrata take, for each section of the line, the side most ground arrives from, flipping only where a flip brings in at least five times the Minimum catchment area more than it gives up. Ground on a section's downstream side makes no catchment and is reported as left out. Pass a side only when the person told you which side the water comes from; the reply always names the side used per section.",
+   "new": "Upstream side looking from the line's start to its end: 'left', 'right', or 'automatic' (default: each section takes the side most ground arrives from). Pass a side only when the person said which side the water comes from. The reply names the side per section."
+  },
+  {
+   "name": "SIDES_NOT_AVAILABLE",
+   "old": "This result was made before lines had an upstream side, so both sides of the line count. Run it again (delineate_catchments with this delineation_id and mode) to get its sections.",
+   "new": "No upstream-side sections: this result predates them. Run it again (delineate_catchments with this delineation_id and mode)."
+  },
+  {
+   "name": "_sides_words (lead)",
+   "old": "Upstream side (looking along the line from its start to its end), {count} sections: {each}. {who}",
+   "new": "Upstream side, {count} sections: {each}. {who}"
+  },
+  {
+   "name": "_sides_words (each)",
+   "old": "{from} to {to}: {side} side ({taken} ha taken in, {left_out} ha left out)",
+   "new": "{from} to {to}: {side}, {taken} ha in, {left_out} ha out"
+  },
+  {
+   "name": "_sides_words (by hand)",
+   "old": "The sides were set by hand.",
+   "new": "Sides set by hand."
+  },
+  {
+   "name": "_sides_words (automatic)",
+   "old": "Hydrata chose them: each section takes the side most ground arrives from, and a flip is made only where it pays for itself.",
+   "new": "Sides chosen automatically."
+  },
+  {
+   "name": "_adopted_words",
+   "old": "Its catchments were promoted to the layer {title} ({alternate}) by {who} on {made_at}.",
+   "new": "Adopted as layer {title} ({alternate}) by {who} on {made_at}."
+  },
+  {
+   "name": "_adopted_words (deleted)",
+   "old": " That layer has since been deleted; promote_catchments makes it again.",
+   "new": " Layer deleted since; adopt_catchments remakes it."
+  },
+  {
+   "name": "_adopted_words (unchanged)",
+   "old": " The line has not changed since.",
+   "new": " Line unchanged since."
+  },
+  {
+   "name": "_who (confirmed)",
+   "old": "A person ({who}) confirmed it on {at}.",
+   "new": "Confirmed by {who} on {at}."
+  },
+  {
+   "name": "_who (agent)",
+   "old": "An agent made it and no person has confirmed it, so it is unreviewed: only a person confirms it, in the browser.",
+   "new": "Made by an agent, unreviewed. Only a person confirms it, in the browser."
+  },
+  {
+   "name": "_who (person)",
+   "old": "A person ({who}) made it; no person has confirmed it yet.",
+   "new": "Made by {who}. Not confirmed."
+  },
+  {
+   "name": "_read_words (lead)",
+   "old": "Delineation {id} ({name}) has {n} catchments totalling {ha} ha; {d} diversions applied, {s} diversions suggested (information only), {sh} with a drain 2 m deep or less. Shown result: {kind}, worked at {w} m on a {t} m terrain, coarsened to the web server's limit.",
+   "new": "Delineation {id} ({name}): {n} catchments, {ha} ha. {d} diversions applied, {s} suggested, {sh} with a drain 2 m deep or less. {kind} at {w} m on a {t} m terrain."
+  },
+  {
+   "name": "_read_words (warnings)",
+   "old": "Warnings, relay every one: ... / The API raised no warnings.",
+   "new": "Warnings, relay every one: ... / No warnings."
+  },
+  {
+   "name": "_read_words (shares)",
+   "old": "{n} pair(s) of neighbouring catchments can share water: both areas of each pair are uncertain.",
+   "new": "{n} pair(s) can share water. Their areas are uncertain."
+  },
+  {
+   "name": "_read_words (replaced)",
+   "old": "The new high resolution result replaced the earlier one on this line; {n} catchment(s) of the earlier result have no match in it.",
+   "new": "New high resolution result. {n} earlier catchment(s) have no match."
+  },
+  {
+   "name": "_read_words (lapsed)",
+   "old": "The new result lapsed an earlier confirmation: a person needs to confirm again.",
+   "new": "Confirmation lapsed. A person must confirm again."
+  },
+  {
+   "name": "MODE_WORDS",
+   "old": "Fast screen (mode 'quick', low resolution) / High resolution (mode 'full')",
+   "new": "(unchanged)"
+  },
+  {
+   "name": "_estimate_words (lead)",
+   "old": "Estimate (a range, not a promise).",
+   "new": "Estimate (a range)."
+  },
+  {
+   "name": "_estimate_words (per mode)",
+   "old": "{mode}: about {cells} cells at {res} m on {where}, expected {low} to {high}, it can take hours (a web-server run that overruns is handed to Batch).",
+   "new": "{mode}: {cells} cells at {res} m on {where}, {low} to {high}, can take hours (moves to Batch if it overruns)."
+  },
+  {
+   "name": "_estimate_words (cannot)",
+   "old": " The {mode} run CANNOT run here: {reason}",
+   "new": "(unchanged)"
+  },
+  {
+   "name": "_estimate_words (copy)",
+   "old": " High resolution on this line makes a copy of it, '<name> (high res)', and runs there; the fast screen stays as it is, for comparison.",
+   "new": " High resolution runs on a copy, '<name> (high res)'. The fast screen stays."
+  },
+  {
+   "name": "_refused",
+   "old": "Hydrata refused {what}: {sentence} Nothing was changed. If this is a person's delineation or one a person confirmed, ask the user to change it in the browser.",
+   "new": "Refused {what}: {sentence} Nothing changed. For a person's or a confirmed delineation, ask the user to change it in the browser."
+  },
+  {
+   "name": "_refused (copy running)",
+   "old": "Hydrata refused {what}: {sentence} Nothing was changed. Follow delineation {running} with get_delineation.",
+   "new": "Refused {what}: {sentence} Nothing changed. Follow delineation {running} with get_delineation."
+  },
+  {
+   "name": "delineate_catchments (cannot start)",
+   "old": "The {mode} run cannot start, so no delineation was made: {sentence} Do the fast screen instead (mode='quick'): ...",
+   "new": "{mode} cannot start. No delineation was made: {sentence} Do the fast screen instead (mode='quick'): ..."
+  },
+  {
+   "name": "delineate_catchments (started)",
+   "old": "The {mode} delineation '{name}' (id {id}) has started on {where}. An agent made it, so it is unreviewed: only a person confirms it, in the browser.",
+   "new": "{mode} delineation '{name}' (id {id}) started on {where}. Made by an agent, unreviewed: only a person confirms it."
+  },
+  {
+   "name": "delineate_catchments (side)",
+   "old": " Upstream side: {side} for the whole line, as asked. / Upstream side: Hydrata will take, for each section of the line, the side most ground arrives from; the result names the side used per section.",
+   "new": " Upstream side: {side}, as asked. / Upstream side: automatic. The result names the side per section."
+  },
+  {
+   "name": "delineate_catchments (full)",
+   "old": " High resolution can take many hours: no fast screen is made by this call, and the person can close the map.",
+   "new": " High resolution can take many hours. No fast screen is made. The person can close the map."
+  },
+  {
+   "name": "delineate_catchments (quick)",
+   "old": " The fast screen takes seconds to a couple of minutes; I will read it and tell you the catchments and every warning. It is a first look at low resolution: offer High resolution before the person relies on it.",
+   "new": " The fast screen takes seconds to minutes. It is a first look: offer High resolution before the person relies on it."
+  },
+  {
+   "name": "_change (changed)",
+   "old": "Changed {fields}: the result was regrouped without a new run (the terrain step was not repeated).",
+   "new": "Changed {fields}: regrouped without a new run."
+  },
+  {
+   "name": "_change (copy)",
+   "old": "High resolution does not replace the fast screen: Hydrata made a copy of the line, {copy_name} (delineation {copy_id}), and runs High resolution on the copy. The fast screen (delineation {id}) stays as it is, so the person can compare the two. From now on read delineation {copy_id}.",
+   "new": "High resolution runs on a copy, {copy_name} (delineation {copy_id}). The fast screen (delineation {id}) stays. Read delineation {copy_id} from now on."
+  },
+  {
+   "name": "_change (started)",
+   "old": "The High resolution run has started on {where} at the terrain's own resolution. It can take many hours (up to about 24), and the person can close the map. The result shown on this line stays usable meanwhile; the new one replaces it when it finishes.",
+   "new": "High resolution started on {where}. It can take up to about 24 h. The person can close the map. The result shown stays usable until the new one replaces it."
+  },
+  {
+   "name": "_change (quick again)",
+   "old": "The fast screen (low resolution) is running again.",
+   "new": "Fast screen running again."
+  },
+  {
+   "name": "_change (did not start)",
+   "old": "The {mode} run did not start: {error} The copy (delineation {copy_id}) has no result; the fast screen (delineation {id}) is unchanged. / The result shown is unchanged.",
+   "new": "{mode} did not start: {error} Copy {copy_id} has no result. Fast screen {id} is unchanged. / Result unchanged."
+  },
+  {
+   "name": "get_delineation (error)",
+   "old": "The delineation did not finish: {sentence} Tell the user; delineate_catchments with this delineation_id and mode can run it again. (The run was cancelled. / Nothing has run on this delineation yet.)",
+   "new": "Run did not finish: {sentence} Tell the user. delineate_catchments with this delineation_id and mode runs it again. (Run cancelled. / Nothing has run yet.)"
+  },
+  {
+   "name": "get_delineation (still running)",
+   "old": "The High resolution delineation is still being made ({phase}, {pct}% through, {elapsed} so far); I am still waiting on it: read it again with get_delineation.",
+   "new": "High resolution: {pct}% processed. {elapsed} ({phase}). Read again with get_delineation."
+  },
+  {
+   "name": "get_delineation (full run going)",
+   "old": "A full-resolution run is going on {where}: {pct}% through, {elapsed} elapsed, expected to finish about {rem} from now ({at}) / , with no finish time yet / , handed over from the web server to Batch. The result shown ({kind}) is usable meanwhile; the new result replaces it when it finishes and keeps ids, names and diversions. High resolution can take many hours: do not wait in a loop; tell the person and read again later.",
+   "new": "High resolution on {where}: {pct}% processed. {elapsed}, finish in about {rem} ({at}) / , no finish time yet / , moved from the web server to Batch. The result shown ({kind}) stays usable; the new one keeps ids, names and diversions. Do not wait in a loop: tell the person and read again later."
+  },
+  {
+   "name": "get_delineation (full run failed)",
+   "old": "The High resolution run did not finish: {error} The result shown ({kind}) is unchanged and usable.",
+   "new": "High resolution did not finish: {error} The result shown ({kind}) is unchanged."
+  },
+  {
+   "name": "ENCLOSED_NOTE",
+   "old": "The boundary takes in {ha:.1f} ha that is not in a ticked catchment (between or inside them).",
+   "new": "{ha:.1f} ha inside the boundary is not in a ticked catchment."
+  },
+  {
+   "name": "OPENING_NOTE",
+   "old": "{name} keeps its own opening: its diversion to {neighbour} is not modelled.",
+   "new": "{name} keeps its opening. Its diversion is not modelled."
+  },
+  {
+   "name": "use_catchments_as_boundary (made)",
+   "old": "Made boundary '{title}' (input {id}, {n} features, a ring {perimeter} m round) from catchments {used}. It is Closed (Reflective) everywhere except short open stretches, typed Transmissive, at each included drainage point ({k} stretches, {open_total} m in all; each about {open} m, and stretches that overlap join into one). The boundary is unreviewed, and so is the delineation (no person has confirmed it): nothing is built or run until a person reviews them in the browser. To model with it, attach it to a scenario with update_scenario(boundary={id}), then give the user the link.",
+   "new": "Made boundary '{title}' (input {id}, {n} features, {perimeter} m round) from catchments {used}. Closed (Reflective) except {k} Transmissive stretches at the drainage points, {open_total} m in all. The boundary is unreviewed, and so is the delineation: nothing is built or run until a person reviews it. To model with it: update_scenario(boundary={id}), then give the user the link."
+  },
+  {
+   "name": "use_catchments_as_boundary (notes)",
+   "old": "Tell the person what the boundary takes in, and why: ",
+   "new": "Tell the person: "
+  },
+  {
+   "name": "use_catchments_as_boundary (fast screen)",
+   "old": "These catchments are from a fast screen (low resolution): tell the person, and that a High resolution run of the line may move the boundary.",
+   "new": "From a fast screen: tell the person a High resolution run may move the boundary."
+  },
+  {
+   "name": "use_catchments_as_boundary (warnings)",
+   "old": "Warnings about this delineation, relay every one: ",
+   "new": "Warnings, relay every one: "
+  },
+  {
+   "name": "ADOPT_RULE",
+   "old": "A promoted layer is a snapshot of a CONFIRMED line's catchments, published as a layer of the project (name, chainage, area and where each drains), to style, print and share like any other layer. It does not follow later changes to the line; it is marked 'the line has changed since', and promoting again replaces its contents. Only a person confirms a line, in the browser. A layer an agent promotes is marked as made by an agent and unreviewed until a person promotes it again.",
+   "new": "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains) and the line itself, drawn as the Catchments panel drew them. It does not follow later changes; adopting again replaces its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
+  },
+  {
+   "name": "adopt_catchments (not confirmed)",
+   "old": "Hydrata refused the promotion: {detail} Only a person confirms a line: ask the user to check the catchments and confirm the line in the browser (the link), then promote it.",
+   "new": "Adoption refused: {detail} Ask the user to check and confirm the line in the browser (the link), then adopt."
+  },
+  {
+   "name": "adopt_catchments (already)",
+   "old": "This line's catchments are already a layer ({title}), and the line has (not) changed since (it was promoted). Promoting again replaces its contents, and maps and prints that show it will change: ask the user, and call promote_catchments again with replace=true only if they say yes. Nothing was changed.",
+   "new": "Already a layer ({title}); the line has (not) changed since. Adopting again replaces its contents and changes maps that show it. Ask the user; call adopt_catchments with replace=true only on a yes. Nothing changed."
+  },
+  {
+   "name": "adopt_catchments (done)",
+   "old": "I made / replaced the contents of the layer {title} ({alternate}) from the {n} catchments of delineation {id}: name, chainage, area and where each drains. It is on the map in {group}, to style, print and share like any other layer. It is a snapshot: it does not follow later changes to the line. It is marked as made by an agent and unreviewed until you promote it again yourself.",
+   "new": "I made / replaced the contents of the layer {title} ({alternate}) from the {n} catchments of delineation {id}. It is on the map in {group}. It is a snapshot: it does not follow later changes. It is unreviewed until you adopt it again yourself."
+  },
+  {
+   "name": "CORRECTION_WORDS",
+   "old": "drainage barrier / drainage opening / excluded ground",
+   "new": "(unchanged)"
+  },
+  {
+   "name": "PROPOSAL_RULE",
+   "old": "A drainage correction changes where the drainage analysis sends water for every line on the terrain, so an agent only proposes one: it waits until a person accepts it on the map (Catchments, Drainage corrections), and nothing changes before then. It never changes the terrain a flood model runs on.",
+   "new": "An agent only proposes a drainage correction. Nothing changes until a person accepts it on the map. It never changes the terrain a flood model runs on."
+  },
+  {
+   "name": "propose_drainage_correction (waiting)",
+   "old": "I proposed a {words} on terrain {terrain_id} (proposal {id}): {note} It is waiting for you to accept it on the map: open the link, then Catchments, Drainage corrections, and Accept or Reject it. Nothing changes until you accept it; after that, each line on the terrain says to run it again.",
+   "new": "I proposed a {words} on terrain {terrain_id} (proposal {id}, line {line}): {note} Open the link and Accept or Reject it under Notices, Agent. Nothing changes until you accept."
+  },
+  {
+   "name": "propose_drainage_correction (stored)",
+   "old": "Hydrata stored the {words} on terrain {terrain_id} (correction {id}) without waiting for a person. Tell the user what changed.",
+   "new": "Stored the {words} on terrain {terrain_id} (correction {id}) without waiting for a person. Tell the user."
+  },
+  {
+   "name": "ToolError messages",
+   "old": "name is required ... / line is required ... / line has no length ... / A tool cannot move a delineation's line ... / A tool cannot change a delineation's terrain ... / Nothing to change ... / catchment_ids must list ... / kind must be ... / reason must be ... / Give either from_import_check or area ... / A {words} is a line ...",
+   "new": "(unchanged)"
+  }
+ ]
+}

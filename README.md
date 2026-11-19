@@ -28,7 +28,7 @@ Keys and connections are listed, and revoked, on the same Agent keys page. A run
 
 ## Tools
 
-Version 0.2.3 exposes forty-six tools, all listed below; twenty of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
+Version 0.2.4 exposes fifty-one tools, all listed below; twenty-one of them only read. Every tool carries MCP annotations: a `title` and explicit boolean `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` (`openWorldHint` is false on every tool: they reach only your Hydrata account). `destructiveHint` is true only on `cancel_run`, `delete_time_series` and `delete_observation`.
 
 | Tool | Description |
 |------|-------------|
@@ -57,6 +57,8 @@ Version 0.2.3 exposes forty-six tools, all listed below; twenty of them only rea
 | `delineate_catchments` | Catchments from a delineation line on a project's terrain: starts the job and returns at once with the delineation id, the map link and an estimate (cells, resolution, where it runs, expected time range); `mode` quick (default) or full (the terrain's own resolution, on AWS Batch, can take many hours); with a `delineation_id` of the agent's own unconfirmed delineation it changes the name, start chainage or either area (regrouped, no new job) or starts the full run; `estimate_only` runs nothing. What an agent makes is unreviewed until a person confirms it; no tool ticks a diversion, confirms or deletes |
 | `get_delineation` | Read a delineation, waiting for its job like `get_terrain_merge` (`outcome` ready, error or timed_out; `phase`): catchment names, each chainage as CH k+mmm with its distance in metres, areas, `arrives_ha`, arrival points, diversion suggestions (information only), ticked diversions (and any to check again), every warning as its sentence, who made it and whether a person confirmed it, which result is shown (quick or full) and a full run's progress |
 | `use_catchments_as_boundary` | A new model boundary round chosen catchments that touch: Closed (Reflective) everywhere except a short Transmissive stretch at each drainage point; unreviewed until a person reviews it |
+| `adopt_catchments` | Adopt a confirmed line's catchments as a GeoNode layer of the project (a snapshot to style and share, in Adopted catchments); refused until a person confirms the line; replacing an existing adopted layer needs `replace=true`; the layer is marked as made by an agent and unreviewed |
+| `propose_drainage_correction` | Propose a drainage barrier, a drainage opening or excluded ground for a terrain; stored as a proposal and NOT applied until a person accepts it on the map |
 | `sample_terrain` | Ground level at points (null where the terrain has no data), to place a culvert, inflow or boundary on the ground |
 | `terrain_profile` | Ground along a line (a cross-section) with the lowest sample, to find where a channel runs |
 | `create_time_series` | Create a time series (rain gauge, hydrograph or tide/stage — `series_type` and `units` are top-level fields) from `{"rowData": [...]}`; a rainfall polygon binds to its gauge by the series name; summary = row count + first/last timestamp; the link opens the Hydrology panel |

@@ -123,6 +123,62 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Adopt a confirmed line's catchments as a layer"
+    },
+    "description": "Adopt a confirmed line's catchments as a GeoNode layer of the project: a snapshot to style and share.\n\nRefused unless a person has confirmed the line (ask them to, in the browser). When the line already has an adopted\nlayer, the call is refused with that layer and its 'the line has changed since' mark: ask the user, and call again\nwith replace=true only if they say yes. The layer you adopt is marked as made by an agent and unreviewed. The\nsame mark is on get_delineation's `adopted_layer`. Give the user the link (`ui_url`): the layer is on the map in\nAdopted catchments.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "authored_method": {
+          "default": "",
+          "description": "One short phrase saying why you are adopting these catchments. Shown to the person who reviews it.",
+          "type": "string"
+        },
+        "delineation_id": {
+          "description": "`delineation_id` of a line a person has confirmed",
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "replace": {
+          "default": false,
+          "description": "True only after the user said yes to replacing the contents of the line's adopted layer with the catchments as they are now (maps that show the layer then show the new catchments).",
+          "type": "boolean"
+        },
+        "sources": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. Limits: title (1-200 characters) and url (http or https, at most 2000 characters) are required; locator (a page or table, e.g. 'p. 42' or 'Table 5-2') is optional, at most 100 characters. At most 20 entries. Pass it beside the method whenever you cite a document."
+        }
+      },
+      "required": [
+        "project_id",
+        "delineation_id"
+      ],
+      "type": "object"
+    },
+    "name": "adopt_catchments",
+    "title": "Adopt a confirmed line's catchments as a layer"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Attach an uploaded layer as a project input"
     },
     "description": "Attach a GeoJSON you uploaded to GeoNode as the project's boundary, friction, inflow, rainfall, building, mesh_region or culvert layer.\n\nOnly for a client that has a shell and an agent key. A connector agent\nwith no shell (claude.ai) writes the layer inline with write_input_layer,\nor, for a file above the inline cap, gives the user the\nrequest_input_upload link instead.\n\nThe agent moves the bytes: first upload the GeoJSON yourself, with the\nsame agent key, to GeoNode's upload endpoint at the site origin:\n\n    curl -sS -H 'Authorization: Bearer hk_...' -F \"base_file=@/path/rainfall.geojson\" https://<site>/api/v2/uploads/upload/\n\n→ JSON with `execution_id`. Then call this tool with it. The tool polls\nGET /api/v2/resource-service/execution-status/<execution_id> (bounded by\ntimeout_seconds; statuses ready → running → finished | failed), reads the\nnew dataset's pk, and PATCHes it onto the project's DEFAULT row of that\nkind ('Boundary 01' … 'MeshRegion 01' — the six rows the terrain import\nseeds ~30 s after get_terrain reports ready; if the list is still empty\nthe tool says so: run finalize_terrain_upload / wait for get_terrain first).\n\nkind `culvert` (Hydraulic Structures; one two-point line per culvert,\nInlet first, then Outlet): no culvert row is seeded by the terrain import,\nso a project with none answers `no_default_row`: write the culverts with\nwrite_input_layer, which makes the row. Hydrata converts every attached\nlayer into the project's grid and the kind's table shape (single\ngeometries, the_geom, the kind's own columns); attribute names are matched\nas they are, nothing is renamed for you (see write_input_layer).\nThe culvert engine conveys flow through each culvert in a run (GPU\nlanes and localhost; the multi-core CPU lanes refuse a culvert scenario).\n\n`outcome` is exactly one of: `attached` (row_id, gn_layer, dataset_pk and\ndataset_alternate — the WFS typename — of the CONVERTED layer the row now\nuses, source_dataset_pk — the dataset you uploaded — and every row id seen);\n`timed_out` (still importing: call\nagain with the same arguments, except pass `retry_execution_id` as\nexecution_id when the result carries one); `upload_failed` (the\nexecution record, incl. its log, is returned verbatim — fix the file and\nupload again); `no_default_row`; `no_dataset` (finished but no resource\nwas recorded). The PATCH is refused with a 400 if the dataset is not\nowned by you.\n\nEvery layer attached here is marked as written by your agent key and is\nUNREVIEWED until the user reviews it in their browser (the build refuses\nUNREVIEWED_INPUTS until then). INFLOWS: never invent an inflow location —\nno coordinates you made up, guessed or \"placed plausibly\". Import the\nlocation from the study's own files, or give the user the ui_url to draw\nit in the map; say in say_to_user that the inflow is unreviewed and where\nthey check or draw it.\n\nRefused, with no request made: kind `breakline` — Hydrata has no way to\ncreate a breakline layer, so attaching one would only\npretend. Also refused without a request: an execution_id that is not the\nUUID the upload returned.\nOne GeoJSON per kind: all of a kind's features travel in that one file. A\nrainfall polygon names its gauge in its `data` property — create that\ngauge with create_time_series under the exact same name.",
@@ -806,7 +862,7 @@
       "readOnlyHint": false,
       "title": "Make catchments from a delineation line, or change its settings"
     },
-    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nWith `delineation_id`: changing the name, start chainage or either area regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.",
+    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -898,6 +954,23 @@
         "project_id": {
           "description": "The project ID (Contributor rights)",
           "type": "integer"
+        },
+        "side": {
+          "anyOf": [
+            {
+              "enum": [
+                "left",
+                "right",
+                "automatic"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Upstream side looking from the line's start to its end: 'left', 'right', or 'automatic' (default: each section takes the side most ground arrives from). Pass a side only when the person said which side the water comes from. The reply names the side per section."
         },
         "sources": {
           "anyOf": [
@@ -1034,7 +1107,7 @@
       "readOnlyHint": true,
       "title": "Wait for and read a delineation"
     },
-    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;\nit never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a\nfirst look: say so, and offer High resolution before the person relies on it; its profile is not available) or\n'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High\nresolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's\nprogress, elapsed time, expected finish, where it runs and whether it was handed to Batch. Read-only.",
+    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;\nit never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a\nfirst look: say so, and offer High resolution before the person relies on it; its profile is not available) or\n'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High\nresolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's\nprogress, elapsed time, expected finish, where it runs and whether it was handed to Batch. `drainage_analysis` says\nwhether the terrain's drainage analysis is being prepared (the run waits for it) or out of date (the next run works it\nout again), with the sentence to relay. Read-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1291,7 +1364,7 @@
       "readOnlyHint": true,
       "title": "Wait for a terrain import"
     },
-    "description": "Poll a terrain's import until it is `ready` (or `error`), bounded by timeout_seconds.\n\nReturns `outcome` — exactly one of `ready`, `error`, `timed_out`, `not_found`\n(the project has no terrain yet; an unknown terrain_id is an API 404 error\ninstead) — plus the last `status` seen (creating → styling → ready | error)\nand `phase` (that status, or `not_found`; never empty),\n`polls`, `elapsed_seconds` and the full `terrain` record (its `gn_layer` is\nthe published elevation dataset pk once ready). An import takes minutes to\ntens of minutes (the SAME 32 MB 1 m DEM measured 4.5 min once and 26 min\nonce — the worker's S3 download speed dominates), so `timed_out` is normal\nand NOT a failure: keep calling with the same arguments while `status` is\nstill `creating`/`styling`; several calls in a row is expected. `error` is\nterminal — the import failed and no default input rows were seeded; upload\na corrected GeoTIFF as a new terrain.\n\n`ready` is written by the import task; the project's default input rows\n(Boundary 01, Friction 01, Inflow 01, Rainfall 01, Building 01,\nMeshRegion 01, one GeoNode layer each) are seeded by the NEXT task in the\nchain and appear over the following ~30 s. Poll the input-layer list until\nit is non-empty before attaching your own layer to a default row.",
+    "description": "Poll a terrain's import until it is `ready` (or `error`), bounded by timeout_seconds.\n\nReturns `outcome` — exactly one of `ready`, `error`, `timed_out`, `not_found`\n(the project has no terrain yet; an unknown terrain_id is an API 404 error\ninstead) — plus the last `status` seen (creating → styling → ready | error)\nand `phase` (that status, or `not_found`; never empty),\n`polls`, `elapsed_seconds` and the full `terrain` record (its `gn_layer` is\nthe published elevation dataset pk once ready). An import takes minutes to\ntens of minutes (the SAME 32 MB 1 m DEM measured 4.5 min once and 26 min\nonce — the worker's S3 download speed dominates), so `timed_out` is normal\nand NOT a failure: keep calling with the same arguments while `status` is\nstill `creating`/`styling`; several calls in a row is expected. `error` is\nterminal — the import failed and no default input rows were seeded; upload\na corrected GeoTIFF as a new terrain.\n\nA ready terrain whose import check found extrapolated ground (flat-sided triangles padding it out to its\nedge, not surveyed ground) carries `extrapolated_ground` (`state` `flagged` or `left_out`) and a WARNING in\n`say_to_user`: relay it. Only the person can leave that ground out of the drainage analysis, on the map.\n\n`ready` is written by the import task; the project's default input rows\n(Boundary 01, Friction 01, Inflow 01, Rainfall 01, Building 01,\nMeshRegion 01, one GeoNode layer each) are seeded by the NEXT task in the\nchain and appear over the following ~30 s. Poll the input-layer list until\nit is non-empty before attaching your own layer to a default row.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1674,6 +1747,104 @@
     },
     "name": "presign_terrain_upload",
     "title": "Get a terrain upload URL"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Propose a drainage barrier, opening or excluded ground"
+    },
+    "description": "Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is\nNOT applied: a person accepts it on the map, and only then does the drainage analysis use it.\n\nUse it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning's `fix` is\n`drainage_barrier` or `drainage_opening`, with `fix_sentence`, `where` and the cut or fill `geometry`), or when you\ncan say exactly where water really goes and the terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and\ngive them the link (`ui_url`): it opens a line on this terrain (`line_to_open`, named in the sentence) with the\nproposal. Lines on the terrain change only after the person accepts it and they run again.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "area": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For excluded ground drawn by you: the ring as [[lon, lat], ...] (at least 3 points; it is closed for you)."
+        },
+        "delineation_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The line the person should look at; the link opens it when it is on this terrain. Omit it and Hydrata picks a line on the terrain (the newest confirmed, else the newest)."
+        },
+        "from_import_check": {
+          "default": false,
+          "description": "For excluded ground: propose the extrapolated ground the terrain's import check marked (no `area`).",
+          "type": "boolean"
+        },
+        "kind": {
+          "description": "drainage_barrier: a line water cannot cross (an embankment the terrain does not hold); drainage_opening: a line water passes through (a culvert or gap the terrain does not show), which can grow a catchment; excluded_ground: ground left out of the drainage analysis.",
+          "enum": [
+            "drainage_barrier",
+            "drainage_opening",
+            "excluded_ground"
+          ],
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a barrier or an opening: the line as [[lon, lat], ...] (at least 2 points, WGS84). For an opening, from where the water is to where it goes; for a barrier, across the way the water should not go."
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "reason": {
+          "description": "One or two sentences the person reads before accepting: what you saw (for example the warning's sentence) and why this fixes it.",
+          "type": "string"
+        },
+        "terrain_id": {
+          "description": "The terrain the correction belongs to (a delineation's `line.terrain_id`)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "kind",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "propose_drainage_correction",
+    "title": "Propose a drainage barrier, opening or excluded ground"
   },
   {
     "annotations": {

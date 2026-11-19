@@ -409,6 +409,10 @@ TOOL_ANNOTATIONS = {
     "delineate_catchments": ("Make catchments from a delineation line, or change its settings", False, False, False),
     "get_delineation": ("Wait for and read a delineation", True, False, True),
     "use_catchments_as_boundary": ("Use catchments as the model boundary", False, False, False),
+    # TASK-4467 (epic 4445 W5.4, D16): stored as a proposal a person accepts on the map; nothing is applied.
+    "propose_drainage_correction": ("Propose a drainage barrier, opening or excluded ground", False, False, False),
+    # TASK-4469 (epic 4445 W6.2, D8): a confirmed line's catchments to a layer; replaces only with replace=true.
+    "adopt_catchments": ("Adopt a confirmed line's catchments as a layer", False, False, False),
 }
 
 

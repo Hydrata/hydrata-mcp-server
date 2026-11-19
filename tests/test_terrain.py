@@ -305,3 +305,109 @@ class TestGetTerrainTool:
             props = tools[name]["inputSchema"]["properties"]
             for forbidden in ("file", "bytes", "base64", "content", "data", "path"):
                 assert forbidden not in props, (name, forbidden)
+
+
+# ---------------------------------------------------------------------------
+# TASK-4459 (epic 4445 W3.3, D11, D16): the extrapolated-ground warning rides the terrain read. An agent can only tell
+# the person; leaving the ground out is a person's act on the map (the API refuses an agent key).
+# ---------------------------------------------------------------------------
+
+MARKED = {"type": "Polygon", "coordinates": [[[149.1, -35.2], [149.11, -35.2], [149.11, -35.21], [149.1, -35.2]]]}
+FLAGGED = {
+    "state": "flagged",
+    "cells": 5723544,
+    "fraction": 0.4165,
+    "geometry": MARKED,
+    "can_leave_out": True,
+    "excluded_ground_id": None,
+    "sentence": "42% of this terrain is extrapolated ground. Catchments over it are not real.",
+    "fix_sentence": "Leave it out, or keep a real surface.",
+    "agent_note": "Only a person can leave this ground out, in Catchments. Tell the user.",
+}
+
+
+class TestGetTerrainExtrapolatedGround:
+    @respx.mock
+    async def test_get_terrain_relays_the_extrapolated_ground_warning(self, _server):
+        respx.get(f"{BASE}/projects/42/terrain/7/").mock(
+            return_value=httpx.Response(200, json=_terrain(7, "ready", gn_layer=1, extrapolated_ground=FLAGGED))
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "get_terrain", {"project_id": 42, "terrain_id": 7, "poll_interval_seconds": 0}
+            )
+        )
+        say = data["say_to_user"] if "say_to_user" in data else json.dumps(data)
+        assert "extrapolated ground" in say
+        assert (
+            "Catchments over it are not real. Leave it out, or keep a real surface. Only a person can leave this ground out, in Catchments. Tell the user."
+            in say
+        )
+        warning = data["summary"]["extrapolated_ground"]
+        assert warning["state"] == "flagged" and warning["fraction"] == pytest.approx(0.4165)
+        # the agent reads the warning, not the map geometry (a person sees that on the map)
+        assert "geometry" not in warning
+        assert "geometry" not in data["terrain"]["extrapolated_ground"]
+
+    @respx.mock
+    async def test_get_terrain_says_when_the_extrapolated_ground_is_left_out(self, _server):
+        left_out = {
+            **FLAGGED,
+            "state": "left_out",
+            "can_leave_out": False,
+            "excluded_ground_id": 3,
+            "agent_note": None,
+            "sentence": "42% of this terrain is left out as excluded ground.",
+        }
+        respx.get(f"{BASE}/projects/42/terrain/7/").mock(
+            return_value=httpx.Response(200, json=_terrain(7, "ready", gn_layer=1, extrapolated_ground=left_out))
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "get_terrain", {"project_id": 42, "terrain_id": 7, "poll_interval_seconds": 0}
+            )
+        )
+        say = json.dumps(data)
+        assert "42% of this terrain is left out as excluded ground." in say
+        assert data["summary"]["extrapolated_ground"]["state"] == "left_out"
+
+    @respx.mock
+    async def test_get_terrain_without_extrapolated_ground_says_nothing_of_it(self, _server):
+        respx.get(f"{BASE}/projects/42/terrain/7/").mock(
+            return_value=httpx.Response(200, json=_terrain(7, "ready", gn_layer=1, extrapolated_ground=None))
+        )
+        data = _tool_json(
+            await _call_as_caller(
+                _server, "get_terrain", {"project_id": 42, "terrain_id": 7, "poll_interval_seconds": 0}
+            )
+        )
+        assert "extrapolated" not in json.dumps(data["summary"])
+
+    async def test_extrapolated_ground_no_tool_lets_an_agent_leave_ground_out(self, _server):
+        """D16: an agent proposes; a person leaves the ground out on the map. No tool takes the excluded-ground route."""
+        import inspect
+
+        import hydrata_mcp
+
+        for module_name in ("terrain", "delineation"):
+            module = __import__(f"hydrata_mcp.{module_name}", fromlist=["x"])
+            assert "excluded-ground" not in inspect.getsource(module)
+        assert hydrata_mcp is not None
+
+
+@respx.mock
+async def test_get_terrain_merge_does_not_relay_the_marked_ground_geometry_extrapolated(_server):
+    respx.get(f"{BASE}/projects/42/analysis-surfaces/5/").mock(
+        return_value=httpx.Response(200, json={"id": 5, "output_terrain": 7, "last_derive": {"status": "complete"}})
+    )
+    respx.get(f"{BASE}/projects/42/terrain/7/").mock(
+        return_value=httpx.Response(200, json=_terrain(7, "ready", gn_layer=1, extrapolated_ground=FLAGGED))
+    )
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "get_terrain_merge", {"project_id": 42, "analysis_surface_id": 5, "poll_interval_seconds": 0}
+        )
+    )
+    assert data["terrain"]["extrapolated_ground"]["state"] == "flagged"
+    assert "geometry" not in data["terrain"]["extrapolated_ground"]
+    assert "agent_note" not in data["terrain"]["extrapolated_ground"]
