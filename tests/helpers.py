@@ -172,6 +172,8 @@ def _series_args(**overrides):
         "data": {"rowData": ROW_DATA},
         "series_type": "hyetograph",
         "units": "mm/hr",
+        # A real Sydney gauge series: the zone is the series' own, given explicitly. TASK-3897: no tool
+        # defaults or exemplifies a zone; tests/test_series_zone_default.py pins the omitted-zone path.
         "timezone": "Australia/Sydney",
         "rainfall_basis": "excess",  # TASK-4091: a hyetograph states its basis (ignored for other series types)
     }
@@ -187,7 +189,7 @@ def _series_row(pk, **overrides):
         "source": "",
         "description": "",
         "location_name": "",
-        "timezone": "Australia/Sydney",
+        "timezone": "Australia/Sydney",  # the zone Hydrata saved for the explicit-zone fixture above
         "series_type": "hyetograph",
         "units": "mm/hr",
         "data": {"rowData": ROW_DATA},

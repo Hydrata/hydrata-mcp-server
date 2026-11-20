@@ -218,9 +218,11 @@ async def create_time_series(
     location_name: Annotated[str, "Human-readable location of the gauge (optional)"] = "",
     timezone: Annotated[
         str,
-        "IANA timezone of the series (default 'UTC'), e.g. 'Australia/Sydney': the zone its stamps with no offset "
-        "are read in and its summary is shown in." + TIMESTAMP_OFFSET_RULE,
-    ] = "UTC",
+        "IANA timezone of the series, e.g. 'UTC', 'Europe/London' or 'America/Chicago': the zone its stamps "
+        "with no offset are read in and its summary is shown in. Omit it to use the project's zone (Hydrata "
+        "derives it from where the project is; UTC for a project with no location); the result reports the "
+        "zone saved." + TIMESTAMP_OFFSET_RULE,
+    ] = "",
     hold_last_value: Annotated[
         bool,
         "Set true ONLY when you mean the last value not to be 0. " + HOLD_LAST_VALUE_RULE + " A hydrograph or "
@@ -284,12 +286,14 @@ async def create_time_series(
         "description": description,
         "source": source,
         "location_name": location_name,
-        "timezone": timezone,
         "series_type": series_type,
         "units": units,
         "hold_last_value": hold_last_value,
         "data": data,
     }
+    if timezone.strip():
+        # TASK-3897: an omitted zone is left out, so Hydrata reads the series in the PROJECT's zone (TASK-3933)
+        payload["timezone"] = timezone.strip()
     if series_type == "hyetograph":
         payload["rainfall_basis"] = rainfall_basis  # TASK-4091
     if method.strip():
@@ -310,7 +314,7 @@ async def create_time_series(
         "name": body.get("name", name),
         "series_type": body.get("series_type", series_type),
         "units": body.get("units", units),
-        "timezone": body.get("timezone", timezone),
+        "timezone": body.get("timezone", timezone.strip() or None),
         "row_count": row_count,
         "http_status": status_code,
     }

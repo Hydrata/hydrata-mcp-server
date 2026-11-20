@@ -769,8 +769,8 @@
           "description": "The documents this came from, so the engineer can click through to them: a list of {title, url, locator}, e.g. [{title: 'GHD 2015 Sullivans Creek Flood Study', url: 'https://...', locator: 'Table 5-2'}]. Limits: title (1-200 characters) and url (http or https, at most 2000 characters) are required; locator (a page or table, e.g. 'p. 42' or 'Table 5-2') is optional, at most 100 characters. At most 20 entries. Pass it beside the method whenever you cite a document."
         },
         "timezone": {
-          "default": "UTC",
-          "description": "IANA timezone of the series (default 'UTC'), e.g. 'Australia/Sydney': the zone its stamps with no offset are read in and its summary is shown in. Time zones: a stamp with no offset is a wall clock in the series timezone; a stamp with Z or +hh:mm is that instant, stored in UTC and shown in the series timezone; one series never mixes the two (Hydrata refuses it with MIXED_TIMESTAMP_FORMS).",
+          "default": "",
+          "description": "IANA timezone of the series, e.g. 'UTC', 'Europe/London' or 'America/Chicago': the zone its stamps with no offset are read in and its summary is shown in. Omit it to use the project's zone (Hydrata derives it from where the project is; UTC for a project with no location); the result reports the zone saved. Time zones: a stamp with no offset is a wall clock in the series timezone; a stamp with Z or +hh:mm is that instant, stored in UTC and shown in the series timezone; one series never mixes the two (Hydrata refuses it with MIXED_TIMESTAMP_FORMS).",
           "type": "string"
         },
         "units": {
