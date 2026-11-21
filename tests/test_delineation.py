@@ -1918,3 +1918,51 @@ def test_get_stream_corridor_the_instructions_send_agents_to_it_for_the_mesh_reg
     text = reload_server().mcp.instructions
     assert "get_stream_corridor" in text
     assert "never derive streams off the platform" in text
+
+
+# ---------------------------------------------------------------------------
+# TASK-4559 review (epic 4445 W12 part 1, D16 parity): the estimate names where the run goes by the run's own rule, and
+# says when it waits for the terrain's drainage analysis first, as the Catchments footer does.
+# ---------------------------------------------------------------------------
+def _waits_estimate():
+    """Sullivans 765 on hydrata.com 20-11-26: no kept analysis yet, so the run waits for one on cloud compute, then reads
+    it on the web server."""
+    est = _estimate()
+    est["full"].update(
+        cells=4_862_360,
+        working_resolution_m=5.0,
+        runs_on="web_server",
+        expected_seconds={"low": 61, "high": 654},
+        can_take_hours=False,
+        drainage_analysis_first=True,
+        drainage_analysis_runs_on="batch",
+        drainage_analysis_seconds={"low": 60, "high": 649},
+    )
+    return est
+
+
+@respx.mock
+async def test_estimate_says_a_run_waits_for_the_drainage_analysis_first(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_waits_estimate()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "terrain_id": 37, "estimate_only": True}
+        )
+    )
+    say = data["say_to_user"]
+    assert "on the web server, after the drainage analysis (prepared first on AWS Batch, 60 s to 11 min)" in say
+    # a run that goes at once says nothing of a wait
+    assert say.count("after the drainage analysis") == 1
+
+
+@respx.mock
+async def test_estimate_of_a_run_that_goes_at_once_says_no_wait(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "terrain_id": 37, "estimate_only": True}
+        )
+    )
+    assert "after the drainage analysis" not in data["say_to_user"]

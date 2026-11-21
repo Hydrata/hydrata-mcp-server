@@ -480,6 +480,15 @@ def _estimate_words(estimate: dict) -> str:
         low = (e.get("expected_seconds") or {}).get("low")
         high = (e.get("expected_seconds") or {}).get("high")
         where = "AWS Batch" if e.get("runs_on") == "batch" else "the web server"
+        if e.get("drainage_analysis_first"):
+            # TASK-4559: the run waits for the terrain's drainage analysis first (the range already holds the wait), as
+            # the Catchments footer says
+            wait = e.get("drainage_analysis_seconds") or {}
+            first = "AWS Batch" if e.get("drainage_analysis_runs_on") == "batch" else "the web server"
+            where += (
+                f", after the drainage analysis (prepared first on {first}, "
+                f"{_duration(wait.get('low'))} to {_duration(wait.get('high'))})"
+            )
         text = (
             f"{MODE_WORDS[mode]}: {e.get('cells'):,} cells at {_m(e.get('working_resolution_m'))} m on {where}, "
             f"{_duration(low)} to {_duration(high)}"
