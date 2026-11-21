@@ -11,7 +11,7 @@ Please do not open a public issue or pull request for a suspected vulnerability,
 
 ## Scope
 
-This repository is the MCP server in front of the Hydrata REST API (`https://hydrata.com/mcp/`). It checks the shape of the caller's credential and forwards it; the credential is verified, and the account's project permissions are applied, by Hydrata (Django). A weakness in how Hydrata verifies credentials or authorises requests is also in scope: report it the same way and we will route it.
+This repository is the MCP server in front of the Hydrata REST API (`https://hydrata.com/mcp/`). It is an OAuth resource server: it accepts only a credential shaped as a Hydrata agent key or a connect-flow token, checks that shape (not the token's audience or signature), and sends it with each call it makes to the REST API, where Hydrata (Django) verifies it on every request, refusing a connect-flow token not issued for this MCP resource, and applies the account's project permissions, the grant's level and spend limit, and the person-only acts (input review, consent, publishing). A weakness in how Hydrata verifies credentials or authorises requests is also in scope: report it the same way and we will route it.
 
 What the server does and does not do, with a citation to code or a test for each statement, is in [docs/security-model.md](docs/security-model.md).
 
