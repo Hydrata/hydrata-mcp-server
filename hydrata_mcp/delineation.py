@@ -337,6 +337,9 @@ def _result(doc: dict) -> dict:
         "drainage_changed": doc.get("drainage_changed"),
         # epic 4445 W6.2: the line's adopted layer and whether the line has changed since (null: never adopted)
         "adopted_layer": _adopted_doc(doc.get("promoted_layer")),
+        # epic 4445 W11.3 (TASK-4485): what adopting now carries of the line's confirmed sub-catchments, and what it leaves
+        # out (a draft) as the API's sentence (null: the line has none)
+        "adopt_sub_catchments": doc.get("adopt_sub_catchments"),
         "omitted": OMITTED,
     }
     shown = doc.get("shown_result")
@@ -444,6 +447,9 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     adopted = _adopted_words(result.get("adopted_layer"))
     if adopted:
         parts.append(adopted)
+    left_out = (result.get("adopt_sub_catchments") or {}).get("left_out_sentence")
+    if left_out:
+        parts.append(f"Adopting: {left_out}")
     if ticks:
         parts.append(ticks)
     words = result["warnings_in_words"]
@@ -1302,6 +1308,8 @@ async def adopt_catchments(
         "method": reply.get("method"),
         "vertices_before": reply.get("vertices_before"),
         "vertices_after": reply.get("vertices_after"),
+        # TASK-4485: what of the line's sub-catchments the entry leaves out (a draft), the API's sentence, or null
+        "left_out_sentence": reply.get("left_out_sentence"),
         "rule": ADOPT_RULE,
     }
     what = "replaced the contents of" if replaced else "made"
@@ -1310,6 +1318,15 @@ async def adopt_catchments(
         f"catchments of delineation {delineation_id}. It is on the map in "
         f"{layer.get('map_group') or 'Adopted catchments'}. It is a snapshot: it does not follow later changes."
     )
+    carried = layer.get("sub_catchments") if isinstance(layer.get("sub_catchments"), dict) else None
+    if carried:
+        say += (
+            f" It carries version {carried.get('version')} of the sub-catchments, as confirmed: "
+            f"{carried.get('sub_catchments')} sub-catchments, {carried.get('nodes')} nodes and {carried.get('reaches')} "
+            "reaches."
+        )
+    if reply.get("left_out_sentence"):
+        say += f" {reply.get('left_out_sentence')}"
     if layer.get("unreviewed"):
         say += " It is unreviewed until you adopt it again yourself."
     summary = {

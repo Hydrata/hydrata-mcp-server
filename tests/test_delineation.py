@@ -617,6 +617,18 @@ async def test_get_delineation_counts_every_suggestion_and_how_many_are_shallow(
 
 
 @respx.mock
+async def test_get_delineation_relays_what_adopting_now_leaves_out_of_the_sub_catchments(_server):
+    # review of W11 (TASK-4485): the line read's adopt_sub_catchments, as the Apply step says it
+    _mock_project()
+    left_out = "The sub-catchments are a draft: confirm them (step 3) to include them."
+    adopt = {"set_id": 7, "version": None, "sub_catchments": 0, "nodes": 0, "reaches": 0, "left_out_sentence": left_out}
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(adopt_sub_catchments=adopt)))
+    data = await _read(_server, timeout_seconds=30, poll_interval_seconds=0)
+    assert data["adopt_sub_catchments"] == adopt
+    assert f"Adopting: {left_out}" in data["say_to_user"]
+
+
+@respx.mock
 async def test_get_delineation_timed_out_names_the_step_and_does_not_start_a_job(_server):
     _mock_project()
     running = _doc(shown_result=None, catchments=[], job=_job("running"))
@@ -1528,6 +1540,35 @@ async def test_promote_catchments_makes_the_layer_and_says_it_is_unreviewed(_ser
     say = data["say_to_user"]
     assert "Adopted catchments" in say and "snapshot" in say and "unreviewed" in say
     assert data["ui_url"].endswith(MAP_URL) and "CONFIRMED" in data["rule"]
+
+
+@respx.mock
+async def test_adopt_catchments_says_what_of_the_sub_catchments_it_carries_and_what_it_leaves_out(_server):
+    # review of W11 (TASK-4485, Decision 889: one entry; D16: the MCP relays what the Apply step says)
+    _mock_project()
+    left_out = (
+        "Changes to the sub-catchments since they were confirmed are left out: confirm them (step 3) to include them."
+    )
+    carried = {"set_id": 7, "version": 2, "sub_catchments": 13, "nodes": 9, "reaches": 3}
+    respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "promoted_layer": _promoted(sub_catchments=carried, sub_catchments_changed_since=False),
+                "replaced": False,
+                "method": "Adopted",
+                "vertices_before": 900,
+                "vertices_after": 400,
+                "left_out_sentence": left_out,
+            },
+        )
+    )
+    data = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert data["left_out_sentence"] == left_out
+    assert data["adopted_layer"]["sub_catchments"] == carried
+    say = data["say_to_user"]
+    assert "version 2 of the sub-catchments" in say and "13 sub-catchments, 9 nodes and 3 reaches" in say
+    assert left_out in say
 
 
 @respx.mock
