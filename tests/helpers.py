@@ -563,6 +563,7 @@ SERVER_MODULES = (
     "runs",
     "terrain",
     "delineation",
+    "catchment_network",
     "inputs",
     "observations",
     "calibration",

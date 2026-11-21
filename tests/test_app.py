@@ -301,6 +301,7 @@ class TestClientHeaders:
 # ---------------------------------------------------------------------------
 READ_TOOLS = {
     "read_input_layer",
+    "get_sub_catchments",  # TASK-4486
     "list_projects",
     "suggest_capability",
     "get_project",
@@ -331,7 +332,7 @@ class TestToolAnnotations:
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
-        assert len(tools) == 51
+        assert len(tools) == 55  # +TASK-4486 the four sub-catchment tools
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name

@@ -640,6 +640,110 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Create sub-catchments from a line's catchments"
+    },
+    "description": "Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,\nslope, flow length...), the nodes' total catchments and the reaches between nodes.\n\nThe line must have a High resolution result: a fast-screen result is refused with the sentence 'High res only' (run\nthe line at High resolution first). Creating is by a target number (about 20 by default) or a stream threshold, not\nboth. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and\nget_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),\nand give them the link (`ui_url`). Shapes stay on the map.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "catchment_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The line's catchments to cover (get_delineation's catchment ids). Default: all of them (or the set's own)."
+        },
+        "delineation_id": {
+          "description": "`delineation_id` of a line run at High resolution (read it with get_delineation)",
+          "type": "integer"
+        },
+        "forced_points": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Places that must be a node, as [[lon, lat], ...] (WGS84), for example a gauge or a road crossing."
+        },
+        "name": {
+          "default": "",
+          "description": "A short name for a new set (up to 200 characters)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "sub_catchments_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "To create a set again (its draft, or a new draft after a confirmed version): its `sub_catchments_id`. Omit it to create a new set. An agent creates again only a set an agent made."
+        },
+        "target_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "About how many sub-catchments to make (1 to 500). The default is about 20. Not with threshold_m2."
+        },
+        "threshold_m2": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Instead of a target number: the stream threshold in square metres (a stream starts where this much ground drains to it). Not with target_count."
+        }
+      },
+      "required": [
+        "project_id",
+        "delineation_id"
+      ],
+      "type": "object"
+    },
+    "name": "create_sub_catchments",
+    "title": "Create sub-catchments from a line's catchments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Fetch terrain from a Hydrata source"
     },
     "description": "Have Hydrata fetch a terrain from one of its own sources, then wait for the import (like get_terrain).\n\nNever fetch terrain from outside Hydrata where a Hydrata source covers the site;\nif none does, the person uploads their own DEM in the project map.\n\nUse a `key` from list_terrain_sources. Hydrata fetches, reprojects and publishes the\nDEM and seeds the project's default input rows; the DEM's datum is stamped by the source.\nThe result is get_terrain's envelope (`outcome` ready | error | timed_out, `terrain`,\n`polls`) plus `terrain_source`: the source's `key`, `name`, `resolution_m`, `licence`,\n`credit` and `vertical_datum`. `timed_out` is normal for a large area: keep calling\nget_terrain(project_id, terrain_id). A refusal (the box is over the source's size cap,\nthe source has no data there, an unknown source) comes back as `outcome: refused`\nwith the reason in `say_to_user` and nothing is created.",
@@ -1050,6 +1154,138 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Divide, merge or move sub-catchments by hand"
+    },
+    "description": "Change sub-catchments by hand on the draft: divide a sub-catchment, merge two, move a node, add a forced point, or\nundo a dragged boundary. An edit after a confirm starts a new draft; the confirmed version never changes. The answer\nnames the sub-catchments measured again. Ids change when an edit writes the draft again: read the set again with\nget_sub_catchments before the next edit.\n\nmake_link changes nothing: it is filed as a proposal a person accepts or rejects on the map. Tell the user it is\nwaiting and give them the link (`ui_url`). To propose a new boundary, use propose_sub_catchment_boundary.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "drag_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For undo_drag: the dragged boundary's `drag_id`"
+        },
+        "kind": {
+          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map.",
+          "enum": [
+            "divide",
+            "merge",
+            "move_node",
+            "add_forced_point",
+            "undo_drag",
+            "make_link"
+          ],
+          "type": "string"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For divide, move_node and add_forced_point: latitude (WGS84)"
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For divide, move_node and add_forced_point: longitude (WGS84)"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For move_node: the node's id"
+        },
+        "node_kind": {
+          "default": "forced_point",
+          "description": "For add_forced_point: a forced point (default) or a culvert inlet",
+          "enum": [
+            "forced_point",
+            "culvert_inlet"
+          ],
+          "type": "string"
+        },
+        "note_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For make_link: the note's id (get_sub_catchments, a sub-catchment's notes)"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "reason": {
+          "default": "",
+          "description": "For make_link: one or two sentences the person reads before accepting (what you saw, and why).",
+          "type": "string"
+        },
+        "sub_catchment_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For merge: the ids of the two sub-catchments"
+        },
+        "sub_catchments_id": {
+          "description": "The set to change: its `sub_catchments_id`",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "sub_catchments_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "edit_sub_catchments",
+    "title": "Divide, merge or move sub-catchments by hand"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Register an uploaded terrain"
     },
     "description": "Step 2 of a terrain import: register the PUT GeoTIFF as a Terrain and start the import.\n\nNeeds a launch-level agent key (the import can start AWS Batch); a read or\ndraft key gets 403 AGENT_LEVEL_INSUFFICIENT — the user creates a launch key\non the site's Agent keys page (/agents/).\n\nCall this only after the presigned PUT returned 200. Creates the Terrain row\n(status `creating`) and queues the import chain — reproject to UTM, publish\nthe layer + hillshade, style — which also seeds the project's six default\nboundary, friction, inflow, rainfall, building and mesh-region rows.\nReturns 202 with the terrain record; keep its `id` for get_terrain. A 400 UPLOAD_NOT_FOUND\nmeans no object is at `staging_key`: the PUT did not land (check its status\ncode and Content-Type) — do not retry finalize until it has.\n\nHeights the user says are on the ellipsoid (raw GPS or satellite heights): pass\nconvert_to_egm2008=True so a sea-level (EGM2008) copy is made after the import. For a\nterrain already in Hydrata, use convert_terrain_datum instead.",
@@ -1355,6 +1591,92 @@
     },
     "name": "get_scenario",
     "title": "Get a scenario's state, inputs and price"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Wait for and read sub-catchments"
+    },
+    "description": "Read sub-catchments. Without sub_catchments_id: the project's sets (of one line, with delineation_id), each with its\nversions. With it: one set, waiting while it is created on cloud compute: its nodes (each with its total catchment's\nfacts), sub-catchments (id, label, the node it drains to, area, facts and its 'can share water' notes with their ids),\nreaches and links with their facts, the dragged boundaries and their state (waiting, in the terrain, kept as drawn),\nthe proposals waiting for a person, and `sentences` to relay (for example 'The line has run again since these were\ncreated.'). Each fact's unit, definition and source is given once, in `fact_definitions`. Shapes stay on the map,\nexcept the outlines you ask for with outlines_of. `timed_out` is normal: read again later. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "delineation_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Without sub_catchments_id: list the sets of this line"
+        },
+        "outlines_of": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With sub_catchments_id: the sub-catchments whose outlines to include (GeoJSON in lon/lat, as `outline`), for example the two either side of a boundary you want to propose moving. At most 10."
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "sub_catchments_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "One set to read: its `sub_catchments_id`"
+        },
+        "timeout_seconds": {
+          "default": 110,
+          "description": "With sub_catchments_id: how long to wait while they are created on cloud compute before returning `timed_out` (default 110, ceiling 110). 0 = one read.",
+          "type": "integer"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With sub_catchments_id: read this version number (default: the draft, else the latest)"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_sub_catchments",
+    "title": "Wait for and read sub-catchments"
   },
   {
     "annotations": {
@@ -1845,6 +2167,65 @@
     },
     "name": "propose_drainage_correction",
     "title": "Propose a drainage barrier, opening or excluded ground"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Propose a new boundary between two sub-catchments"
+    },
+    "description": "Propose a new boundary between two sub-catchments (a dragged boundary). It is filed WAITING: the draft shows it, and\nonly a person decides it on the map (Keep as drawn, or Make the terrain agree, which stores a drainage barrier), or\nundoes it. The sub-catchments cannot be confirmed while it waits. Read the two outlines first (get_sub_catchments\nwith outlines_of) and the ground (terrain_profile), and use it only when you can say why water goes this way and the\nterrain does not show it. Tell the user it is waiting and give them the link (`ui_url`).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "The new stretch of boundary as [[lon, lat], ...] (at least 2 points, WGS84). Start and end it ON the boundary the two share now; the ground between the old and the new boundary changes sides.",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "preview_terrain": {
+          "default": false,
+          "description": "True: also work out (without storing anything) how much of the dragged ground the terrain would send the same way with a drainage barrier along the line, and say so. It takes a little longer.",
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "reason": {
+          "description": "One or two sentences the person reads before deciding: what you saw (for example a road or a drain the terrain does not hold) and why the boundary goes this way.",
+          "type": "string"
+        },
+        "sub_catchment_ids": {
+          "description": "The two sub-catchments either side of the boundary (their ids)",
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "sub_catchments_id": {
+          "description": "The set: its `sub_catchments_id`",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "sub_catchments_id",
+        "sub_catchment_ids",
+        "line",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "propose_sub_catchment_boundary",
+    "title": "Propose a new boundary between two sub-catchments"
   },
   {
     "annotations": {

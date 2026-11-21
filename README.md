@@ -59,6 +59,10 @@ Version 0.2.5 exposes fifty-one tools, all listed below; twenty-one of them only
 | `use_catchments_as_boundary` | A new model boundary round chosen catchments that touch: Closed (Reflective) everywhere except a short Transmissive stretch at each drainage point; unreviewed until a person reviews it |
 | `adopt_catchments` | Adopt a confirmed line's catchments as a GeoNode layer of the project (a snapshot to style and share, in Adopted catchments); refused until a person confirms the line; replacing an existing adopted layer needs `replace=true`; the layer is marked as made by an agent and unreviewed |
 | `propose_drainage_correction` | Propose a drainage barrier, a drainage opening or excluded ground for a terrain; stored as a proposal and NOT applied until a person accepts it on the map |
+| `create_sub_catchments` | Create sub-catchments from a High resolution line's catchments (a target number or a stream threshold, forced points), or create a set again; a fast-screen result is refused 'High res only'; a draft until a person confirms it |
+| `get_sub_catchments` | Wait for and read sub-catchments: nodes, sub-catchments, reaches and their facts, notes, dragged boundaries, proposals waiting for a person; outlines only on request |
+| `edit_sub_catchments` | Divide, merge, move a node, add a forced point or undo a dragged boundary on the draft; 'make this a link' is filed as a proposal a person accepts on the map |
+| `propose_sub_catchment_boundary` | Propose a new boundary between two sub-catchments; filed waiting until a person keeps it as drawn or makes the terrain agree |
 | `sample_terrain` | Ground level at points (null where the terrain has no data), to place a culvert, inflow or boundary on the ground |
 | `terrain_profile` | Ground along a line (a cross-section) with the lowest sample, to find where a channel runs |
 | `create_time_series` | Create a time series (rain gauge, hydrograph or tide/stage — `series_type` and `units` are top-level fields) from `{"rowData": [...]}`; a rainfall polygon binds to its gauge by the series name; summary = row count + first/last timestamp; the link opens the Hydrology panel |

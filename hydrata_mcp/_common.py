@@ -414,6 +414,12 @@ TOOL_ANNOTATIONS = {
     "propose_drainage_correction": ("Propose a drainage barrier, opening or excluded ground", False, False, False),
     # TASK-4469 (epic 4445 W6.2, D8): a confirmed line's catchments to a layer; replaces only with replace=true.
     "adopt_catchments": ("Adopt a confirmed line's catchments as a layer", False, False, False),
+    # TASK-4486 (epic 4445 W11.4, D16): sub-catchments. An agent creates and edits a draft (never confirms); a dragged
+    # boundary and 'make this a link' are proposals a person decides on the map. None is destructive.
+    "create_sub_catchments": ("Create sub-catchments from a line's catchments", False, False, False),
+    "get_sub_catchments": ("Wait for and read sub-catchments", True, False, True),
+    "edit_sub_catchments": ("Divide, merge or move sub-catchments by hand", False, False, False),
+    "propose_sub_catchment_boundary": ("Propose a new boundary between two sub-catchments", False, False, False),
 }
 
 
