@@ -1093,7 +1093,9 @@ def test_ui_url_for_a_delineation_is_panel_catchments_and_line(env_vars):
 def test_instructions_send_agents_to_these_tools_for_the_catchment_and_the_boundary(env_vars):
     text = reload_server().mcp.instructions
     assert "The design storm, the catchment and the mesh region are supplied by you or the user" not in text
-    assert "design storm and the mesh region are supplied by you or the user" in text
+    # TASK-4489 (W12.2): the mesh region along the streams now comes from get_stream_corridor
+    assert "design storm and the mesh region are supplied by you or the user" not in text
+    assert "The design storm is supplied by you or the user" in text
     for needle in (
         "delineate_catchments",
         "get_delineation",
@@ -1720,3 +1722,199 @@ async def test_fast_screen_optional_the_mode_argument_says_the_fast_screen_is_op
     mode = tools["delineate_catchments"].parameters["properties"]["mode"]["description"]
     assert "fast screen first" not in mode.lower() and "optional" in mode
     assert "on AWS Batch, can take many hours" not in mode
+
+
+# ---------------------------------------------------------------------------
+# get_stream_corridor (epic 4445 W12.2, TASK-4489; replaces TASK-4044): the streams of a terrain at a threshold the agent
+# chooses, and the corridor round them, read from the terrain's KEPT drainage analysis. It starts nothing.
+# ---------------------------------------------------------------------------
+CORRIDOR = f"{PROJECT}terrain/37/stream-corridor/"
+CORRIDOR_RING = [[149.10, -35.28], [149.11, -35.28], [149.11, -35.27], [149.10, -35.27], [149.10, -35.28]]
+CORRIDOR_METHOD = (
+    "Stream corridor read on the platform from terrain 37's kept drainage analysis (high resolution, 5 m cells, "
+    "method 3.abc): streams draining at least 50 ha, widened 40 m each side."
+)
+
+
+def _corridor_doc(**over):
+    doc = {
+        "terrain_id": 37,
+        "terrain_title": "Sullivans Creek GA 5 m",
+        "grid": "full",
+        "resolution_m": 5.0,
+        "method_version": "3.abc",
+        "threshold_ha": 50.0,
+        "kept_stream_threshold_ha": 1.0,
+        "half_width_m": 40.0,
+        "area": {"kind": "line_catchments", "delineation_id": 9, "line_name": "Kaleen"},
+        "drainage_analysis": {"state": "current", "reason": None},
+        "read_from": "kept_drainage_analysis",
+        "ran_anything": False,
+        "stream_count": 2,
+        "stream_length_m": 3100.0,
+        "longest_stream_m": 2000.0,
+        "largest_drainage_area_ha": 812.4,
+        "streams": {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": [[149.101, -35.279], [149.105, -35.275]]},
+                    "properties": {"drainage_area_ha": 812.4, "length_m": 2000.0},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": [[149.108, -35.279], [149.105, -35.275]]},
+                    "properties": {"drainage_area_ha": 61.2, "length_m": 1100.0},
+                },
+            ],
+        },
+        "streams_simplified_m": 5.0,
+        "corridor": {
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [CORRIDOR_RING]},
+            "properties": {},
+        },
+        "corridor_area_ha": 24.8,
+        "corridor_simplified_m": 2.5,
+        "authored_method": CORRIDOR_METHOD,
+        "sentence": "Read from the kept drainage analysis. Nothing was run.",
+    }
+    doc.update(over)
+    return doc
+
+
+async def _corridor(srv, **args):
+    return _tool_json(
+        await _call_as_caller(
+            srv, "get_stream_corridor", {"project_id": 42, "terrain_id": 37, "threshold_ha": 50, **args}
+        )
+    )
+
+
+@respx.mock
+async def test_get_stream_corridor_reads_the_kept_streams_at_the_chosen_threshold(_server):
+    _mock_project()
+    route = respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=_corridor_doc()))
+    data = await _corridor(_server, delineation_id=9)
+    sent = route.calls.last.request.url.params
+    assert sent["threshold_ha"] == "50.0" and sent["half_width_m"] == "40.0" and sent["delineation_id"] == "9"
+    assert "bbox" not in sent and "grid" not in sent
+    assert data["outcome"] == "ready" and data["ran_anything"] is False
+    assert data["read_from"] == "kept_drainage_analysis" and data["threshold_ha"] == 50.0
+    assert data["resolution"] == "high resolution" and data["resolution_m"] == 5.0
+    # the corridor is a feature ready to be written as a mesh region; the streams come as figures, largest first
+    assert data["corridor"]["geometry"]["coordinates"] == [CORRIDOR_RING] and data["corridor_area_ha"] == 24.8
+    assert data["streams"] == [
+        {"drainage_area_ha": 812.4, "length_m": 2000.0},
+        {"drainage_area_ha": 61.2, "length_m": 1100.0},
+    ]
+    assert data["authored_method"] == CORRIDOR_METHOD
+    step = data["next_step"]
+    assert "write_input_layer" in step and "mesh_region" in step and "resolution" in step and "5 m" in step
+    assert "ask the user" in step.lower()
+    say = data["say_to_user"]
+    assert "2 streams draining at least 50 ha" in say and "24.8 ha" in say and "Nothing was run." in say
+    assert data["ui_url"].endswith("/catalogue/#/map/77?panel=catchments&line=9")
+
+
+@respx.mock
+async def test_get_stream_corridor_starts_nothing_and_is_read_only(_server):
+    _mock_project()
+    route = respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=_corridor_doc()))
+    await _corridor(_server, bbox=[149.1, -35.29, 149.12, -35.27], grid="quick", half_width_m=0)
+    for call in respx.calls:
+        assert call.request.method == "GET", call.request.url
+    assert route.call_count == 1
+    sent = route.calls.last.request.url.params
+    assert sent["bbox"] == "149.1,-35.29,149.12,-35.27" and sent["grid"] == "quick" and sent["half_width_m"] == "0.0"
+    tools = {t.name: t for t in await _server.mcp.list_tools()}
+    hints = tools["get_stream_corridor"].annotations
+    assert hints.readOnlyHint is True and hints.destructiveHint is False
+
+
+@respx.mock
+async def test_get_stream_corridor_gives_the_stream_lines_only_when_asked(_server):
+    _mock_project()
+    respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=_corridor_doc()))
+    data = await _corridor(_server, include_stream_lines=True)
+    assert data["streams"][0]["geometry"]["type"] == "LineString"
+    assert data["streams"][0]["drainage_area_ha"] == 812.4
+
+
+@respx.mock
+async def test_get_stream_corridor_relays_a_terrain_with_no_drainage_analysis_in_words_and_starts_nothing(_server):
+    _mock_project()
+    detail = (
+        "This terrain has no kept drainage analysis yet. Run a line on it (Catchments), then read the streams again. "
+        "Nothing was started."
+    )
+    respx.get(CORRIDOR).mock(
+        return_value=httpx.Response(
+            409, json={"error_code": "NO_DRAINAGE_ANALYSIS", "detail": detail, "ran_anything": False}
+        )
+    )
+    data = await _corridor(_server)
+    assert data["outcome"] == "refused" and data["error_code"] == "NO_DRAINAGE_ANALYSIS" and data["http_status"] == 409
+    assert data["ran_anything"] is False
+    assert detail in data["say_to_user"]
+    assert "delineate_catchments" in data["next_step"]
+    assert all(call.request.method == "GET" for call in respx.calls)
+
+
+@respx.mock
+async def test_get_stream_corridor_relays_an_out_of_date_analysis_and_no_streams(_server):
+    _mock_project()
+    sentence = (
+        "Read from the kept drainage analysis. Nothing was run. Drainage analysis is out of date (drainage corrections "
+        "have changed since). These streams are from the kept one until a line on this terrain runs again. "
+        "No stream drains 50 ha or more in this area. Lower threshold_ha or give a larger area."
+    )
+    doc = _corridor_doc(
+        drainage_analysis={"state": "out_of_date", "reason": "corrections"},
+        sentence=sentence,
+        stream_count=0,
+        streams={"type": "FeatureCollection", "features": []},
+        corridor=None,
+        corridor_area_ha=0.0,
+    )
+    respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=doc))
+    data = await _corridor(_server)
+    assert data["drainage_analysis"] == {"state": "out_of_date", "reason": "corrections"}
+    assert sentence in data["say_to_user"] and data["corridor"] is None
+    assert "write_input_layer" not in data.get("next_step", "")
+
+
+async def test_get_stream_corridor_checks_its_arguments_before_anything_is_sent(_server):
+    for args, needle in (
+        ({"bbox": [1, 2, 3]}, "bbox is [west, south, east, north]"),
+        ({"bbox": [3, 2, 1, 4]}, "bbox is [west, south, east, north]"),
+        ({"bbox": [1, 2, 3, 4], "delineation_id": 9}, "not both"),
+        ({"threshold_ha": 0}, "threshold_ha"),
+        ({"half_width_m": -1}, "half_width_m"),
+    ):
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "get_stream_corridor", {"project_id": 42, "terrain_id": 37, "threshold_ha": 50, **args}
+            )
+        )
+        assert needle in text and "Nothing was sent" in text, (args, text)
+
+
+async def test_get_stream_corridor_words_use_none_of_the_retired_or_never_words(_server):
+    tools = {t.name: t for t in await _server.mcp.list_tools()}
+    blob = json.dumps(
+        tools["get_stream_corridor"].to_mcp_tool().model_dump(mode="json", by_alias=True, exclude_none=True)
+    )
+    never = re.compile(
+        r"\b(outlets?|crossings?|alignments?|stations?|divides?|pour points?|outlines?|networks?|cuts?|promote\w*)\b",
+        re.IGNORECASE,
+    )
+    assert never.findall(blob) == []
+    assert "kept drainage analysis" in blob and "mesh_region" in blob
+
+
+def test_get_stream_corridor_the_instructions_send_agents_to_it_for_the_mesh_region(env_vars):
+    text = reload_server().mcp.instructions
+    assert "get_stream_corridor" in text
+    assert "never derive streams off the platform" in text

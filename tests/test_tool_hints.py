@@ -30,6 +30,7 @@ READ_ONLY = {
     "get_terrain_merge",
     "get_delineation",
     "get_sub_catchments",
+    "get_stream_corridor",  # reads the kept drainage analysis; starts nothing (TASK-4489)
     "sample_terrain",
     "terrain_profile",
     "list_inputs",
@@ -101,10 +102,10 @@ def test_tool_hints_the_three_groups_are_disjoint():
 
 async def test_tool_hints_the_table_names_every_one_of_the_51_tools(_server):
     tools = await _tools(_server)
-    assert len(tools) == 56
+    assert len(tools) == 57
     grouped = READ_ONLY | set(WRITES) | SPENDS_COMPUTE
     assert grouped == set(tools), {"unlisted": sorted(set(tools) - grouped), "stale": sorted(grouped - set(tools))}
-    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 56
+    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 57
 
 
 async def test_tool_hints_read_only_tools_say_read_only_and_not_destructive(_server):

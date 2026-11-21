@@ -241,8 +241,9 @@ mcp = FastMCP(
         "friction, inflow, rainfall, building, mesh_region, culvert) inline with "
         "write_input_layer. For a file above the inline cap, call request_input_upload and "
         "give the user the link, so they drop the file in their browser. "
-        "The design storm and the mesh region are supplied by you or the user. "
-        "Say how you made them with authored_method. "
+        "The design storm is supplied by you or the user. For a mesh region along the streams, read "
+        "get_stream_corridor (the terrain's kept streams at a threshold you choose); never derive streams off the "
+        "platform. Say how you made each input with authored_method. "
         "CATCHMENTS AND THE MODEL BOUNDARY: never draw a catchment or a model boundary off the platform: use "
         "delineate_catchments for the catchments, get_delineation to wait for and read them, and "
         "use_catchments_as_boundary for the model boundary. First read the ground along a candidate line with "
@@ -423,6 +424,8 @@ TOOL_ANNOTATIONS = {
     # TASK-4487 (epic 4445 W11.5, D15/D16): every flagged culvert's opening, filed as proposals a person accepts on the
     # map; no drainage analysis job starts until a person does. Not destructive.
     "propose_culvert_openings": ("Propose the openings along flagged culverts", False, False, False),
+    # TASK-4489 (epic 4445 W12.2): the streams and the corridor round them, read from the kept drainage analysis.
+    "get_stream_corridor": ("Read the streams of a terrain and the corridor round them", True, False, True),
 }
 
 

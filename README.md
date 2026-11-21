@@ -63,6 +63,7 @@ Version 0.2.5 exposes fifty-one tools, all listed below; twenty-one of them only
 | `get_sub_catchments` | Wait for and read sub-catchments: nodes, sub-catchments, reaches and their facts, notes, dragged boundaries, proposals waiting for a person, and each culvert with its area across the inlet, its flags and whether an opening is offered; outlines only on request |
 | `edit_sub_catchments` | Divide, merge, move a node, add a forced point or undo a dragged boundary on the draft, or take the culverts in after they changed; 'make this a link' is filed as a proposal a person accepts on the map |
 | `propose_sub_catchment_boundary` | Propose a new boundary between two sub-catchments; filed waiting until a person keeps it as drawn or makes the terrain agree |
+| `get_stream_corridor` | Read the streams of a terrain at a threshold you choose, and the corridor round them (a polygon to write as a mesh region), from the terrain's kept drainage analysis; starts nothing |
 | `propose_culvert_openings` | Propose the drainage opening every flagged culvert offers, in one request; nothing changes until a person accepts them on the map |
 | `sample_terrain` | Ground level at points (null where the terrain has no data), to place a culvert, inflow or boundary on the ground |
 | `terrain_profile` | Ground along a line (a cross-section) with the lowest sample, to find where a channel runs |

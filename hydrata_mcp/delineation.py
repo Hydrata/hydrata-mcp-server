@@ -37,6 +37,7 @@ from ._helpers import (
     _poll_until,
     _token_cap_spent,
 )
+from .client import HydrataAPIError
 from .terrain import _lon_lat_pairs
 
 LIVE_STATUSES = ("pending", "running")
@@ -1474,4 +1475,183 @@ async def propose_drainage_correction(
         )
     summary = {"proposal_id": proposal.get("id"), "kind": kind, "status": result["status"]}
     await _hand_back(result, project_id, summary, say, **links)
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# get_stream_corridor (epic 4445 W12.2, TASK-4489; replaces TASK-4044): the streams of a terrain at a threshold the agent
+# chooses, and the corridor round them, read from the terrain's KEPT drainage analysis. It starts nothing: no line run, no
+# drainage analysis job, no conditioning, and it writes nothing.
+# ---------------------------------------------------------------------------
+STREAMS_LISTED = 20
+CORRIDOR_NO_ANALYSIS_STEP = (
+    "This terrain has no kept drainage analysis yet. A line run on it (delineate_catchments) makes one: ask the user "
+    "before you start one, then read the streams again."
+)
+
+
+def _corridor_refusal(exc: HydrataAPIError) -> dict:
+    """The API's refusal (a 400 or 409 whose body carries ``detail``), as a result the agent relays."""
+    text = str(exc)
+    body: dict = {}
+    if " — " in text:
+        try:
+            parsed = json.loads(text.split(" — ", 1)[1])
+            body = parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            body = {}
+    detail = body.get("detail") or text
+    return {
+        "outcome": "refused",
+        "http_status": exc.status,
+        "error_code": body.get("error_code") or exc.code,
+        "detail": detail,
+        "ran_anything": False,
+    }
+
+
+@_tool("get_stream_corridor")
+async def get_stream_corridor(
+    project_id: Annotated[int, "The project ID"],
+    terrain_id: Annotated[int, "The terrain whose streams to read (a delineation's `line.terrain_id`, or get_terrain)"],
+    threshold_ha: Annotated[
+        float,
+        "Where a stream starts: the drainage area in hectares that must drain through a cell for it to be a stream "
+        "(0.1 to 1,000,000). Larger keeps only the bigger streams. Choose it with the user for what the model needs.",
+    ],
+    half_width_m: Annotated[
+        float,
+        "How far the corridor reaches each side of a stream, in metres (0 to 1000; default 40). 0 gives the streams "
+        "with no corridor.",
+    ] = 40.0,
+    delineation_id: Annotated[
+        int | None,
+        "Keep the streams inside this line's catchments (a line on this terrain). Or give bbox; leave both out for the "
+        "whole terrain.",
+    ] = None,
+    bbox: Annotated[
+        list[float] | None,
+        "Keep the streams inside this box: [west, south, east, north] in degrees (lon/lat).",
+    ] = None,
+    grid: Annotated[
+        Literal["full", "quick"] | None,
+        "'full' (high resolution) or 'quick' (the fast screen's coarser grid). Leave it out for the finest kept.",
+    ] = None,
+    include_stream_lines: Annotated[
+        bool,
+        "False (default): each stream as its drainage area and length only. True: with its line in lon/lat too.",
+    ] = False,
+) -> str:
+    """Read the streams of a terrain and the corridor round them, from the terrain's kept drainage analysis.
+
+    A stream is where at least `threshold_ha` of ground drains through. The corridor is the streams widened by
+    `half_width_m` each side: a polygon to write as a mesh_region (write_input_layer) so the mesh is finer along the
+    streams. Use it instead of working streams out yourself, and pass its `authored_method` when you write the corridor.
+    Ask the user for the mesh region's resolution (a triangle edge length in metres, never finer than the terrain's
+    `resolution_m`).
+
+    It starts nothing (no line run, no drainage analysis, nothing written): a terrain with no kept drainage analysis is
+    refused in words. Returns the corridor (a GeoJSON Feature in lon/lat), its area, the streams largest first (drainage
+    area and length; their lines with include_stream_lines), the grid read, whether the drainage analysis is out of date
+    (with the sentence to relay) and `authored_method`. Read-only.
+    """
+    if threshold_ha is None or not 0.1 <= float(threshold_ha) <= 1_000_000:
+        raise ToolError("threshold_ha must be a number from 0.1 to 1,000,000 (hectares). Nothing was sent.")
+    if half_width_m is None or not 0 <= float(half_width_m) <= 1000:
+        raise ToolError("half_width_m must be a number from 0 to 1000 (metres). Nothing was sent.")
+    params: dict = {"threshold_ha": float(threshold_ha), "half_width_m": float(half_width_m)}
+    if bbox is not None:
+        if delineation_id is not None:
+            raise ToolError("Give delineation_id or bbox, not both. Nothing was sent.")
+        ok = isinstance(bbox, list) and len(bbox) == 4 and all(isinstance(v, (int, float)) for v in bbox)
+        if not ok or not (-180 <= bbox[0] < bbox[2] <= 180 and -90 <= bbox[1] < bbox[3] <= 90):
+            raise ToolError(
+                "bbox is [west, south, east, north] in degrees (lon/lat), west < east and south < north. "
+                "Nothing was sent."
+            )
+        params["bbox"] = ",".join(f"{float(v):g}" for v in bbox)
+    if delineation_id is not None:
+        params["delineation_id"] = delineation_id
+    if grid is not None:
+        params["grid"] = grid
+    links = {"panel": "catchments", "line": delineation_id}
+    try:
+        doc = await client.get(f"/projects/{project_id}/terrain/{terrain_id}/stream-corridor/", params=params)
+    except HydrataAPIError as exc:
+        if exc.status not in (400, 409):
+            raise
+        result = _corridor_refusal(exc)
+        if result["error_code"] == "NO_DRAINAGE_ANALYSIS":
+            result["next_step"] = CORRIDOR_NO_ANALYSIS_STEP
+        say = f"Could not read the streams of terrain {terrain_id}: {result['detail']}"
+        summary = {"terrain_id": terrain_id, "error_code": result["error_code"]}
+        await _hand_back(result, project_id, summary, say, **links)
+        return json.dumps(result, indent=2)
+    doc = doc if isinstance(doc, dict) else {}
+    features = ((doc.get("streams") or {}).get("features")) or []
+    streams = []
+    for feature in features[:STREAMS_LISTED] if not include_stream_lines else features:
+        props = feature.get("properties") or {}
+        item = {"drainage_area_ha": props.get("drainage_area_ha"), "length_m": props.get("length_m")}
+        if include_stream_lines:
+            item["geometry"] = feature.get("geometry")
+        streams.append(item)
+    corridor = doc.get("corridor")
+    grid_read = doc.get("grid")
+    resolution_m = doc.get("resolution_m")
+    result = {
+        "outcome": "ready",
+        "terrain_id": doc.get("terrain_id", terrain_id),
+        "terrain_title": _data(str(doc["terrain_title"])) if doc.get("terrain_title") is not None else None,
+        "grid": grid_read,
+        "resolution": HIGH_RES if grid_read == "full" else FAST_SCREEN if grid_read == "quick" else None,
+        "resolution_m": resolution_m,
+        "threshold_ha": doc.get("threshold_ha"),
+        "kept_stream_threshold_ha": doc.get("kept_stream_threshold_ha"),
+        "half_width_m": doc.get("half_width_m"),
+        "area": doc.get("area"),
+        "drainage_analysis": doc.get("drainage_analysis"),
+        "read_from": doc.get("read_from"),
+        "ran_anything": False,
+        "stream_count": doc.get("stream_count", len(features)),
+        "stream_length_m": doc.get("stream_length_m"),
+        "longest_stream_m": doc.get("longest_stream_m"),
+        "largest_drainage_area_ha": doc.get("largest_drainage_area_ha"),
+        "streams": streams,
+        "corridor": corridor,
+        "corridor_area_ha": doc.get("corridor_area_ha"),
+        "authored_method": doc.get("authored_method"),
+    }
+    if not include_stream_lines and len(features) > STREAMS_LISTED:
+        result["streams_listed"] = f"The {STREAMS_LISTED} largest of {len(features)}."
+    if corridor:
+        finest = f"{resolution_m:g} m" if isinstance(resolution_m, (int, float)) else "the terrain's cell size"
+        result["next_step"] = (
+            "To make the mesh finer along these streams, ask the user for the resolution (a triangle edge length in "
+            f"metres, never finer than {finest}), then write_input_layer(project_id={project_id}, kind='mesh_region', "
+            "features=[the corridor with properties {'resolution': <their figure>, 'resolution_units': 'm'}], "
+            "authored_method=<authored_method>)."
+        )
+    count = result["stream_count"]
+    threshold = doc.get("threshold_ha", threshold_ha)
+    parts = [
+        f"{count} stream{'s' if count != 1 else ''} draining at least {threshold:g} ha on terrain {terrain_id} "
+        f"({result['resolution'] or grid_read}, {resolution_m:g} m)."
+        if isinstance(resolution_m, (int, float))
+        else f"{count} streams draining at least {threshold:g} ha on terrain {terrain_id}."
+    ]
+    if corridor:
+        parts.append(
+            f"The corridor {doc.get('half_width_m', half_width_m):g} m each side covers {doc.get('corridor_area_ha')} ha."
+        )
+    if doc.get("sentence"):
+        parts.append(str(doc["sentence"]))
+    summary = {
+        "terrain_id": terrain_id,
+        "threshold_ha": threshold,
+        "streams": count,
+        "corridor_area_ha": doc.get("corridor_area_ha"),
+        "drainage_analysis": (doc.get("drainage_analysis") or {}).get("state"),
+    }
+    await _hand_back(result, project_id, summary, " ".join(parts), **links)
     return json.dumps(result, indent=2)

@@ -1612,6 +1612,94 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "Read the streams of a terrain and the corridor round them"
+    },
+    "description": "Read the streams of a terrain and the corridor round them, from the terrain's kept drainage analysis.\n\nA stream is where at least `threshold_ha` of ground drains through. The corridor is the streams widened by\n`half_width_m` each side: a polygon to write as a mesh_region (write_input_layer) so the mesh is finer along the\nstreams. Use it instead of working streams out yourself, and pass its `authored_method` when you write the corridor.\nAsk the user for the mesh region's resolution (a triangle edge length in metres, never finer than the terrain's\n`resolution_m`).\n\nIt starts nothing (no line run, no drainage analysis, nothing written): a terrain with no kept drainage analysis is\nrefused in words. Returns the corridor (a GeoJSON Feature in lon/lat), its area, the streams largest first (drainage\narea and length; their lines with include_stream_lines), the grid read, whether the drainage analysis is out of date\n(with the sentence to relay) and `authored_method`. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "bbox": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Keep the streams inside this box: [west, south, east, north] in degrees (lon/lat)."
+        },
+        "delineation_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Keep the streams inside this line's catchments (a line on this terrain). Or give bbox; leave both out for the whole terrain."
+        },
+        "grid": {
+          "anyOf": [
+            {
+              "enum": [
+                "quick",
+                "full"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "'full' (high resolution) or 'quick' (the fast screen's coarser grid). Leave it out for the finest kept."
+        },
+        "half_width_m": {
+          "default": 40.0,
+          "description": "How far the corridor reaches each side of a stream, in metres (0 to 1000; default 40). 0 gives the streams with no corridor.",
+          "type": "number"
+        },
+        "include_stream_lines": {
+          "default": false,
+          "description": "False (default): each stream as its drainage area and length only. True: with its line in lon/lat too.",
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "terrain_id": {
+          "description": "The terrain whose streams to read (a delineation's `line.terrain_id`, or get_terrain)",
+          "type": "integer"
+        },
+        "threshold_ha": {
+          "description": "Where a stream starts: the drainage area in hectares that must drain through a cell for it to be a stream (0.1 to 1,000,000). Larger keeps only the bigger streams. Choose it with the user for what the model needs.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "threshold_ha"
+      ],
+      "type": "object"
+    },
+    "name": "get_stream_corridor",
+    "title": "Read the streams of a terrain and the corridor round them"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "Wait for and read sub-catchments"
     },
     "description": "Read sub-catchments. Without sub_catchments_id: the project's sets (of one line, with delineation_id), each with its\nversions. With it: one set, waiting while it is created on cloud compute: its nodes (each with its total catchment's\nfacts), sub-catchments (id, label, the node it drains to, area, facts and its 'can share water' notes with their ids),\nreaches and links with their facts, the dragged boundaries and their state (waiting, in the terrain, kept as drawn),\nthe proposals waiting for a person, and `sentences` to relay (for example 'The line has run again since these were\ncreated.'). Each fact's unit, definition and source is given once, in `fact_definitions`. Shapes stay on the map,\nexcept the outlines you ask for with outlines_of. `timed_out` is normal: read again later. Read-only.",
