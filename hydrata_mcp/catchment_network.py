@@ -14,6 +14,13 @@ edit_sub_catchments    - divide a sub-catchment, merge two, move a node, add a f
                          (the API's proposals/ route): it changes nothing until a person accepts it on the map (D22, D16).
 propose_sub_catchment_boundary - a dragged boundary between two sub-catchments, always filed WAITING: only a person keeps it as
                          drawn or makes the terrain agree. The sub-catchments cannot be confirmed while it waits.
+propose_culvert_openings - (W11.5, TASK-4487) the one action for every flagged culvert: the drainage opening each flagged
+                         culvert offers (the server's measured ladder, D15) is filed as a PROPOSAL, all in one request; a
+                         person accepts them on the map, and only then is the terrain's drainage analysis worked out again.
+
+Culverts (W11.5): get_sub_catchments reads each culvert placed in the sub-catchments with its area across the inlet, its
+flags in the server's words, whether an opening is offered and the node it sits at; edit_sub_catchments' take_culverts_in
+answers 'Culverts have changed since these were created.' (the draft made again with the culverts as they are now).
 
 No tool confirms (a person does, in the browser) or stores a drainage barrier. Adopting the confirmed sub-catchments is part
 of adopting a line's catchments (adopt_catchments). Words (Decision 889): sub-catchments, create and divide. The API's own
@@ -45,7 +52,12 @@ DRAG_RULE = (
     "A boundary an agent drags is filed waiting. Only a person keeps it as drawn or makes the terrain agree (a drainage "
     "barrier a person stores), or undoes it. The sub-catchments cannot be confirmed while it waits."
 )
+OPENINGS_RULE = (
+    "An agent only proposes the openings along flagged culverts. Nothing changes until a person accepts them on the map; "
+    "only a person stores them with the terrain (its drainage analysis is then worked out again once)."
+)
 EDIT_KINDS = {
+    "take_culverts_in": "Take the culverts in",
     "divide": "Divide a sub-catchment",
     "merge": "Merge two sub-catchments",
     "move_node": "Move a node",
@@ -124,6 +136,15 @@ def _sentences(version: dict) -> list[str]:
             f"{_plural(len(waiting), 'dragged boundary is', 'dragged boundaries are')} waiting for a person "
             "(Keep as drawn or Make the terrain agree, on the map); they cannot be confirmed until then."
         )
+    culverts = version.get("culverts") if isinstance(version.get("culverts"), dict) else {}
+    flagged, offered = culverts.get("flagged") or 0, culverts.get("openings_offered") or 0
+    if flagged:
+        words = f"{_plural(flagged, 'culvert is', 'culverts are')} flagged"
+        if offered == 1:
+            words += "; 1 offers a drainage opening along it: a person accepts or rejects it on the map"
+        elif offered:
+            words += f"; {offered} offer a drainage opening along them: a person accepts or rejects them on the map"
+        out.append(words + ".")
     proposed = [p for p in version.get("proposals") or [] if p.get("status") == "proposed"]
     if proposed:
         out.append(
@@ -145,6 +166,62 @@ def _rounded(geometry):
     return {"type": geometry.get("type"), "coordinates": walk(geometry.get("coordinates"))}
 
 
+def _culvert_of(node: dict) -> dict | None:
+    """The culvert a node is ({culvert, feature}), or None."""
+    ref = node.get("source_ref") if isinstance(node.get("source_ref"), dict) else {}
+    if ref.get("culvert") is None:
+        return None
+    return {"culvert": ref.get("culvert"), "feature": ref.get("feature")}
+
+
+def _same(a: dict, b: dict) -> bool:
+    return a.get("culvert") == b.get("culvert") and str(a.get("feature")) == str(b.get("feature"))
+
+
+def _culverts(version: dict) -> dict:
+    """The culverts placed in a version (W10.2's measured ladder), as an agent reads them: each with its area across the
+    inlet (ha), its flags in the server's words, whether an opening along it is offered and the node it sits at; and the
+    culverts not placed, with the reason."""
+    block = version.get("culverts") if isinstance(version.get("culverts"), dict) else {}
+    nodes = [n for n in version.get("nodes") or [] if isinstance(n, dict) and _culvert_of(n)]
+    placed = []
+    for c in block.get("placed") or []:
+        node = next((n for n in nodes if _same(_culvert_of(n), c)), None)
+        area = c.get("area_m2")
+        placed.append(
+            {
+                "culvert": c.get("culvert"),
+                "feature": c.get("feature"),
+                "name": _data(c.get("name")),
+                "node_id": node.get("id") if node else None,
+                "node_kind": c.get("node_kind"),
+                "on_line": bool(c.get("on_line")),
+                "status": c.get("status"),
+                "area_ha": round(area / 10_000, 4) if isinstance(area, (int, float)) else None,
+                "flagged": bool(c.get("flagged")),
+                "flags": [{"code": f.get("code"), "sentence": f.get("sentence")} for f in c.get("flags") or []],
+                "opening_offered": bool(c.get("opening_offered")),
+            }
+        )
+    not_placed = [
+        {
+            "culvert": (c.get("ref") or {}).get("culvert"),
+            "feature": (c.get("ref") or {}).get("feature"),
+            "name": _data((c.get("ref") or {}).get("name")),
+            "sentence": c.get("sentence"),
+        }
+        for c in block.get("not_placed") or []
+        if isinstance(c, dict)
+    ]
+    return {
+        "count": block.get("count") or 0,
+        "flagged": block.get("flagged") or 0,
+        "openings_offered": block.get("openings_offered") or 0,
+        "placed": placed,
+        "not_placed": not_placed,
+    }
+
+
 def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
     """A version as an agent reads it: no shapes; facts as values (definitions once, in ``definitions``)."""
     if not isinstance(version, dict):
@@ -152,7 +229,6 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
     definitions = {} if definitions is None else definitions
     sizes = version.get("sizes") or {}
     how = version.get("how_created") or {}
-    culverts = version.get("culverts") or {}
     out = {
         "number": version.get("number"),
         "status": version.get("status"),
@@ -168,7 +244,7 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         "confirmed_at": version.get("confirmed_at"),
         "line_changed_since": bool(version.get("line_changed_since")),
         "culverts_changed_since": bool(version.get("culverts_changed_since")),
-        "culverts": {k: culverts.get(k) for k in ("count", "flagged", "openings_offered")},
+        "culverts": _culverts(version),
         "sentences": _sentences(version),
     }
     if not full or "sub_catchments" not in version:
@@ -177,6 +253,7 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         {
             **{k: n.get(k) for k in ("id", "kind", "lon", "lat", "level_m", "line_catchment_id")},
             "name": _data(n.get("name")),
+            **({"culvert": _culvert_of(n)} if _culvert_of(n) else {}),
             "total_catchment": _compact_facts(n.get("total_catchment"), definitions),
         }
         for n in version.get("nodes") or []
@@ -452,11 +529,13 @@ async def edit_sub_catchments(
     project_id: Annotated[int, "The project ID (Editor rights)"],
     sub_catchments_id: Annotated[int, "The set to change: its `sub_catchments_id`"],
     kind: Annotated[
-        Literal["divide", "merge", "move_node", "add_forced_point", "undo_drag", "make_link"],
+        Literal["divide", "merge", "move_node", "add_forced_point", "undo_drag", "make_link", "take_culverts_in"],
         "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments "
         "of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; "
         "add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); make_link: "
-        "PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map.",
+        "PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; "
+        "take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's "
+        "culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
     ],
     lon: Annotated[float | None, "For divide, move_node and add_forced_point: longitude (WGS84)"] = None,
     lat: Annotated[float | None, "For divide, move_node and add_forced_point: latitude (WGS84)"] = None,
@@ -480,6 +559,8 @@ async def edit_sub_catchments(
     waiting and give them the link (`ui_url`). To propose a new boundary, use propose_sub_catchment_boundary.
     """
     label = EDIT_KINDS[kind]
+    if kind == "take_culverts_in":
+        return await _take_culverts_in(project_id, sub_catchments_id)
     if kind == "make_link":
         if isinstance(note_id, bool) or not isinstance(note_id, int):
             raise ToolError("make_link needs note_id (a sub-catchment's note in get_sub_catchments). Nothing was sent.")
@@ -528,6 +609,55 @@ async def edit_sub_catchments(
     )
     summary = {"sub_catchments_id": doc.get("id"), "edit": edit.get("seq"), "remeasured": result["remeasured"]}
     await _hand_back(result, project_id, summary, say, **_links(doc.get("delineation_id")))
+    return json.dumps(result, indent=2)
+
+
+async def _take_culverts_in(project_id, sub_catchments_id) -> str:
+    """POST culverts/: the draft made again by the ladder with the project's culverts as they are now."""
+    body, status = await _post(_path(project_id, sub_catchments_id, "culverts/"), {})
+    doc = body if isinstance(body, dict) else {}
+    if status >= 400:
+        result = _refused(body, status, "taking the culverts in")
+        say = result.pop("say_to_user")
+        await _hand_back(result, project_id, {"http_status": status, "error_code": result["error_code"]}, say)
+        return json.dumps(result, indent=2)
+    summary = doc.get("culverts_taken_in") or {}
+    result = {
+        "outcome": "changed" if doc.get("changed") else "unchanged",
+        "http_status": status,
+        "culverts_taken_in": {
+            "added": [_data(n) for n in summary.get("added") or []],
+            "removed": [_data(n) for n in summary.get("removed") or []],
+            "moved": [_data(n) for n in summary.get("moved") or []],
+            "placed": summary.get("placed"),
+            "flagged": summary.get("flagged"),
+        },
+        **_set(doc),
+        "rule": CONFIRM_RULE,
+    }
+    version = result.get("version") or {}
+    if doc.get("changed"):
+        parts = [f"{summary.get('placed') or 0} placed"]
+        detail = [f"{len(summary.get(k) or [])} {k}" for k in ("added", "moved", "removed") if summary.get(k)]
+        if detail:
+            parts[0] += f" ({', '.join(detail)})"
+        parts.append(f"{summary.get('flagged') or 0} flagged")
+        say = (
+            f"Took the culverts in: {', '.join(parts)}, on the draft of the sub-catchments of {_line_words(doc)} "
+            f"(version {version.get('number')})."
+        )
+    else:
+        say = "The culverts are as these sub-catchments already have them: nothing changed."
+    extra = " ".join(version.get("sentences") or [])
+    if extra:
+        say += f" {extra}"
+    await _hand_back(
+        result,
+        project_id,
+        {"sub_catchments_id": doc.get("id"), "culverts_taken_in": summary},
+        say,
+        **_links(doc.get("delineation_id")),
+    )
     return json.dumps(result, indent=2)
 
 
@@ -672,4 +802,108 @@ async def propose_sub_catchment_boundary(
         say += f" {preview_words}"
     summary = {"sub_catchments_id": doc.get("id"), "drag_id": drag_id, "status": state, "moved_m2": moved}
     await _hand_back(result, project_id, summary, say, **_links(doc.get("delineation_id")))
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tool 5: propose_culvert_openings (W11.5, TASK-4487)
+# ---------------------------------------------------------------------------
+def _culvert_picks(culverts) -> list | None:
+    if culverts is None:
+        return None
+    if (
+        not isinstance(culverts, list)
+        or not culverts
+        or any(
+            not isinstance(p, (list, tuple))
+            or len(p) != 2
+            or isinstance(p[0], bool)
+            or not isinstance(p[0], int)
+            or isinstance(p[1], bool)
+            for p in culverts
+        )
+    ):
+        raise ToolError(
+            "culverts must be [[culvert, feature], ...] pairs from get_sub_catchments (version.culverts.placed), or "
+            "omitted for every opening offered. Nothing was sent."
+        )
+    return [[p[0], p[1]] for p in culverts]
+
+
+@_tool("propose_culvert_openings")
+async def propose_culvert_openings(
+    project_id: Annotated[int, "The project ID (Editor rights)"],
+    sub_catchments_id: Annotated[int, "The set of sub-catchments: its `sub_catchments_id`"],
+    culverts: Annotated[
+        list[list[int | str]] | None,
+        "Only these culverts' openings, as [[culvert, feature], ...] (get_sub_catchments: version.culverts.placed, "
+        "where opening_offered is true). Omit it for every opening offered, which is the usual one action.",
+    ] = None,
+) -> str:
+    """Propose the drainage opening every flagged culvert of the sub-catchments offers, in ONE request (D15's measured
+    ladder: where the water reaching a culvert's inlet leaves past its outlet, an opening along the culvert would carry it
+    through). The openings are filed as PROPOSALS: nothing changes until a person accepts them on the map, and only then
+    is the terrain's drainage analysis worked out again (once) and the line run again. Read the culverts first with
+    get_sub_catchments (version.culverts: each culvert's area across the inlet, its flags and whether an opening is
+    offered). Tell the user they are waiting and give them the link (`ui_url`).
+    """
+    picks = _culvert_picks(culverts)
+    payload = {} if picks is None else {"culverts": picks}
+    body, status = await _post(_path(project_id, sub_catchments_id, "culvert-openings/"), payload)
+    reply = body if isinstance(body, dict) else {}
+    line_id = None
+    try:  # the line to open (best effort; the proposals are filed either way)
+        shown = await client.get(_path(project_id, sub_catchments_id))
+        line_id = shown.get("delineation_id") if isinstance(shown, dict) else None
+    except Exception:  # the link is a convenience; never hide the answer behind it
+        line_id = None
+    links = _links(line_id)
+    if status >= 400:
+        result = _refused(body, status, "the culvert openings")
+        say = result.pop("say_to_user")
+        await _hand_back(result, project_id, {"http_status": status, "error_code": result["error_code"]}, say, **links)
+        return json.dumps(result, indent=2)
+    openings = [
+        {
+            **{k: o.get(k) for k in ("id", "kind", "label", "status", "proposed_by_agent", "waiting_sentence")},
+            "note": _data(o.get("note")),
+        }
+        for o in reply.get("openings") or []
+        if isinstance(o, dict)
+    ]
+    n = reply.get("stored") or 0
+    there = reply.get("already_there") or 0
+    by_agent = bool(reply.get("proposed"))
+    if n:
+        outcome = "proposed" if by_agent else "stored"
+    else:
+        outcome = "already_there"
+    result = {
+        "outcome": outcome,
+        "status": "waiting" if by_agent and n else outcome,
+        "http_status": status,
+        "proposed": n if by_agent else 0,
+        "already_there": there,
+        "openings": openings,
+        "drainage_analysis_job": reply.get("drainage_analysis_job"),
+        "sentence": reply.get("sentence"),
+        "rule": OPENINGS_RULE,
+    }
+    if n and by_agent:
+        say = (
+            f"{reply.get('sentence') or _plural(n, 'drainage opening') + ' proposed.'} Nothing changes until a person "
+            f"accepts {'it' if n == 1 else 'them'} on the map: open the link to see "
+            f"{'it' if n == 1 else 'them'} with the line's drainage corrections."
+        )
+    elif n:
+        say = reply.get("sentence") or f"{_plural(n, 'drainage opening')} stored with the terrain."
+    else:
+        say = (
+            f"{'The opening is' if there == 1 else 'The openings are'} already on the terrain (proposed or stored): "
+            "nothing new was filed."
+        )
+    if there and n:
+        say += f" {there} {'was' if there == 1 else 'were'} already on the terrain."
+    summary = {"sub_catchments_id": sub_catchments_id, "proposed": result["proposed"], "already_there": there}
+    await _hand_back(result, project_id, summary, say, **links)
     return json.dumps(result, indent=2)

@@ -28,7 +28,13 @@ pytestmark = pytest.mark.asyncio
 LIST = f"{BASE}/projects/42/sub-catchments/"
 SET = f"{LIST}7/"
 MAP_URL = "/catalogue/#/map/77?panel=catchments&line=9"
-TOOLS = ("create_sub_catchments", "get_sub_catchments", "edit_sub_catchments", "propose_sub_catchment_boundary")
+TOOLS = (
+    "create_sub_catchments",
+    "get_sub_catchments",
+    "edit_sub_catchments",
+    "propose_sub_catchment_boundary",
+    "propose_culvert_openings",
+)
 FORBIDDEN = re.compile(r"\bnetworks?\b|\bcut\b|\bcuts\b|\bcutting\b|promot", re.I)
 REASON = "The road embankment holds water on the east side; the boundary follows its crest."
 LINE = [[149.1001, -35.2501], [149.1010, -35.2510], [149.1020, -35.2512]]
@@ -688,3 +694,262 @@ async def test_a_terrain_preview_the_web_server_cannot_work_out_is_said_and_the_
     )
     assert data["status"] == "waiting" and data["terrain_preview"]["error_code"] == "TOO_LARGE"
     assert f"The terrain preview could not be worked out: {too_large}" in data["say_to_user"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-4487 (W11.5): culverts among the sub-catchments - each culvert's area and flags in the read, and the one action for
+# every flagged culvert's opening, which an agent only PROPOSES (D16): a person accepts the openings on the map.
+# ---------------------------------------------------------------------------
+OPENING = "Water reaching the inlet leaves 85 m from the outlet. An opening along the culvert would carry it through."
+POND = "The pond behind the embankment takes in 12.5 ha, against 10.3 ha across the inlet. Check the culvert."
+NO_OPENINGS = "No culvert of these sub-catchments has an opening to offer."
+PROPOSED_TWO = "2 drainage openings proposed. A person accepts them on the map."
+
+
+def _culverted(**version):
+    """A set with two culverts at nodes (one offering an opening, one whose pond differs) and one not placed."""
+    doc = _doc(**version)
+    ref_a = {"culvert": 4, "feature": 2, "name": "Parker Rd", "status": "opening_offered", "flagged": True}
+    ref_b = {"culvert": 4, "feature": 3, "name": "Northern Distributor", "status": "measured", "flagged": True}
+    doc["version"]["nodes"].append(
+        {
+            "id": 33,
+            "uid": "u-33",
+            "kind": "culvert_inlet",
+            "name": "",
+            "lon": 149.12,
+            "lat": -35.25,
+            "level_m": 584.0,
+            "line_catchment_id": 501,
+            "source_ref": ref_a,
+            "total_catchment": {},
+        }
+    )
+    doc["version"]["nodes"].append(
+        {
+            "id": 34,
+            "uid": "u-34",
+            "kind": "culvert_inlet",
+            "name": "",
+            "lon": 149.13,
+            "lat": -35.25,
+            "level_m": 585.0,
+            "line_catchment_id": 501,
+            "source_ref": ref_b,
+            "total_catchment": {},
+        }
+    )
+    doc["version"]["culverts"] = {
+        "count": 2,
+        "flagged": 2,
+        "openings_offered": 1,
+        "placed": [
+            {
+                **ref_a,
+                "node_kind": "culvert_inlet",
+                "on_line": False,
+                "area_m2": 12_000.0,
+                "flags": [{"code": "opening_offered", "sentence": OPENING}],
+                "opening_offered": True,
+            },
+            {
+                **ref_b,
+                "node_kind": "culvert_inlet",
+                "on_line": False,
+                "area_m2": 103_000.0,
+                "flags": [{"code": "pond_differs", "sentence": POND}],
+                "opening_offered": False,
+            },
+        ],
+        "not_placed": [
+            {"ref": {"culvert": 6, "feature": 1, "name": "Bellambi Ln"}, "sentence": "The culvert is off the terrain."}
+        ],
+    }
+    return doc
+
+
+@respx.mock
+async def test_get_sub_catchments_reads_each_culvert_with_its_area_its_flags_and_its_node(_server):
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_culverted()))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    culverts = data["version"]["culverts"]
+    assert culverts["count"] == 2 and culverts["flagged"] == 2 and culverts["openings_offered"] == 1
+    assert culverts["placed"][0] == {
+        "culvert": 4,
+        "feature": 2,
+        "name": "Parker Rd",
+        "node_id": 33,
+        "node_kind": "culvert_inlet",
+        "on_line": False,
+        "status": "opening_offered",
+        "area_ha": 1.2,
+        "flagged": True,
+        "flags": [{"code": "opening_offered", "sentence": OPENING}],
+        "opening_offered": True,
+    }
+    assert culverts["placed"][1]["node_id"] == 34 and culverts["placed"][1]["area_ha"] == 10.3
+    assert culverts["not_placed"] == [
+        {"culvert": 6, "feature": 1, "name": "Bellambi Ln", "sentence": "The culvert is off the terrain."}
+    ]
+    # a culvert's node names its culvert
+    assert data["version"]["nodes"][2]["culvert"] == {"culvert": 4, "feature": 2}
+    assert "culvert" not in data["version"]["nodes"][0]
+    say = data["say_to_user"]
+    assert "2 culverts are flagged; 1 offers a drainage opening along it" in say
+    assert "a person accepts or rejects it on the map" in say
+    assert not _words(json.dumps(data)), _words(json.dumps(data))
+
+
+@respx.mock
+async def test_get_sub_catchments_with_no_culverts_says_nothing_of_culverts(_server):
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    assert data["version"]["culverts"] == {
+        "count": 0,
+        "flagged": 0,
+        "openings_offered": 0,
+        "placed": [],
+        "not_placed": [],
+    }
+    assert "culvert" not in data.get("say_to_user", "").lower()
+
+
+@respx.mock
+async def test_propose_culvert_openings_files_every_offered_opening_as_a_proposal_in_one_request(_server):
+    _mock_project()
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_culverted()))
+    answer = {
+        "openings": [
+            {
+                "id": 71,
+                "kind": "drainage_opening",
+                "label": "Drainage opening",
+                "status": "proposed",
+                "note": "Opening along culvert 'Parker Rd'",
+                "proposed_by_agent": True,
+                "waiting_sentence": "Proposed. A person accepts it on the map.",
+                "geometry": {"type": "LineString", "coordinates": [[1, 2], [3, 4]]},
+            },
+            {
+                "id": 72,
+                "kind": "drainage_opening",
+                "label": "Drainage opening",
+                "status": "proposed",
+                "note": "Opening along culvert 'Lake Pde'",
+                "proposed_by_agent": True,
+                "waiting_sentence": "Proposed. A person accepts it on the map.",
+                "geometry": {"type": "LineString", "coordinates": [[1, 2], [3, 4]]},
+            },
+        ],
+        "stored": 2,
+        "already_there": 0,
+        "proposed": True,
+        "drainage_analysis_job": None,
+        "line_run": None,
+        "sentence": PROPOSED_TWO,
+    }
+    post = respx.post(f"{SET}culvert-openings/").mock(return_value=httpx.Response(200, json=answer))
+    data = _tool_json(
+        await _call_as_caller(_server, "propose_culvert_openings", {"project_id": 42, "sub_catchments_id": 7})
+    )
+    assert post.call_count == 1  # ONE request for every opening offered
+    assert json.loads(post.calls[0].request.content) == {}  # no picks: every opening offered
+    assert data["outcome"] == "proposed" and data["status"] == "waiting" and data["proposed"] == 2
+    assert [o["id"] for o in data["openings"]] == [71, 72]
+    assert data["drainage_analysis_job"] is None  # a proposal starts no job
+    assert data["ui_url"].endswith(MAP_URL)
+    say = data["say_to_user"]
+    assert say.startswith(PROPOSED_TWO)
+    assert "Nothing changes until a person accepts them on the map" in say
+    assert "only a person" in data["rule"].lower()
+    assert "geometry" not in json.dumps(data)  # shapes stay on the map
+    assert not _words(json.dumps(data)), _words(json.dumps(data))
+
+
+@respx.mock
+async def test_propose_culvert_openings_sends_only_the_culverts_picked(_server):
+    _mock_project()
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_culverted()))
+    answer = {
+        "openings": [{"id": 71, "status": "proposed"}],
+        "stored": 1,
+        "already_there": 0,
+        "proposed": True,
+        "drainage_analysis_job": None,
+        "line_run": None,
+        "sentence": "1 drainage opening proposed. A person accepts it on the map.",
+    }
+    post = respx.post(f"{SET}culvert-openings/").mock(return_value=httpx.Response(200, json=answer))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "propose_culvert_openings", {"project_id": 42, "sub_catchments_id": 7, "culverts": [[4, 2]]}
+        )
+    )
+    assert json.loads(post.calls[0].request.content) == {"culverts": [[4, 2]]}
+    assert data["proposed"] == 1
+
+
+async def test_propose_culvert_openings_refuses_a_wrong_culvert_pick_before_sending(_server):
+    for wrong in ([], [[4]], [["four", 2]], [[4, 2, 1]]):
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "propose_culvert_openings", {"project_id": 42, "sub_catchments_id": 7, "culverts": wrong}
+            )
+        )
+        assert "culverts" in text and "Nothing was sent" in text, (wrong, text)
+
+
+@respx.mock
+async def test_propose_culvert_openings_relays_the_refusal_when_no_culvert_offers_one(_server):
+    _mock_project()
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
+    respx.post(f"{SET}culvert-openings/").mock(
+        return_value=httpx.Response(409, json={"error_code": "NO_OPENINGS", "detail": NO_OPENINGS})
+    )
+    data = _tool_json(
+        await _call_as_caller(_server, "propose_culvert_openings", {"project_id": 42, "sub_catchments_id": 7})
+    )
+    assert data["outcome"] == "refused" and data["error_code"] == "NO_OPENINGS"
+    assert NO_OPENINGS in data["say_to_user"] and "Nothing changed." in data["say_to_user"]
+
+
+@respx.mock
+async def test_propose_culvert_openings_already_on_the_terrain_says_so(_server):
+    _mock_project()
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_culverted()))
+    respx.post(f"{SET}culvert-openings/").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "openings": [],
+                "stored": 0,
+                "already_there": 1,
+                "proposed": True,
+                "drainage_analysis_job": None,
+                "line_run": None,
+            },
+        )
+    )
+    data = _tool_json(
+        await _call_as_caller(_server, "propose_culvert_openings", {"project_id": 42, "sub_catchments_id": 7})
+    )
+    assert data["outcome"] == "already_there" and data["proposed"] == 0 and data["already_there"] == 1
+    assert "already on the terrain" in data["say_to_user"]
+
+
+@respx.mock
+async def test_edit_sub_catchments_takes_the_culverts_in(_server):
+    _mock_project()
+    changed = _culverted()
+    changed["culverts_taken_in"] = {"added": ["Parker Rd"], "removed": [], "moved": [], "placed": 2, "flagged": 2}
+    changed["changed"] = True
+    post = respx.post(f"{SET}culverts/").mock(return_value=httpx.Response(200, json=changed))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "edit_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "kind": "take_culverts_in"}
+        )
+    )
+    assert post.called and json.loads(post.calls[0].request.content) == {}
+    assert data["outcome"] == "changed" and data["culverts_taken_in"]["placed"] == 2
+    assert data["version"]["culverts"]["flagged"] == 2
+    assert data["say_to_user"].startswith("Took the culverts in: 2 placed (1 added), 2 flagged, on the draft")

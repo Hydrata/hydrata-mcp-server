@@ -1173,14 +1173,15 @@
           "description": "For undo_drag: the dragged boundary's `drag_id`"
         },
         "kind": {
-          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map.",
+          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
           "enum": [
             "divide",
             "merge",
             "move_node",
             "add_forced_point",
             "undo_drag",
-            "make_link"
+            "make_link",
+            "take_culverts_in"
           ],
           "type": "string"
         },
@@ -2069,6 +2070,61 @@
     },
     "name": "presign_terrain_upload",
     "title": "Get a terrain upload URL"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Propose the openings along flagged culverts"
+    },
+    "description": "Propose the drainage opening every flagged culvert of the sub-catchments offers, in ONE request (D15's measured\nladder: where the water reaching a culvert's inlet leaves past its outlet, an opening along the culvert would carry it\nthrough). The openings are filed as PROPOSALS: nothing changes until a person accepts them on the map, and only then\nis the terrain's drainage analysis worked out again (once) and the line run again. Read the culverts first with\nget_sub_catchments (version.culverts: each culvert's area across the inlet, its flags and whether an opening is\noffered). Tell the user they are waiting and give them the link (`ui_url`).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "culverts": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only these culverts' openings, as [[culvert, feature], ...] (get_sub_catchments: version.culverts.placed, where opening_offered is true). Omit it for every opening offered, which is the usual one action."
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "sub_catchments_id": {
+          "description": "The set of sub-catchments: its `sub_catchments_id`",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "sub_catchments_id"
+      ],
+      "type": "object"
+    },
+    "name": "propose_culvert_openings",
+    "title": "Propose the openings along flagged culverts"
   },
   {
     "annotations": {

@@ -420,6 +420,9 @@ TOOL_ANNOTATIONS = {
     "get_sub_catchments": ("Wait for and read sub-catchments", True, False, True),
     "edit_sub_catchments": ("Divide, merge or move sub-catchments by hand", False, False, False),
     "propose_sub_catchment_boundary": ("Propose a new boundary between two sub-catchments", False, False, False),
+    # TASK-4487 (epic 4445 W11.5, D15/D16): every flagged culvert's opening, filed as proposals a person accepts on the
+    # map; no drainage analysis job starts until a person does. Not destructive.
+    "propose_culvert_openings": ("Propose the openings along flagged culverts", False, False, False),
 }
 
 

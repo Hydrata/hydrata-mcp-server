@@ -332,7 +332,7 @@ class TestToolAnnotations:
         async with _asgi_client(_server) as c:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
-        assert len(tools) == 55  # +TASK-4486 the four sub-catchment tools
+        assert len(tools) == 56  # +TASK-4487 propose_culvert_openings; +TASK-4486 the four sub-catchment tools
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name

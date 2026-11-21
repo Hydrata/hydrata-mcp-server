@@ -61,6 +61,7 @@ WRITES = {
     "create_sub_catchments": False,  # a draft set of sub-catchments (a person confirms); TASK-4486
     "edit_sub_catchments": False,  # an edit on the draft, recorded in order; make_link only proposes; TASK-4486
     "propose_sub_catchment_boundary": False,  # a dragged boundary filed waiting for a person; TASK-4486
+    "propose_culvert_openings": False,  # openings along flagged culverts, proposals a person accepts; TASK-4487
     "convert_terrain_datum": False,  # makes a shifted copy; the source terrain is kept
     "finalize_terrain_upload": False,
     "presign_terrain_upload": False,
@@ -100,10 +101,10 @@ def test_tool_hints_the_three_groups_are_disjoint():
 
 async def test_tool_hints_the_table_names_every_one_of_the_51_tools(_server):
     tools = await _tools(_server)
-    assert len(tools) == 55
+    assert len(tools) == 56
     grouped = READ_ONLY | set(WRITES) | SPENDS_COMPUTE
     assert grouped == set(tools), {"unlisted": sorted(set(tools) - grouped), "stale": sorted(grouped - set(tools))}
-    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 55
+    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 56
 
 
 async def test_tool_hints_read_only_tools_say_read_only_and_not_destructive(_server):
