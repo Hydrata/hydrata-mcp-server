@@ -18,6 +18,8 @@ until a person confirms it. There is no tool that deletes a delineation or edits
 
 Words (operator, 15-11-26): the quick run (API mode 'quick') is the FAST SCREEN (low resolution), a first look; the full run
 (mode 'full') is HIGH RESOLUTION. A fast screen is a quick result that was coarsened; its ground profile is not given anywhere.
+TASK-4567 (operator, 21-11-26): the fast screen is optional, not necessary: a new line may go straight to High resolution, on
+that line itself (no copy).
 """
 
 import json
@@ -541,7 +543,8 @@ async def delineate_catchments(
         int | None,
         "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, "
         "start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with "
-        "mode='full', to start High resolution (on a copy of the line when its result is a fast screen). A "
+        "mode='full', to start High resolution (on a copy of the line when its result is a fast screen; on the line "
+        "itself when it has no result). A "
         "delineation a person made or confirmed is refused.",
     ] = None,
     line: Annotated[
@@ -568,9 +571,10 @@ async def delineate_catchments(
     mode: Annotated[
         Literal["quick", "full"] | None,
         "'quick' (the default for a new delineation) is the FAST SCREEN: low resolution, coarsened to the web "
-        "server's limit, seconds to a couple of minutes; a first look. 'full' is HIGH RESOLUTION: the terrain's own "
-        "resolution, on AWS Batch, can take many hours (up to about 24), and the person can close the map. Do the "
-        "fast screen first and offer High resolution with its estimate. With delineation_id, 'full' starts High "
+        "server's limit, seconds to a couple of minutes; an optional first look. 'full' is HIGH RESOLUTION: the "
+        "terrain's own resolution; a big terrain runs on AWS Batch and can take many hours (up to about 24), and the "
+        "person can close the map. The fast screen is optional: a new line can go straight to 'full', on that line "
+        "itself (no copy); say its estimate first (estimate_only). With delineation_id, 'full' starts High "
         "resolution: over a fast screen it makes a COPY of the line, '<name> (high res)', and runs there (the fast "
         "screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast "
         "screen again.",
@@ -606,6 +610,9 @@ async def delineate_catchments(
     words. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata
     makes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names
     the copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.
+
+    The fast screen is optional: a NEW delineation with `mode='full'` goes straight to High resolution, on that line
+    itself (no copy, the name as given). Say its estimate first (`estimate_only`).
     """
     clean_sources = _clean_sources(sources)
     method = authored_method.strip() if isinstance(authored_method, str) else ""
@@ -638,7 +645,8 @@ async def delineate_catchments(
             project_id,
             {"estimate": _estimate_summary(estimate), "terrain_id": estimate.get("terrain_id")},
             _estimate_words(estimate)
-            + " Nothing was run. Offer the fast screen first; then offer High resolution with this estimate.",
+            + " Nothing was run. The fast screen is optional: offer High resolution with this estimate, and the fast "
+            "screen as a first look if the person wants one.",
             panel="catchments",
         )
         return json.dumps(result, indent=2)
@@ -718,7 +726,9 @@ async def delineate_catchments(
         else " Upstream side: automatic. The result names the side per section."
     )
     if chosen == "full":
-        say += " High resolution can take many hours. No fast screen is made. The person can close the map."
+        say += " High resolution, on this line (no copy). No fast screen is made: it is optional."
+        if (estimate.get("full") or {}).get("can_take_hours"):
+            say += " It can take many hours. The person can close the map."
     else:
         say += (
             " The fast screen takes seconds to minutes. It is a first look: offer High resolution before the person "

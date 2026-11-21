@@ -1089,7 +1089,7 @@ def test_instructions_send_agents_to_these_tools_for_the_catchment_and_the_bound
         "never draw a catchment or a model boundary off the platform",
         "terrain_profile",
         "natural ground where the water arrives, not on a crest",
-        "fast screen first",
+        "fast screen is optional",  # TASK-4567: was 'fast screen first'
         "High resolution",
         "(high res)",
         "authored_method",
@@ -1603,3 +1603,79 @@ async def test_promote_get_delineation_of_a_line_never_promoted_says_nothing_of_
         await _call_as_caller(_server, "get_delineation", {"project_id": 42, "delineation_id": 9, "timeout_seconds": 0})
     )
     assert data["adopted_layer"] is None and "adopted" not in data["say_to_user"].lower()
+
+
+# ---------------------------------------------------------------------------
+# TASK-4567 (operator, 21-11-26: 'just make it optional instead of necessary now'): the fast screen is optional. A new
+# line can go straight to its run at the terrain's resolution, on that line (no copy); the instructions say so.
+# ---------------------------------------------------------------------------
+def _small_estimate():
+    """A terrain small enough for the web server at its own resolution: High resolution in minutes, not hours."""
+    est = _estimate()
+    est["full"].update(
+        cells=200_000, runs_on="web_server", expected_seconds={"low": 20, "high": 300}, can_take_hours=False
+    )
+    return est
+
+
+def test_fast_screen_optional_the_instructions_say_the_fast_screen_is_optional(env_vars):
+    text = reload_server().mcp.instructions
+    assert "fast screen first" not in text.lower()
+    assert "The fast screen is optional" in text
+    assert "A new line can go straight to its run at the terrain's resolution (mode 'full')" in text
+    assert "(high res)" in text  # the copy route over a fast screen is kept
+
+
+@respx.mock
+async def test_fast_screen_optional_a_new_line_goes_straight_to_high_resolution_on_itself(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_small_estimate()))
+    post = respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary(_job("pending", "full"))))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "mode": "full"}))
+    assert post.call_count == 1 and json.loads(post.calls[0].request.content)["mode"] == "full"
+    assert data["outcome"] == "started" and data["mode"] == "full" and data["delineation_id"] == 9
+    say = data["say_to_user"]
+    assert "High resolution (mode 'full') delineation 'W4 line'" in say and "on the web server" in say
+    assert "on this line (no copy)" in say
+    assert "many hours" not in say  # a small terrain: minutes, and the estimate says so
+    assert "offer High resolution" not in say  # it is already the High resolution run
+
+
+@respx.mock
+async def test_fast_screen_optional_a_big_new_line_straight_to_high_resolution_says_it_can_take_hours(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary(_job("pending", "full", runs_on="batch"))))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "mode": "full"}))
+    say = data["say_to_user"]
+    assert "on AWS Batch" in say and "can take many hours" in say and "close the map" in say
+
+
+@respx.mock
+async def test_fast_screen_optional_the_estimate_offers_both_and_the_fast_screen_as_optional(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "terrain_id": 37, "estimate_only": True}
+        )
+    )
+    say = data["say_to_user"]
+    assert "fast screen first" not in say.lower()
+    assert "The fast screen is optional" in say
+
+
+@respx.mock
+async def test_fast_screen_optional_a_fast_screen_says_it_is_a_first_look_without_saying_it_must_come_first(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
+    say = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))["say_to_user"]
+    assert "It is a first look" in say and "offer High resolution" in say
+
+
+async def test_fast_screen_optional_the_mode_argument_says_the_fast_screen_is_optional(_server):
+    tools = {t.name: t for t in await _server.mcp.list_tools()}
+    mode = tools["delineate_catchments"].parameters["properties"]["mode"]["description"]
+    assert "fast screen first" not in mode.lower() and "optional" in mode
+    assert "on AWS Batch, can take many hours" not in mode
