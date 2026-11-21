@@ -1156,7 +1156,7 @@
       "readOnlyHint": false,
       "title": "Divide, merge or move sub-catchments by hand"
     },
-    "description": "Change sub-catchments by hand on the draft: divide a sub-catchment, merge two, move a node, add a forced point, or\nundo a dragged boundary. An edit after a confirm starts a new draft; the confirmed version never changes. The answer\nnames the sub-catchments measured again. Ids change when an edit writes the draft again: read the set again with\nget_sub_catchments before the next edit.\n\nmake_link changes nothing: it is filed as a proposal a person accepts or rejects on the map. Tell the user it is\nwaiting and give them the link (`ui_url`). To propose a new boundary, use propose_sub_catchment_boundary.",
+    "description": "Change sub-catchments by hand on the draft: divide a sub-catchment, merge two, move a node, add a forced point,\nundo a dragged boundary, or undo another edit made by hand (its seq). An edit after a confirm starts a new draft;\nthe confirmed version never changes. The answer names the sub-catchments measured again. Ids change when an edit\nwrites the draft again: read the set again with get_sub_catchments before the next edit.\n\nmake_link changes nothing: it is filed as a proposal a person accepts or rejects on the map. Tell the user it is\nwaiting and give them the link (`ui_url`). To propose a new boundary, use propose_sub_catchment_boundary.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1173,13 +1173,14 @@
           "description": "For undo_drag: the dragged boundary's `drag_id`"
         },
         "kind": {
-          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
+          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); undo: take back one other edit made by hand (seq, from the read's hand_edits), as the map's Undo last and History do; make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
           "enum": [
             "divide",
             "merge",
             "move_node",
             "add_forced_point",
             "undo_drag",
+            "undo",
             "make_link",
             "take_culverts_in"
           ],
@@ -1250,6 +1251,18 @@
           "default": "",
           "description": "For make_link: one or two sentences the person reads before accepting (what you saw, and why).",
           "type": "string"
+        },
+        "seq": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For undo: the edit's `seq` (get_sub_catchments, version.hand_edits)"
         },
         "sub_catchment_ids": {
           "anyOf": [

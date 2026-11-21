@@ -63,6 +63,7 @@ EDIT_KINDS = {
     "move_node": "Move a node",
     "add_forced_point": "Add a forced point",
     "undo_drag": "Undo a dragged boundary",
+    "undo": "Undo an edit",
     "make_link": "Make this a link",
 }
 MAX_REASON = 200
@@ -278,6 +279,12 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         {k: d.get(k) for k in ("drag_id", "state", "state_label", "barrier_id")} for d in version.get("drags") or []
     ]
     out["proposals"] = [_proposal(p) for p in version.get("proposals") or []]
+    # the edits made by hand still standing, in order (the map's edits line, History and Undo last): undo takes one back
+    out["hand_edits"] = [
+        {k: e.get(k) for k in ("seq", "kind", "label", "made_by_agent", "drag_id", "state") if k in e}
+        for e in version.get("hand_edits") or []
+        if isinstance(e, dict)
+    ]
     return out
 
 
@@ -529,10 +536,13 @@ async def edit_sub_catchments(
     project_id: Annotated[int, "The project ID (Editor rights)"],
     sub_catchments_id: Annotated[int, "The set to change: its `sub_catchments_id`"],
     kind: Annotated[
-        Literal["divide", "merge", "move_node", "add_forced_point", "undo_drag", "make_link", "take_culverts_in"],
+        Literal[
+            "divide", "merge", "move_node", "add_forced_point", "undo_drag", "undo", "make_link", "take_culverts_in"
+        ],
         "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments "
         "of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; "
-        "add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); make_link: "
+        "add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); undo: take back "
+        "one other edit made by hand (seq, from the read's hand_edits), as the map's Undo last and History do; make_link: "
         "PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; "
         "take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's "
         "culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
@@ -545,15 +555,16 @@ async def edit_sub_catchments(
         Literal["forced_point", "culvert_inlet"], "For add_forced_point: a forced point (default) or a culvert inlet"
     ] = "forced_point",
     drag_id: Annotated[str | None, "For undo_drag: the dragged boundary's `drag_id`"] = None,
+    seq: Annotated[int | None, "For undo: the edit's `seq` (get_sub_catchments, version.hand_edits)"] = None,
     note_id: Annotated[int | None, "For make_link: the note's id (get_sub_catchments, a sub-catchment's notes)"] = None,
     reason: Annotated[
         str, "For make_link: one or two sentences the person reads before accepting (what you saw, and why)."
     ] = "",
 ) -> str:
-    """Change sub-catchments by hand on the draft: divide a sub-catchment, merge two, move a node, add a forced point, or
-    undo a dragged boundary. An edit after a confirm starts a new draft; the confirmed version never changes. The answer
-    names the sub-catchments measured again. Ids change when an edit writes the draft again: read the set again with
-    get_sub_catchments before the next edit.
+    """Change sub-catchments by hand on the draft: divide a sub-catchment, merge two, move a node, add a forced point,
+    undo a dragged boundary, or undo another edit made by hand (its seq). An edit after a confirm starts a new draft;
+    the confirmed version never changes. The answer names the sub-catchments measured again. Ids change when an edit
+    writes the draft again: read the set again with get_sub_catchments before the next edit.
 
     make_link changes nothing: it is filed as a proposal a person accepts or rejects on the map. Tell the user it is
     waiting and give them the link (`ui_url`). To propose a new boundary, use propose_sub_catchment_boundary.
@@ -572,6 +583,10 @@ async def edit_sub_catchments(
         if len(ids) != 2 or ids[0] == ids[1]:
             raise ToolError("merge needs sub_catchment_ids: two different sub-catchments. Nothing was sent.")
         payload["sub_catchment_ids"] = ids
+    elif kind == "undo":
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            raise ToolError("undo needs seq (get_sub_catchments, version.hand_edits). Nothing was sent.")
+        payload["seq"] = seq
     elif kind == "undo_drag":
         if not isinstance(drag_id, str) or not drag_id.strip():
             raise ToolError("undo_drag needs drag_id (get_sub_catchments, drags). Nothing was sent.")

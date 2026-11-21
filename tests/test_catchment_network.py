@@ -501,6 +501,57 @@ async def test_edit_sub_catchments_refuses_a_wrong_shape_before_sending(_server)
 
 
 @respx.mock
+async def test_edit_sub_catchments_undoes_one_edit_made_by_hand_by_its_seq(_server):
+    # review of W11 (TASK-4484 added 'undo' for the map's Undo last and History; D16: tools and screen at parity)
+    _mock_project()
+    post = respx.post(f"{SET}edits/").mock(return_value=httpx.Response(200, json=_edited("undo", seq=3)))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "edit_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "kind": "undo", "seq": 3}
+        )
+    )
+    assert json.loads(post.calls[0].request.content) == {"kind": "undo", "seq": 3}
+    assert data["outcome"] == "changed"
+    _tool_error_text(
+        await _call_as_caller(
+            _server, "edit_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "kind": "undo"}
+        )
+    )
+    assert post.call_count == 1
+
+
+@respx.mock
+async def test_get_sub_catchments_lists_the_edits_made_by_hand_an_undo_names(_server):
+    _mock_project()
+    hand = [
+        {"seq": 2, "kind": "add_forced_point", "label": "Add a forced point", "made_by_agent": False},
+        {
+            "seq": 3,
+            "kind": "drag",
+            "label": "Drag a boundary",
+            "made_by_agent": True,
+            "drag_id": "ab12",
+            "state": "waiting",
+            "line": [[1, 2], [3, 4]],
+            "moved_ha": 0.4,
+        },
+    ]
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc(hand_edits=hand)))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    assert data["version"]["hand_edits"] == [
+        {"seq": 2, "kind": "add_forced_point", "label": "Add a forced point", "made_by_agent": False},
+        {
+            "seq": 3,
+            "kind": "drag",
+            "label": "Drag a boundary",
+            "made_by_agent": True,
+            "drag_id": "ab12",
+            "state": "waiting",
+        },
+    ]
+
+
+@respx.mock
 async def test_an_agents_make_this_a_link_is_a_proposal_that_changes_nothing(_server):
     """Re-grill 19-11-26 (D22 with D16): the tool files a proposal and changes nothing; a person accepts it on the map."""
     _mock_project()
