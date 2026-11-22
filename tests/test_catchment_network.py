@@ -68,6 +68,7 @@ def _sub(pk, label, node, area_ha, notes=()):
             "type": "Polygon",
             "coordinates": [[[149.1, -35.2], [149.2, -35.2], [149.2, -35.3], [149.1, -35.2]]],
         },
+        "label_point": [149.15, -35.25],
         "facts": {
             "area": _fact(area_ha * 10_000, "m2", "The ground that drains to the node."),
             "mean_land_slope": _fact(0.031, "m/m", "The mean slope of the ground."),
@@ -345,6 +346,7 @@ async def test_get_sub_catchments_reads_one_set_with_its_facts_and_no_shapes(_se
         "drains_to_outside": None,
         "line_catchment_id": 501,
         "area_ha": 8.0,
+        "label_point": [149.15, -35.25],
         "facts": {"area": 80_000.0, "mean_land_slope": 0.031},
         "notes": [
             {
@@ -373,6 +375,7 @@ async def test_get_sub_catchments_reads_one_set_with_its_facts_and_no_shapes(_se
             "to_node": 31,
             "from_outside": None,
             "to_outside": None,
+            "line_link_id": None,
             "facts": {"length": 310.0},
         }
     ]
@@ -1104,3 +1107,245 @@ async def test_edit_sub_catchments_takes_the_culverts_in(_server):
     assert data["outcome"] == "changed" and data["culverts_taken_in"]["placed"] == 2
     assert data["version"]["culverts"]["flagged"] == 2
     assert data["say_to_user"].startswith("Took the culverts in: 2 placed (1 added), 2 flagged, on the draft")
+
+
+# ---------------------------------------------------------------------------
+# W12.5 (TASK-4598): diverted points, diversion links with their facts, label points, taking the diversions in
+# ---------------------------------------------------------------------------
+DIVERTED = {
+    "id": 33,
+    "uid": "u-33",
+    "kind": "diverted_point",
+    "name": "",
+    "lon": 149.12,
+    "lat": -35.262,
+    "level_m": 582.4,
+    "line_catchment_id": 502,
+    "source_ref": None,
+    "total_catchment": {"area": _fact(146_075.0, "m2", "All the ground that drains to the node.")},
+}
+DIVERSION_LINK = {
+    "id": 52,
+    "kind": "diversion",
+    "from_node": 33,
+    "to_node": 31,
+    "from_outside": None,
+    "to_outside": None,
+    "line_link_id": 700,
+    "geometry": {"type": "LineString", "coordinates": [[149.12, -35.262], [149.1, -35.26]]},
+    "facts": {
+        "arriving_area": _fact(146_075.0, "m2", "Plan area arriving at the upper end."),
+        "length": _fact(212.0, "m", "Length along the line."),
+        "fall": _fact(1.2, "m", "Level at the upper low point less the level at the receiving low point."),
+        "slope": _fact(0.0057, "m/m", "Fall over length."),
+        "drain_depth": _fact(0.8, "m", "Depth of a drain along the line."),
+    },
+}
+
+
+def _diverted_doc(**version):
+    doc = _doc(**version)
+    shown = doc["version"]
+    shown["nodes"].append(DIVERTED)
+    shown["links"].append(DIVERSION_LINK)
+    for sub, point in zip(shown["sub_catchments"], ([149.1512345678, -35.2512345678], [149.17, -35.27])):
+        sub["label_point"] = point
+    return doc
+
+
+@respx.mock
+async def test_get_sub_catchments_reads_a_diverted_point_its_diversion_link_facts_and_label_points(_server):
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_diverted_doc()))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    version = data["version"]
+    point = next(n for n in version["nodes"] if n["id"] == 33)
+    # a diverted point says where its water goes on to: the receiving drainage point (the diversion link's lower end)
+    assert point["kind"] == "diverted_point" and point["diverted_to"] == 31
+    assert all("diverted_to" not in n for n in version["nodes"] if n["kind"] != "diverted_point")
+    link = next(k for k in version["links"] if k["id"] == 52)
+    assert link == {
+        "id": 52,
+        "kind": "diversion",
+        "from_node": 33,
+        "to_node": 31,
+        "from_outside": None,
+        "to_outside": None,
+        "line_link_id": 700,
+        "facts": {"arriving_area": 146_075.0, "length": 212.0, "fall": 1.2, "slope": 0.0057, "drain_depth": 0.8},
+    }
+    assert data["fact_definitions"]["arriving_area"]["unit"] == "m2"
+    assert data["fact_definitions"]["drain_depth"]["definition"] == "Depth of a drain along the line."
+    # every sub-catchment's label point, inside its own piece, as [lon, lat] rounded to 6 places
+    assert [s["label_point"] for s in version["sub_catchments"]] == [[149.151235, -35.251235], [149.17, -35.27]]
+    assert "geometry" not in json.dumps(version["links"]) and "coordinates" not in json.dumps(data)
+    assert not _words(json.dumps(data)), _words(json.dumps(data))
+
+
+@respx.mock
+async def test_get_sub_catchments_relays_diversions_changed_and_says_take_diversions_in(_server):
+    doc = _diverted_doc(
+        diversions_changed_since=True,
+        diversions_changed_sentence="Diversions changed in step 2.",
+        diversions_fix_sentence="Take the diversions in.",
+        diversions_changed={"added": [[502, 501]], "removed": []},
+        edits_not_made_again=[
+            {"seq": 4, "kind": "merge", "label": "Merge two sub-catchments", "sentence": "Those two no longer meet."}
+        ],
+        hand_edits=[{"seq": 4, "kind": "merge", "label": "Merge two sub-catchments", "made_by_agent": False}],
+        terrain_agree={"limit_cells": 250_000, "cells": 80_000, "too_large": False, "sentence": "Up to 250,000 cells."},
+    )
+    respx.get(SET).mock(return_value=httpx.Response(200, json=doc))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    version = data["version"]
+    assert version["diversions_changed_since"] is True
+    assert version["diversions_changed"] == {"added": [[502, 501]], "removed": []}
+    assert version["edits_not_made_again"] == [
+        {"seq": 4, "kind": "merge", "label": "Merge two sub-catchments", "sentence": "Those two no longer meet."}
+    ]
+    assert version["terrain_agree"] == {
+        "limit_cells": 250_000,
+        "cells": 80_000,
+        "too_large": False,
+        "sentence": "Up to 250,000 cells.",
+    }
+    say = data["say_to_user"]
+    assert "Diversions changed in step 2. Take the diversions in." in say
+    assert "Merge two sub-catchments could not be made again: Those two no longer meet." in say
+    # never a blocker: the read says nothing of holding the confirm
+    assert "cannot be confirmed" not in say
+
+
+def _taken_in(changed=True, preview=True, not_made=True):
+    doc = _diverted_doc()
+    doc["diversions_taken_in"] = {
+        "changed": changed,
+        "preview": preview,
+        "sentence": (
+            "1 edit is made again. 1 edit cannot be made again. It stays in the list, to look at."
+            if changed
+            else "These sub-catchments were created with the diversions as they are. There is nothing to take in."
+        ),
+        "replayed": [{"seq": 3, "kind": "divide", "label": "Divide a sub-catchment", "made_by_agent": True}]
+        if changed
+        else [],
+        "not_made_again": [
+            {
+                "seq": 4,
+                "kind": "merge",
+                "label": "Merge two sub-catchments",
+                "made_by_agent": False,
+                "sentence": "Those two no longer meet.",
+            }
+        ]
+        if changed and not_made
+        else [],
+        "diversions_changed": {"added": [[502, 501]], "removed": []} if changed else None,
+        **({"version": 2} if changed else {}),
+    }
+    return doc
+
+
+@respx.mock
+async def test_edit_sub_catchments_take_diversions_in_previews_first_and_stores_nothing(_server):
+    _mock_project()
+    post = respx.post(f"{SET}diversions/").mock(return_value=httpx.Response(200, json=_taken_in()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "edit_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "kind": "take_diversions_in"}
+        )
+    )
+    assert json.loads(post.calls[0].request.content) == {"preview": True}
+    assert data["outcome"] == "preview"
+    taken = data["diversions_taken_in"]
+    assert taken["replayed"] == [{"seq": 3, "kind": "divide", "label": "Divide a sub-catchment", "made_by_agent": True}]
+    assert taken["not_made_again"] == [
+        {
+            "seq": 4,
+            "kind": "merge",
+            "label": "Merge two sub-catchments",
+            "made_by_agent": False,
+            "sentence": "Those two no longer meet.",
+        }
+    ]
+    assert taken["diversions_changed"] == {"added": [[502, 501]], "removed": []}
+    say = data["say_to_user"]
+    assert "1 edit is made again. 1 edit cannot be made again." in say and "Nothing was stored." in say
+    assert "preview false" in data["next_step"]
+    assert data["ui_url"].endswith(MAP_URL)
+    assert not _words(json.dumps(data)), _words(json.dumps(data))
+
+
+@respx.mock
+async def test_edit_sub_catchments_take_diversions_in_with_preview_false_takes_them_in(_server):
+    _mock_project()
+    post = respx.post(f"{SET}diversions/").mock(
+        return_value=httpx.Response(200, json=_taken_in(preview=False, not_made=False))
+    )
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "edit_sub_catchments",
+            {"project_id": 42, "sub_catchments_id": 7, "kind": "take_diversions_in", "preview": False},
+        )
+    )
+    assert json.loads(post.calls[0].request.content) == {"preview": False}
+    assert data["outcome"] == "changed" and data["version"]["number"] == 1
+    assert data["say_to_user"].startswith(
+        "Took the diversions in on the draft of the sub-catchments of Kaleen toe (version 2): 1 edit is made again."
+    )
+    assert data["rule"].startswith("Sub-catchments are a draft until a person confirms them")
+
+
+@respx.mock
+async def test_edit_sub_catchments_take_diversions_in_with_nothing_to_take_in_says_so(_server):
+    _mock_project()
+    respx.post(f"{SET}diversions/").mock(return_value=httpx.Response(200, json=_taken_in(changed=False)))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "edit_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "kind": "take_diversions_in"}
+        )
+    )
+    assert data["outcome"] == "unchanged"
+    assert data["say_to_user"].startswith("These sub-catchments were created with the diversions as they are.")
+
+
+@respx.mock
+async def test_edit_sub_catchments_take_diversions_in_refused_after_the_line_ran_again(_server):
+    _mock_project()
+    respx.post(f"{SET}diversions/").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_code": "LINE_CHANGED",
+                "detail": "The line has run again since these were created. Create again from the new result.",
+                "fix_sentence": "Create again from the new result.",
+            },
+        )
+    )
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "edit_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "kind": "take_diversions_in"}
+        )
+    )
+    assert data["outcome"] == "refused" and data["error_code"] == "LINE_CHANGED"
+    assert data["say_to_user"].startswith("Refused taking the diversions in: The line has run again")
+    assert data["say_to_user"].endswith("Nothing changed.")
+
+
+@respx.mock
+async def test_create_sub_catchments_estimate_only_answers_what_create_makes_and_stores_nothing(_server):
+    _mock_project()
+    estimate = {"threshold_m2": 18_000.0, "count": 10, "node_count": 7, "target_count": 8, "sentence": None}
+    post = respx.post(LIST).mock(return_value=httpx.Response(200, json={"estimate": estimate}))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "create_sub_catchments",
+            {"project_id": 42, "delineation_id": 9, "target_count": 8, "estimate_only": True},
+        )
+    )
+    assert json.loads(post.calls[0].request.content) == {"delineation_id": 9, "target_count": 8, "estimate_only": True}
+    assert data["outcome"] == "estimate" and data["estimate"] == estimate
+    assert data["say_to_user"] == (
+        "Creating at 8 would make 10 sub-catchments (7 nodes) at a stream threshold of 1.8 ha. Nothing was stored."
+    )

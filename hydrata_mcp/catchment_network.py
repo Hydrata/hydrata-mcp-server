@@ -22,6 +22,13 @@ Culverts (W11.5): get_sub_catchments reads each culvert placed in the sub-catchm
 flags in the server's words, whether an opening is offered and the node it sits at; edit_sub_catchments' take_culverts_in
 answers 'Culverts have changed since these were created.' (the draft made again with the culverts as they are now).
 
+Diversions (W12.5, TASK-4598): get_sub_catchments reads a diverted point (a node whose water goes on to the receiving
+drainage point, `diverted_to`), each diversion link with its facts (area arriving, length, fall, slope, drain depth) and each
+sub-catchment's `label_point` (inside its own piece); a diversion ticked or unticked in step 2 since reads 'Diversions
+changed in step 2.' (never a blocker), and edit_sub_catchments' take_diversions_in takes them in with every edit made again:
+a preview first (nothing stored, the edits made again and those that cannot be, each with its sentence), then preview
+false. create_sub_catchments' estimate_only answers what Create would make (TASK-4587), nothing stored.
+
 No tool confirms (a person does, in the browser) or stores a drainage barrier. Adopting the confirmed sub-catchments is part
 of adopting a line's catchments (adopt_catchments). Words (Decision 889): sub-catchments, create and divide. The API's own
 internal names (the 'v2-catchment-network-*' routes, process type network_cut) are never shown.
@@ -58,6 +65,7 @@ OPENINGS_RULE = (
 )
 EDIT_KINDS = {
     "take_culverts_in": "Take the culverts in",
+    "take_diversions_in": "Take the diversions in",
     "divide": "Divide a sub-catchment",
     "merge": "Merge two sub-catchments",
     "move_node": "Move a node",
@@ -131,6 +139,20 @@ def _sentences(version: dict) -> list[str]:
         out.append(
             " ".join(s for s in (version.get("culverts_changed_sentence"), version.get("culverts_fix_sentence")) if s)
         )
+    # W12.5 (TASK-4580): a diversion ticked or unticked in step 2 since; never a blocker (Confirm stays)
+    if version.get("diversions_changed_since"):
+        out.append(
+            " ".join(
+                s for s in (version.get("diversions_changed_sentence"), version.get("diversions_fix_sentence")) if s
+            )
+        )
+    for e in version.get("edits_not_made_again") or []:
+        if isinstance(e, dict):
+            why = str(e.get("sentence") or "").strip()
+            out.append(
+                f"{e.get('label') or 'An edit'} could not be made again{': ' + why if why else '.'} "
+                "It stays in the list, to look at."
+            )
     if version.get("forced_below_minimum_sentence"):
         out.append(version["forced_below_minimum_sentence"])
     waiting = [d for d in version.get("drags") or [] if d.get("state") == "waiting"]
@@ -167,6 +189,15 @@ def _rounded(geometry):
         return round(value, 6) if isinstance(value, float) else value
 
     return {"type": geometry.get("type"), "coordinates": walk(geometry.get("coordinates"))}
+
+
+def _point(value):
+    """A [lon, lat] point rounded to 6 places (about 0.1 m), or None."""
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value):
+        return None
+    return [round(float(value[0]), 6), round(float(value[1]), 6)]
 
 
 def _culvert_of(node: dict) -> dict | None:
@@ -247,15 +278,25 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         "confirmed_at": version.get("confirmed_at"),
         "line_changed_since": bool(version.get("line_changed_since")),
         "culverts_changed_since": bool(version.get("culverts_changed_since")),
+        # W12.5 (TASK-4580): diversions ticked or unticked in step 2 since ({added, removed} as [[from, to]] catchment ids)
+        "diversions_changed_since": bool(version.get("diversions_changed_since")),
+        **({"diversions_changed": version["diversions_changed"]} if version.get("diversions_changed") else {}),
         "culverts": _culverts(version),
         "sentences": _sentences(version),
     }
     if not full or "sub_catchments" not in version:
         return out
+    # W12.5 (TASK-4577): a diverted point's water goes on to the receiving drainage point, the diversion link's lower end
+    diverted_to = {
+        k.get("from_node"): k.get("to_node")
+        for k in version.get("links") or []
+        if isinstance(k, dict) and k.get("kind") == "diversion"
+    }
     out["nodes"] = [
         {
             **{k: n.get(k) for k in ("id", "kind", "lon", "lat", "level_m", "line_catchment_id")},
             "name": _data(n.get("name")),
+            **({"diverted_to": diverted_to.get(n.get("id"))} if n.get("kind") == "diverted_point" else {}),
             **({"culvert": _culvert_of(n)} if _culvert_of(n) else {}),
             "total_catchment": _compact_facts(n.get("total_catchment"), definitions),
         }
@@ -264,6 +305,8 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
     out["sub_catchments"] = [
         {
             **{k: s.get(k) for k in ("id", "label", "drains_to", "drains_to_outside", "line_catchment_id", "area_ha")},
+            # W12.5 (TASK-4582): where its label sits, inside its own piece, as [lon, lat]
+            "label_point": _point(s.get("label_point")),
             "facts": _compact_facts(s.get("facts"), definitions),
             "notes": [_note(n) for n in s.get("notes") or []],
             **({"outline": _rounded(s.get("polygon"))} if s.get("id") in shapes_of else {}),
@@ -272,7 +315,12 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
     ]
     out["links"] = [
         {
-            **{k: link.get(k) for k in ("id", "kind", "from_node", "to_node", "from_outside", "to_outside")},
+            # kind: reach, diversion (W12.5, TASK-4578: its facts are the area arriving, length, fall, slope, drain depth)
+            # or shares_water (made from a 'can share water' note); line_link_id: the line's own diversion or mark
+            **{
+                k: link.get(k)
+                for k in ("id", "kind", "from_node", "to_node", "from_outside", "to_outside", "line_link_id")
+            },
             "facts": _compact_facts(link.get("facts"), definitions),
         }
         for link in version.get("links") or []
@@ -287,6 +335,17 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         for e in version.get("hand_edits") or []
         if isinstance(e, dict)
     ]
+    # W12.5 (TASK-4580): the edits taking the diversions in could not make again, while they still stand
+    out["edits_not_made_again"] = [
+        {k: e.get(k) for k in ("seq", "kind", "label", "sentence")}
+        for e in version.get("edits_not_made_again") or []
+        if isinstance(e, dict)
+    ]
+    # TASK-4587: the limit 'Make the terrain agree' runs under, as the card states it before the click
+    if isinstance(version.get("terrain_agree"), dict):
+        out["terrain_agree"] = {
+            k: version["terrain_agree"].get(k) for k in ("limit_cells", "cells", "too_large", "sentence")
+        }
     return out
 
 
@@ -392,6 +451,11 @@ async def create_sub_catchments(
         "Places that must be a node, as [[lon, lat], ...] (WGS84), for example a gauge or a road crossing.",
     ] = None,
     name: Annotated[str, "A short name for a new set (up to 200 characters)"] = "",
+    estimate_only: Annotated[
+        bool,
+        "True: create nothing, and answer what Create would make with these choices (the stream threshold and the "
+        "number of sub-catchments and nodes, the engine's own figures), as the step shows before Create.",
+    ] = False,
 ) -> str:
     """Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,
     slope, flow length...), the nodes' total catchments and the reaches between nodes.
@@ -400,7 +464,8 @@ async def create_sub_catchments(
     the line at High resolution first). Creating is by a target number (about 20 by default) or a stream threshold, not
     both. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and
     get_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),
-    and give them the link (`ui_url`). Shapes stay on the map.
+    and give them the link (`ui_url`). Shapes stay on the map. With estimate_only, nothing is created: the answer is
+    the threshold and number Create would make (the number made can differ from the one asked for).
     """
     if target_count is not None and threshold_m2 is not None:
         raise ToolError("Give target_count or threshold_m2, not both. Nothing was sent.")
@@ -417,8 +482,10 @@ async def create_sub_catchments(
         payload["forced_points"] = [
             {"lon": lon, "lat": lat} for lon, lat in _lon_lat_pairs(forced_points, "forced_points", 1)
         ]
-    if name and sub_catchments_id is None:
+    if name and sub_catchments_id is None and not estimate_only:
         payload["name"] = name
+    if estimate_only:
+        payload["estimate_only"] = True
     again = sub_catchments_id is not None
     path = _path(project_id, sub_catchments_id, "create/") if again else _path(project_id)
     body, status = await _post(path, payload)
@@ -428,6 +495,8 @@ async def create_sub_catchments(
         say = result.pop("say_to_user")
         await _hand_back(result, project_id, {"http_status": status, "error_code": result["error_code"]}, say, **links)
         return json.dumps(result, indent=2)
+    if estimate_only:
+        return await _estimate(project_id, body, status, links)
     doc = body if isinstance(body, dict) else {}
     result = {**_set(doc, full=False)}
     version = result.get("version") or {}
@@ -455,6 +524,25 @@ async def create_sub_catchments(
     result["rule"] = CONFIRM_RULE
     summary = {"sub_catchments_id": doc.get("id"), "version": version.get("number"), **(version.get("counts") or {})}
     await _hand_back(result, project_id, summary, say, **links)
+    return json.dumps(result, indent=2)
+
+
+async def _estimate(project_id, body, status: int, links: dict) -> str:
+    """TASK-4587: what Create would make (the server's estimate_only), nothing stored."""
+    reply = body if isinstance(body, dict) else {}
+    estimate = reply.get("estimate") if isinstance(reply.get("estimate"), dict) else {}
+    estimate = {k: estimate.get(k) for k in ("threshold_m2", "count", "node_count", "target_count", "sentence")}
+    count, nodes, threshold, target = (estimate[k] for k in ("count", "node_count", "threshold_m2", "target_count"))
+    if isinstance(count, int) and isinstance(threshold, (int, float)):
+        asked = f"at {target}" if target is not None else "at that stream threshold"
+        say = (
+            f"Creating {asked} would make {_plural(count, 'sub-catchment')} ({_plural(nodes or 0, 'node')}) at a "
+            f"stream threshold of {round(threshold / 10_000, 2):g} ha. Nothing was stored."
+        )
+    else:
+        say = f"{_data(estimate.get('sentence')) or 'No estimate here.'} Nothing was stored."
+    result = {"outcome": "estimate", "http_status": status, "estimate": estimate}
+    await _hand_back(result, project_id, {"estimate": estimate}, say, **links)
     return json.dumps(result, indent=2)
 
 
@@ -489,12 +577,14 @@ async def get_sub_catchments(
 ) -> str:
     """Read sub-catchments. Without sub_catchments_id: the project's sets (of one line, with delineation_id), each with its
     versions. With it: one set, waiting while it is created on cloud compute: its nodes (each with its total catchment's
-    facts), sub-catchments (id, label, the node it drains to, area, facts and its 'can share water' notes with their ids),
-    reaches and links with their facts, the dragged boundaries and their state (waiting, in the terrain, kept as drawn),
-    the proposals waiting for a person, and `sentences` to relay (for example 'The line has run again since these were
-    created.'). Each fact's unit, definition and source is given once, in `fact_definitions`. Shapes stay on the map,
-    except the outlines you ask for with outlines_of, and the streams a divide goes on with streams_of (aim a divide at
-    one). `timed_out` is normal: read again later. Read-only.
+    facts; a diverted point says the node its water goes on to, `diverted_to`), sub-catchments (id, label, where its
+    label sits as `label_point`, the node it drains to, area, facts and its 'can share water' notes with their ids),
+    reaches and links with their facts (a diversion's: area arriving, length, fall, slope, drain depth), the dragged
+    boundaries and their state (waiting, in the terrain, kept as drawn), the proposals waiting for a person, and
+    `sentences` to relay (for example 'The line has run again since these were created.', or 'Diversions changed in
+    step 2. Take the diversions in.', which never holds a confirm). Each fact's unit, definition and source is given
+    once, in `fact_definitions`. Shapes stay on the map, except the outlines you ask for with outlines_of, and the
+    streams a divide goes on with streams_of (aim a divide at one). `timed_out` is normal: read again later. Read-only.
     """
     wanted = list(outlines_of or [])
     if len(wanted) > MAX_OUTLINES:
@@ -570,7 +660,15 @@ async def edit_sub_catchments(
     sub_catchments_id: Annotated[int, "The set to change: its `sub_catchments_id`"],
     kind: Annotated[
         Literal[
-            "divide", "merge", "move_node", "add_forced_point", "undo_drag", "undo", "make_link", "take_culverts_in"
+            "divide",
+            "merge",
+            "move_node",
+            "add_forced_point",
+            "undo_drag",
+            "undo",
+            "make_link",
+            "take_culverts_in",
+            "take_diversions_in",
         ],
         "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there; aim at a stream "
         "get_sub_catchments' streams_of gives); merge: two sub-catchments "
@@ -579,7 +677,10 @@ async def edit_sub_catchments(
         "one other edit made by hand (seq, from the read's hand_edits), as the map's Undo last and History do; make_link: "
         "PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; "
         "take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's "
-        "culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
+        "culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft); "
+        "take_diversions_in: when the read says 'Diversions changed in step 2.', make the sub-catchments again with the "
+        "line's diversions as they are now, every edit made by hand made again (after a confirm, a new draft). It "
+        "previews first (preview, default true).",
     ],
     lon: Annotated[float | None, "For divide, move_node and add_forced_point: longitude (WGS84)"] = None,
     lat: Annotated[float | None, "For divide, move_node and add_forced_point: latitude (WGS84)"] = None,
@@ -594,11 +695,17 @@ async def edit_sub_catchments(
     reason: Annotated[
         str, "For make_link: one or two sentences the person reads before accepting (what you saw, and why)."
     ] = "",
+    preview: Annotated[
+        bool,
+        "For take_diversions_in: true (default) stores nothing and answers which edits are made again and which cannot "
+        "be, each with its sentence; false takes the diversions in.",
+    ] = True,
 ) -> str:
     """Change sub-catchments by hand on the draft: divide a sub-catchment, merge two, move a node, add a forced point,
-    undo a dragged boundary, or undo another edit made by hand (its seq). An edit after a confirm starts a new draft;
-    the confirmed version never changes. The answer names the sub-catchments measured again. Ids change when an edit
-    writes the draft again: read the set again with get_sub_catchments before the next edit.
+    undo a dragged boundary, or undo another edit made by hand (its seq), or take the culverts or the diversions in (the
+    diversions: a preview first, then preview false). An edit after a confirm starts a new draft; the confirmed version
+    never changes. The answer names the sub-catchments measured again. Ids change when an edit writes the draft again:
+    read the set again with get_sub_catchments before the next edit.
 
     make_link changes nothing: it is filed as a proposal a person accepts or rejects on the map. Tell the user it is
     waiting and give them the link (`ui_url`). To propose a new boundary, use propose_sub_catchment_boundary.
@@ -606,6 +713,8 @@ async def edit_sub_catchments(
     label = EDIT_KINDS[kind]
     if kind == "take_culverts_in":
         return await _take_culverts_in(project_id, sub_catchments_id)
+    if kind == "take_diversions_in":
+        return await _take_diversions_in(project_id, sub_catchments_id, preview)
     if kind == "make_link":
         if isinstance(note_id, bool) or not isinstance(note_id, int):
             raise ToolError("make_link needs note_id (a sub-catchment's note in get_sub_catchments). Nothing was sent.")
@@ -706,6 +815,75 @@ async def _take_culverts_in(project_id, sub_catchments_id) -> str:
         {"sub_catchments_id": doc.get("id"), "culverts_taken_in": summary},
         say,
         **_links(doc.get("delineation_id")),
+    )
+    return json.dumps(result, indent=2)
+
+
+def _taken_row(e: dict, why=False) -> dict:
+    out = {k: e.get(k) for k in ("seq", "kind", "label", "made_by_agent")}
+    if why:
+        out["sentence"] = e.get("sentence")
+    return out
+
+
+async def _take_diversions_in(project_id, sub_catchments_id, preview: bool) -> str:
+    """POST diversions/ (W12.5, TASK-4580): the sub-catchments made again with the line's diversions as they are now, every
+    edit made by hand made again. ``preview`` stores nothing and names the edits made again and those that cannot be."""
+    if not isinstance(preview, bool):
+        raise ToolError("preview must be true or false. Nothing was sent.")
+    body, status = await _post(_path(project_id, sub_catchments_id, "diversions/"), {"preview": preview})
+    doc = body if isinstance(body, dict) else {}
+    links = _links(doc.get("delineation_id"))
+    if status >= 400:
+        result = _refused(body, status, "taking the diversions in")
+        say = result.pop("say_to_user")
+        await _hand_back(result, project_id, {"http_status": status, "error_code": result["error_code"]}, say)
+        return json.dumps(result, indent=2)
+    taken = doc.get("diversions_taken_in") if isinstance(doc.get("diversions_taken_in"), dict) else {}
+    changed = bool(taken.get("changed"))
+    summary = {
+        "changed": changed,
+        "preview": bool(preview),
+        "sentence": taken.get("sentence"),
+        "replayed": [_taken_row(e) for e in taken.get("replayed") or [] if isinstance(e, dict)],
+        "not_made_again": [_taken_row(e, why=True) for e in taken.get("not_made_again") or [] if isinstance(e, dict)],
+        "diversions_changed": taken.get("diversions_changed"),
+    }
+    sentence = str(taken.get("sentence") or "").strip()
+    reasons = " ".join(
+        f"{e.get('label')}: {e.get('sentence')}"
+        for e in summary["not_made_again"]
+        if e.get("label") and e.get("sentence")
+    )
+    if not changed:
+        outcome = "unchanged"
+        say = sentence or "These sub-catchments were created with the diversions as they are: nothing changed."
+    elif preview:
+        outcome = "preview"
+        say = (
+            f"Taking the diversions in would make the sub-catchments of {_line_words(doc)} again: {sentence}"
+            f"{' ' + reasons if reasons else ''} Nothing was stored."
+        )
+    else:
+        outcome = "changed"
+        say = (
+            f"Took the diversions in on the draft of the sub-catchments of {_line_words(doc)} (version "
+            f"{taken.get('version')}): {sentence}{' ' + reasons if reasons else ''}"
+        )
+    result = {
+        "outcome": outcome,
+        "http_status": status,
+        "diversions_taken_in": summary,
+        **_set(doc, full=outcome == "changed"),
+        "rule": CONFIRM_RULE,
+    }
+    if outcome == "preview":
+        result["next_step"] = (
+            f"To take them in, call edit_sub_catchments(project_id={project_id}, sub_catchments_id={sub_catchments_id}, "
+            "kind='take_diversions_in', preview false). An edit that cannot be made again stays in the list, to look at."
+        )
+    await _hand_back(
+        result, project_id, {"sub_catchments_id": doc.get("id"), "outcome": outcome, **summary}, say, **links
     )
     return json.dumps(result, indent=2)
 
