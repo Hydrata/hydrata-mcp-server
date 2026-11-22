@@ -121,8 +121,10 @@ def _proposal(p: dict) -> dict:
 def _sentences(version: dict) -> list[str]:
     """The marks and waits of a version, as sentences to relay."""
     out = []
-    if version.get("line_changed_since"):
-        out.append(" ".join(s for s in (version.get("line_changed_sentence"), version.get("fix_sentence")) if s))
+    # the line having run again, or (W12.5, TASK-4576) a set created by an earlier rule: the one blocker, as on the screen
+    if version.get("line_changed_since") or version.get("earlier_rule"):
+        mark = version.get("line_changed_sentence") or version.get("earlier_rule_sentence")
+        out.append(" ".join(s for s in (mark, version.get("fix_sentence")) if s))
         if version.get("create_again_sentence"):
             out.append(version["create_again_sentence"])
     if version.get("culverts_changed_since"):

@@ -385,6 +385,27 @@ async def test_get_sub_catchments_reads_one_set_with_its_facts_and_no_shapes(_se
 
 
 @respx.mock
+async def test_get_sub_catchments_relays_a_set_created_by_an_earlier_rule(_server):
+    # W12.5 review (TASK-4576, D16): the screen's blocker row says the set was created by an earlier rule; the agent hears
+    # the same sentence and its fix, and what creating again drops
+    doc = _doc(
+        line_changed_since=False,
+        earlier_rule=True,
+        earlier_rule_sentence="These sub-catchments were created by an earlier rule. Ground reaching a drainage point "
+        "directly is now one sub-catchment per side of the point along the line.",
+        fix_sentence="Create again.",
+        create_again_drops=2,
+        create_again_sentence="Creating again drops 2 edits made by hand.",
+    )
+    respx.get(SET).mock(return_value=httpx.Response(200, json=doc))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    say = data["say_to_user"]
+    assert "These sub-catchments were created by an earlier rule." in say and "Create again." in say
+    assert "Creating again drops 2 edits made by hand." in say
+    assert not _words(json.dumps(data)), _words(json.dumps(data))
+
+
+@respx.mock
 async def test_get_sub_catchments_gives_the_outlines_asked_for_and_no_others(_server):
     respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
     data = _tool_json(
