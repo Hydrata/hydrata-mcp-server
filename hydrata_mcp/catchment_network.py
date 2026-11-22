@@ -8,7 +8,7 @@ get_sub_catchments     - the sets of a line, or one set read compactly: nodes, s
                          fact's definition, unit and source once, in `fact_definitions`), the 'can share water' notes, the
                          dragged boundaries and the proposals waiting for a person, and the marks ('The line has run again
                          since these were created.', 'Culverts have changed since these were created.'). Shapes stay on the
-                         map.
+                         map; streams_of (W12.9, TASK-4575) gives the streams a divide goes on, as the map draws them.
 edit_sub_catchments    - divide a sub-catchment, merge two, move a node, add a forced point, or undo a dragged boundary, on
                          the draft (an edit after a confirm starts a new draft). 'Make this a link' is filed as a PROPOSAL
                          (the API's proposals/ route): it changes nothing until a person accepts it on the map (D22, D16).
@@ -478,6 +478,12 @@ async def get_sub_catchments(
         "With sub_catchments_id: the sub-catchments whose outlines to include (GeoJSON in lon/lat, as `outline`), for "
         "example the two either side of a boundary you want to propose moving. At most 10.",
     ] = None,
+    streams_of: Annotated[
+        list[int] | None,
+        "With sub_catchments_id: the sub-catchments whose streams to include (GeoJSON MultiLineString in lon/lat, as "
+        "`streams`): the streams a divide goes on, as the map draws them. Every sub-catchment then says `has_stream` "
+        "(false: no stream to divide on; add a forced point instead). At most 10.",
+    ] = None,
 ) -> str:
     """Read sub-catchments. Without sub_catchments_id: the project's sets (of one line, with delineation_id), each with its
     versions. With it: one set, waiting while it is created on cloud compute: its nodes (each with its total catchment's
@@ -485,11 +491,15 @@ async def get_sub_catchments(
     reaches and links with their facts, the dragged boundaries and their state (waiting, in the terrain, kept as drawn),
     the proposals waiting for a person, and `sentences` to relay (for example 'The line has run again since these were
     created.'). Each fact's unit, definition and source is given once, in `fact_definitions`. Shapes stay on the map,
-    except the outlines you ask for with outlines_of. `timed_out` is normal: read again later. Read-only.
+    except the outlines you ask for with outlines_of, and the streams a divide goes on with streams_of (aim a divide at
+    one). `timed_out` is normal: read again later. Read-only.
     """
     wanted = list(outlines_of or [])
     if len(wanted) > MAX_OUTLINES:
         raise ToolError(f"outlines_of takes at most {MAX_OUTLINES} sub-catchments. Nothing was read.")
+    streams_wanted = list(streams_of or [])
+    if len(streams_wanted) > MAX_OUTLINES:
+        raise ToolError(f"streams_of takes at most {MAX_OUTLINES} sub-catchments. Nothing was read.")
     if sub_catchments_id is None:
         params = {"delineation_id": delineation_id} if delineation_id is not None else None
         listed = await client.get(_path(project_id), params=params)
@@ -517,6 +527,8 @@ async def get_sub_catchments(
     else:
         outcome = "ready"
     shown = result.get("version") or {}
+    if streams_wanted and shown.get("number") is not None:
+        result["streams"] = await _streams(project_id, sub_catchments_id, shown, streams_wanted)
     say = " ".join(shown.get("sentences") or [])
     if outcome == "failed":
         say = _data(job.get("sentence")) or "The sub-catchments could not be created."
@@ -526,6 +538,25 @@ async def get_sub_catchments(
     if say:
         result["say_to_user"] = say
     return json.dumps(result, indent=2)
+
+
+async def _streams(project_id, set_id, version: dict, wanted: list) -> dict:
+    """TASK-4575 (W12.9, D16): the streams a divide goes on (the API's streams/ read, what the map draws): every
+    sub-catchment of ``version`` gets `has_stream`, those in ``wanted`` their `streams` (rounded); a refusal is relayed."""
+    from .client import HydrataAPIError
+
+    try:
+        doc = await client.get(_path(project_id, set_id, "streams/"), params={"version": version.get("number")})
+    except HydrataAPIError as exc:
+        return {"sentence": _data(str(exc))}
+    doc = doc if isinstance(doc, dict) else {}
+    marks = {s.get("id"): s for s in doc.get("sub_catchments") or [] if isinstance(s, dict)}
+    for sub in version.get("sub_catchments") or []:
+        mark = marks.get(sub.get("id")) or {}
+        sub["has_stream"] = bool(mark.get("has_stream"))
+        if sub.get("id") in wanted and mark.get("has_stream"):
+            sub["streams"] = _rounded(mark.get("streams"))
+    return {k: doc.get(k) for k in ("threshold_m2", "definition", "no_stream_sentence")}
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +570,8 @@ async def edit_sub_catchments(
         Literal[
             "divide", "merge", "move_node", "add_forced_point", "undo_drag", "undo", "make_link", "take_culverts_in"
         ],
-        "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments "
+        "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there; aim at a stream "
+        "get_sub_catchments' streams_of gives); merge: two sub-catchments "
         "of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; "
         "add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); undo: take back "
         "one other edit made by hand (seq, from the read's hand_edits), as the map's Undo last and History do; make_link: "

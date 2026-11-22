@@ -1173,7 +1173,7 @@
           "description": "For undo_drag: the dragged boundary's `drag_id`"
         },
         "kind": {
-          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); undo: take back one other edit made by hand (seq, from the read's hand_edits), as the map's Undo last and History do; make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
+          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there; aim at a stream get_sub_catchments' streams_of gives); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); undo: take back one other edit made by hand (seq, from the read's hand_edits), as the map's Undo last and History do; make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft).",
           "enum": [
             "divide",
             "merge",
@@ -1702,7 +1702,7 @@
       "readOnlyHint": true,
       "title": "Wait for and read sub-catchments"
     },
-    "description": "Read sub-catchments. Without sub_catchments_id: the project's sets (of one line, with delineation_id), each with its\nversions. With it: one set, waiting while it is created on cloud compute: its nodes (each with its total catchment's\nfacts), sub-catchments (id, label, the node it drains to, area, facts and its 'can share water' notes with their ids),\nreaches and links with their facts, the dragged boundaries and their state (waiting, in the terrain, kept as drawn),\nthe proposals waiting for a person, and `sentences` to relay (for example 'The line has run again since these were\ncreated.'). Each fact's unit, definition and source is given once, in `fact_definitions`. Shapes stay on the map,\nexcept the outlines you ask for with outlines_of. `timed_out` is normal: read again later. Read-only.",
+    "description": "Read sub-catchments. Without sub_catchments_id: the project's sets (of one line, with delineation_id), each with its\nversions. With it: one set, waiting while it is created on cloud compute: its nodes (each with its total catchment's\nfacts), sub-catchments (id, label, the node it drains to, area, facts and its 'can share water' notes with their ids),\nreaches and links with their facts, the dragged boundaries and their state (waiting, in the terrain, kept as drawn),\nthe proposals waiting for a person, and `sentences` to relay (for example 'The line has run again since these were\ncreated.'). Each fact's unit, definition and source is given once, in `fact_definitions`. Shapes stay on the map,\nexcept the outlines you ask for with outlines_of, and the streams a divide goes on with streams_of (aim a divide at\none). `timed_out` is normal: read again later. Read-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1741,6 +1741,21 @@
         "project_id": {
           "description": "The project ID",
           "type": "integer"
+        },
+        "streams_of": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With sub_catchments_id: the sub-catchments whose streams to include (GeoJSON MultiLineString in lon/lat, as `streams`): the streams a divide goes on, as the map draws them. Every sub-catchment then says `has_stream` (false: no stream to divide on; add a forced point instead). At most 10."
         },
         "sub_catchments_id": {
           "anyOf": [

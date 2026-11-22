@@ -403,6 +403,85 @@ async def test_get_sub_catchments_gives_the_outlines_asked_for_and_no_others(_se
     assert "at most 10" in text
 
 
+STREAMS = {
+    "sub_catchments_id": 7,
+    "version": 2,
+    "threshold_m2": 39000.0,
+    "threshold_ha": 3.9,
+    "definition": "Streams: every place at least 3.9 ha drains through, at the threshold these sub-catchments were "
+    "created with. A divide goes on the stream nearest the click.",
+    "no_stream_sentence": "No stream here: add a forced point instead.",
+    "sub_catchments": [
+        {
+            "id": 11,
+            "label": 1,
+            "has_stream": True,
+            "stream_cells": 3,
+            "streams": {"type": "MultiLineString", "coordinates": [[[149.12345678, -35.2], [149.1236, -35.2001]]]},
+        },
+        {
+            "id": 12,
+            "label": 2,
+            "has_stream": False,
+            "stream_cells": 0,
+            "streams": {"type": "MultiLineString", "coordinates": []},
+        },
+    ],
+}
+
+
+@respx.mock
+async def test_get_sub_catchments_gives_the_streams_a_divide_goes_on_and_marks_a_sub_catchment_with_none(_server):
+    """TASK-4575 (W12.9, D16): the streams step 3 draws (where a divide goes) are read the same way by an agent."""
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
+    streams = respx.get(f"{SET}streams/").mock(return_value=httpx.Response(200, json=STREAMS))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "streams_of": [11]}
+        )
+    )
+    assert streams.called
+    by_id = {s["id"]: s for s in data["version"]["sub_catchments"]}
+    assert by_id[11]["has_stream"] is True and by_id[12]["has_stream"] is False
+    assert by_id[11]["streams"] == {
+        "type": "MultiLineString",
+        "coordinates": [[[149.123457, -35.2], [149.1236, -35.2001]]],
+    }
+    assert "streams" not in by_id[12]
+    assert data["streams"]["no_stream_sentence"] == "No stream here: add a forced point instead."
+    assert data["streams"]["threshold_m2"] == 39000.0 and "divide" in data["streams"]["definition"]
+    assert not _words(json.dumps(data)), _words(json.dumps(data))
+
+
+@respx.mock
+async def test_get_sub_catchments_reads_no_streams_unless_asked_and_relays_a_refusal(_server):
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
+    streams = respx.get(f"{SET}streams/").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_code": "TOO_LARGE",
+                "detail": "These sub-catchments are too large to change on the web server. Nothing was changed.",
+            },
+        )
+    )
+    plain = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    assert not streams.called and "streams" not in plain
+    assert all("has_stream" not in s for s in plain["version"]["sub_catchments"])
+    refused = _tool_json(
+        await _call_as_caller(
+            _server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "streams_of": [11]}
+        )
+    )
+    assert "too large" in refused["streams"]["sentence"]
+    text = _tool_error_text(
+        await _call_as_caller(
+            _server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "streams_of": list(range(11))}
+        )
+    )
+    assert "at most 10" in text
+
+
 @respx.mock
 async def test_get_sub_catchments_waits_for_a_creation_on_cloud_compute(_server):
     running = _doc()
