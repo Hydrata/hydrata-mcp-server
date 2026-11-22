@@ -1686,6 +1686,29 @@ async def test_promote_catchments_again_asks_the_user_first_and_reads_the_change
     assert done["outcome"] == "replaced" and "replaced the contents of" in done["say_to_user"]
 
 
+@pytest.mark.parametrize("api_code", ["ADOPTED_ALREADY", "PROMOTED_ALREADY"])
+@respx.mock
+async def test_adopt_again_refusal_never_says_promote_to_the_agent(_server, api_code):
+    """TASK-4587 (Walk 3 finding E): the summary relayed the API's code 'PROMOTED_ALREADY'. The API says ADOPTED_ALREADY now;
+    a server still on the old code reads the same, and nothing the agent reads says promote."""
+    _mock_project()
+    respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_code": api_code,
+                "detail": "Already the layer 'Catchments of W4 line', adopted on 17-11-26. Send replace: true to replace "
+                "its contents.",
+                "promoted_layer": _promoted(line_changed_since=False, sentences=[AGENT_MARK]),
+            },
+        )
+    )
+    refused = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert refused["error_code"] == "ADOPTED_ALREADY" and refused["summary"]["error_code"] == "ADOPTED_ALREADY"
+    assert refused["adopted_layer"]["line_changed_since"] is False and "replace=true" in refused["say_to_user"]
+    assert "promot" not in json.dumps({k: v for k, v in refused.items() if k != "ui_url"}).lower()
+
+
 @respx.mock
 async def test_promote_get_delineation_reads_the_same_mark(_server):
     _mock_project()

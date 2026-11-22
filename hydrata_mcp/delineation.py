@@ -1310,7 +1310,7 @@ async def adopt_catchments(
                 f"Adoption refused: {reply.get('detail')} Ask the user to check and confirm the line in the browser "
                 "(the link), then adopt."
             )
-        elif code == "PROMOTED_ALREADY":
+        elif ADOPT_WORDS.get(code, code) == "ADOPTED_ALREADY":  # TASK-4587: the API's code since W12.5, or its old one
             layer = _adopted_doc(reply.get("promoted_layer"))
             result["adopted_layer"] = layer
             changed = bool(layer and layer.get("line_changed_since"))
@@ -1322,7 +1322,9 @@ async def adopt_catchments(
         else:
             say = result.pop("say_to_user")
         result.pop("say_to_user", None)
-        await _hand_back(result, project_id, {"http_status": status, "error_code": code}, say, **links)
+        # the summary carries the adopt word too (Walk 3 finding E: it relayed 'PROMOTED_ALREADY')
+        summary = {"http_status": status, "error_code": ADOPT_WORDS.get(code, code)}
+        await _hand_back(result, project_id, summary, say, **links)
         return json.dumps(result, indent=2)
     layer = _adopted_doc(reply.get("promoted_layer")) or {}
     replaced = bool(reply.get("replaced"))
