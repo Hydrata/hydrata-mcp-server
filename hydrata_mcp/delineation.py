@@ -412,9 +412,11 @@ def _who(doc: dict) -> str:
     d = doc.get("delineation") or {}
     if d.get("confirmed"):
         return f"Confirmed by {_data(str(d.get('confirmed_by')))} on {d.get('confirmed_at')}."
-    if d.get("agent_authored"):
-        return "Made by an agent, unreviewed. Only a person confirms it, in the browser."
     lapse = _lapse_sentence(doc)
+    if d.get("agent_authored"):
+        if lapse:  # a person confirmed the agent's line and a change lapsed it: say why (said only here)
+            return f"Made by an agent. Not confirmed. {lapse} Only a person confirms it again, in the browser."
+        return "Made by an agent, unreviewed. Only a person confirms it, in the browser."
     if lapse:
         return f"Made by {_data(str(d.get('created_by')))}. Not confirmed. {lapse} Only a person confirms it again, in the browser."
     return f"Made by {_data(str(d.get('created_by')))}. Not confirmed."

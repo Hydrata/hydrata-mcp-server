@@ -668,6 +668,21 @@ async def test_get_delineation_says_the_lapse_once_when_a_new_result_replaced_th
 
 
 @respx.mock
+async def test_get_delineation_says_the_lapse_on_an_agents_line_a_person_had_confirmed(_server):
+    # W12.5 review: a person confirms an agent's line, a re-run lapses it; the reason must still be said (the replaced block's
+    # generic sentence is held back when the reason is stored, so _who saying nothing here would say it zero times)
+    _mock_project()
+    doc = _doc()
+    doc["delineation"].update({"agent_authored": True, "unreviewed": True, "confirmation_lapsed": LAPSE})
+    doc["shown_result"] = {**doc["shown_result"], "mode": "full", "replaced": {"confirmation_lapsed": True}}
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = await _read(_server, timeout_seconds=0)
+    say = data["say_to_user"]
+    assert say.count("Confirmation lapsed") == 1 and "the line was run again" in say
+    assert "Only a person confirms it again, in the browser." in say
+
+
+@respx.mock
 async def test_get_delineation_a_persons_line_never_confirmed_says_no_lapse(_server):
     _mock_project()
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_persons_line(confirmation_lapsed=None)))
