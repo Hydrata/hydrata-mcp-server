@@ -414,7 +414,19 @@ def _who(doc: dict) -> str:
         return f"Confirmed by {_data(str(d.get('confirmed_by')))} on {d.get('confirmed_at')}."
     if d.get("agent_authored"):
         return "Made by an agent, unreviewed. Only a person confirms it, in the browser."
+    lapse = _lapse_sentence(doc)
+    if lapse:
+        return f"Made by {_data(str(d.get('created_by')))}. Not confirmed. {lapse} Only a person confirms it again, in the browser."
     return f"Made by {_data(str(d.get('created_by')))}. Not confirmed."
+
+
+def _lapse_sentence(doc: dict) -> str | None:
+    """Epic 4445 W12.5 (TASK-4579, TASK-4598): why a person's confirmation lapsed, the API's sentence (a person's diversion
+    tick keeps it; a re-run, a new terrain, a moved line, a Minimum catchment area or side change, or diversions to check
+    again lapse it). The API keeps it (``delineation.confirmation_lapsed``) until a person confirms again; else None."""
+    lapse = (doc.get("delineation") or {}).get("confirmation_lapsed")
+    sentence = lapse.get("sentence") if isinstance(lapse, dict) else None
+    return sentence if isinstance(sentence, str) and sentence else None
 
 
 def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
@@ -465,7 +477,7 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
         lost = (replaced.get("not_carried_over") or {}).get("catchments") or []
         if lost:
             parts.append(f"New high resolution result. {len(lost)} earlier catchment(s) have no match.")
-        if replaced.get("confirmation_lapsed"):
+        if replaced.get("confirmation_lapsed") and not _lapse_sentence(doc):  # the stored reason is said in _who
             parts.append("Confirmation lapsed. A person must confirm again.")
     return parts
 
@@ -978,7 +990,9 @@ async def get_delineation(
     result: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a
     lower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person
     applied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and
-    whether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;
+    whether a person confirmed it (a person's diversion tick keeps a confirmation; when a change to the catchments lapsed
+    it, `delineation.confirmation_lapsed` says why until a person confirms again), the working and terrain resolution and
+    the tally. `timed_out` is normal: call again;
     it never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a
     first look: say so, and offer High resolution before the person relies on it; its profile is not available) or
     'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High

@@ -628,6 +628,53 @@ async def test_get_delineation_relays_what_adopting_now_leaves_out_of_the_sub_ca
     assert f"Adopting: {left_out}" in data["say_to_user"]
 
 
+# TASK-4598 (epic 4445 W12.5, TASK-4579 / Walk 3 D5): a person's diversion tick keeps the confirmation; a change to the
+# catchments lapses it, and the API keeps why (delineation.confirmation_lapsed) until a person confirms again
+LAPSE = {
+    "reason": "rerun",
+    "sentence": "Confirmation lapsed: the line was run again.",
+    "at": "2026-11-22T06:00:00+00:00",
+    "by": "engineer",
+}
+
+
+def _persons_line(**delineation):
+    doc = _doc()
+    doc["delineation"].update({"agent_authored": False, "unreviewed": False, "created_by": "engineer", **delineation})
+    return doc
+
+
+@respx.mock
+async def test_get_delineation_says_why_the_confirmation_lapsed(_server):
+    _mock_project()
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_persons_line(confirmation_lapsed=LAPSE)))
+    data = await _read(_server, timeout_seconds=0)
+    assert data["delineation"]["confirmation_lapsed"] == LAPSE
+    say = data["say_to_user"]
+    assert "Not confirmed. Confirmation lapsed: the line was run again." in say
+    assert "Only a person confirms it again, in the browser." in say
+
+
+@respx.mock
+async def test_get_delineation_says_the_lapse_once_when_a_new_result_replaced_the_confirmed_one(_server):
+    # the replaced block's own flag says the same thing: the stored reason is said, not a second, vaguer sentence
+    _mock_project()
+    doc = _persons_line(confirmation_lapsed=LAPSE)
+    doc["shown_result"] = {**doc["shown_result"], "mode": "full", "replaced": {"confirmation_lapsed": True}}
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = await _read(_server, timeout_seconds=0)
+    say = data["say_to_user"]
+    assert say.count("Confirmation lapsed") == 1 and "the line was run again" in say
+
+
+@respx.mock
+async def test_get_delineation_a_persons_line_never_confirmed_says_no_lapse(_server):
+    _mock_project()
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_persons_line(confirmation_lapsed=None)))
+    data = await _read(_server, timeout_seconds=0)
+    assert "Not confirmed." in data["say_to_user"] and "lapsed" not in data["say_to_user"]
+
+
 @respx.mock
 async def test_get_delineation_timed_out_names_the_step_and_does_not_start_a_job(_server):
     _mock_project()
