@@ -116,7 +116,10 @@ def _note(n: dict) -> dict:
 
 
 def _proposal(p: dict) -> dict:
-    out = {k: p.get(k) for k in ("id", "kind", "label", "status", "note_id", "made_by_agent", "created_at")}
+    out = {
+        k: p.get(k)
+        for k in ("id", "kind", "label", "status", "note_id", "sub_catchment_labels", "made_by_agent", "created_at")
+    }
     out["note"] = _data(str(p.get("note") or ""))
     out["made_by"] = _data(p.get("made_by"))
     if p.get("decided_by"):
@@ -420,7 +423,8 @@ def _refused(body, status: int, what: str) -> dict:
             f"{_data(str(sentence))}{' ' + fix if fix else ''} Nothing changed."
         ),
     }
-    for key in ("drag_ids", "cells", "limit"):
+    # TASK-4604: a link refused when filed (LOOP, WATER_JOINS) names the note it was asked for
+    for key in ("drag_ids", "cells", "limit", "note_id"):
         if key in reply:
             out[key] = reply[key]
     if reply.get("error_code") in ("HIGH_RES_ONLY", "NOT_RUN"):
@@ -733,7 +737,9 @@ async def edit_sub_catchments(
     read the set again with get_sub_catchments before the next edit.
 
     make_link changes nothing: it is filed as a proposal a person accepts or rejects on the map. Tell the user it is
-    waiting and give them the link (`ui_url`). To propose a new boundary, use propose_sub_catchment_boundary.
+    waiting and give them the link (`ui_url`). It is refused when filed if the link would make a loop, or if the water
+    of the two sub-catchments already ends up in one place (the read lists no note for such a pass). To propose a new
+    boundary, use propose_sub_catchment_boundary.
     """
     label = EDIT_KINDS[kind]
     if kind == "take_culverts_in":
@@ -942,9 +948,13 @@ async def _propose_link(project_id, sub_catchments_id, payload: dict) -> str:
         "rule": PROPOSAL_RULE,
     }
     rise = proposal.get("rise_m")
+    labels = proposal.get("sub_catchment_labels") or []
+    # TASK-4604: the sentence names the two sub-catchments, as the person's card does
+    pair = sorted(labels) if len(labels) == 2 and None not in labels else []
+    between = f" between sub-catchments {pair[0]} and {pair[1]}" if pair else ""
     # TASK-4608: the sentence says the rise to the centimetre (0.37 m, not 0.374146); the proposal keeps the figure
     say = (
-        f"I proposed making a 'can share water' note a link (proposal {proposal.get('id')}"
+        f"I proposed making a 'can share water' note{between} a link (proposal {proposal.get('id')}"
         f"{f', a rise of {round(rise, 2):g} m' if isinstance(rise, (int, float)) else ''}): {proposal['note']} "
         "Open the link and accept or reject it on the map. Nothing changes until you accept it."
     )

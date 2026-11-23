@@ -751,6 +751,63 @@ async def test_a_make_link_proposal_says_its_rise_to_two_decimals(_server):
     assert data["proposal"]["rise_m"] == 0.374146
 
 
+@respx.mock
+async def test_a_make_link_proposal_names_its_note_and_both_sub_catchments(_server):
+    """TASK-4604 (Gate 3 pre-walk F5): the answer carries the note id and the two sub-catchments, and says them."""
+    _mock_project()
+    proposal = {
+        "id": 7,
+        "kind": "make_link",
+        "label": "Make this a link",
+        "status": "proposed",
+        "note": REASON,
+        "inputs": {"line_link_id": 640, "rise_m": 0.5},
+        "note_id": 88,
+        "sub_catchment_labels": [9, 6],
+        "made_by": "agent-user",
+        "made_by_agent": True,
+        "created_at": "2026-11-23T03:00:00+00:00",
+        "decided_by": None,
+        "decided_at": None,
+        "sentence": "Proposed: make this a link. A person accepts or rejects it on the map.",
+    }
+    respx.post(f"{SET}proposals/").mock(return_value=httpx.Response(201, json=proposal))
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "edit_sub_catchments",
+            {"project_id": 42, "sub_catchments_id": 7, "kind": "make_link", "note_id": 88, "reason": REASON},
+        )
+    )
+    assert data["proposal"]["note_id"] == 88 and data["proposal"]["sub_catchment_labels"] == [9, 6]
+    assert "between sub-catchments 6 and 9" in data["say_to_user"]
+
+
+@respx.mock
+async def test_a_make_link_that_would_loop_is_refused_when_filed_and_names_its_note(_server):
+    """TASK-4604: the server checks the loop when the agent files the link; the refusal is relayed with its note id."""
+    _mock_project()
+    sentence = (
+        "Refused: this link makes a loop. The water of sub-catchment 7 already reaches sub-catchment 6, so it would "
+        "come back to where it started."
+    )
+    respx.post(f"{SET}proposals/").mock(
+        return_value=httpx.Response(409, json={"error_code": "LOOP", "detail": sentence, "note_id": 88})
+    )
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "edit_sub_catchments",
+            {"project_id": 42, "sub_catchments_id": 7, "kind": "make_link", "note_id": 88, "reason": REASON},
+        )
+    )
+    assert data["outcome"] == "refused" and data["error_code"] == "LOOP" and data["note_id"] == 88
+    assert "makes a loop" in data["say_to_user"] and "Nothing changed." in data["say_to_user"]
+    assert "proposal" not in data
+
+
 # ---------------------------------------------------------------------------
 # propose_sub_catchment_boundary
 # ---------------------------------------------------------------------------
