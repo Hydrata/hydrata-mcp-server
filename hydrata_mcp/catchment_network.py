@@ -1013,6 +1013,7 @@ async def propose_sub_catchment_boundary(
         "sub_catchment_ids": ids,
         "line": {"type": "LineString", "coordinates": _lon_lat_pairs(line, "line", 2)},
         "state": "waiting",
+        "note": why,  # TASK-4606: kept with the drag; the person reads it on the Decide card
     }
     path = _path(project_id, sub_catchments_id, "edits/")
     body, status = await _post(path, payload)

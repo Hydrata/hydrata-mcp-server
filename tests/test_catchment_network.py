@@ -864,11 +864,13 @@ async def test_a_dragged_boundary_from_an_agent_is_filed_waiting_and_the_agent_g
             {"project_id": 42, "sub_catchments_id": 7, "sub_catchment_ids": [11, 12], "line": LINE, "reason": REASON},
         )
     )
+    # TASK-4606 (Gate 3 pre-walk F8): the reason goes with the drag as its note, which the person reads on the Decide card
     assert json.loads(post.calls[0].request.content) == {
         "kind": "drag",
         "sub_catchment_ids": [11, 12],
         "line": {"type": "LineString", "coordinates": LINE},
         "state": "waiting",
+        "note": REASON,
     }
     assert not terrain.called
     assert data["outcome"] == "proposed" and data["status"] == "waiting" and data["drag_id"] == "ab12"
