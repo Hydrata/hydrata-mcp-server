@@ -614,6 +614,37 @@ async def test_edit_sub_catchments_sends_each_edit_in_its_own_shape(_server):
 
 
 @respx.mock
+async def test_edit_sub_catchments_relays_what_a_merge_did_naming_every_sub_catchment_joined(_server):
+    # TASK-4607 (pre-walk P1): a merge across a diverted point joins three; the answer says so, and the agent relays it
+    _mock_project()
+    doc = _edited("merge")
+    doc["edit"]["label"] = "Merge two sub-catchments"
+    doc["edit"]["sentence"] = "The diverted point goes: sub-catchments 15, 16 and 19 become one, now sub-catchment 15."
+    respx.post(f"{SET}edits/").mock(return_value=httpx.Response(200, json=doc))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "edit_sub_catchments",
+            {"project_id": 42, "sub_catchments_id": 7, "kind": "merge", "sub_catchment_ids": [15, 19]},
+        )
+    )
+    assert data["edit"]["sentence"] == doc["edit"]["sentence"]
+    assert (
+        "The diverted point goes: sub-catchments 15, 16 and 19 become one, now sub-catchment 15." in data["say_to_user"]
+    )
+    # an edit the server says nothing more about has no sentence
+    respx.post(f"{SET}edits/").mock(return_value=httpx.Response(200, json=_edited("divide")))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "edit_sub_catchments",
+            {"project_id": 42, "sub_catchments_id": 7, "kind": "divide", "lon": 149.1, "lat": -35.2},
+        )
+    )
+    assert "sentence" not in data["edit"]
+
+
+@respx.mock
 async def test_edit_sub_catchments_refuses_a_wrong_shape_before_sending(_server):
     post = respx.post(f"{SET}edits/").mock(return_value=httpx.Response(200, json=_edited("divide")))
     for arguments in (

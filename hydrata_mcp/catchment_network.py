@@ -791,10 +791,14 @@ async def edit_sub_catchments(
         **_set(doc),
         "rule": CONFIRM_RULE,
     }
+    if edit.get("sentence"):
+        # TASK-4607: what the edit did, in words (a merge names every sub-catchment that became one)
+        result["edit"]["sentence"] = edit["sentence"]
     version = result.get("version") or {}
     say = (
         f"{edit.get('label') or label}: done on the draft of the sub-catchments of {_line_words(doc)} (version "
         f"{version.get('number')}); {_plural(len(result['remeasured']), 'sub-catchment')} measured again."
+        + (f" {edit['sentence']}" if edit.get("sentence") else "")
     )
     summary = {"sub_catchments_id": doc.get("id"), "edit": edit.get("seq"), "remeasured": result["remeasured"]}
     await _hand_back(result, project_id, summary, say, **_links(doc.get("delineation_id")))
