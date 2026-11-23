@@ -1636,6 +1636,31 @@ async def test_adopt_catchments_says_what_of_the_sub_catchments_it_carries_and_w
 
 
 @respx.mock
+async def test_adopt_catchments_relays_that_a_step_2_diversion_is_not_taken_in(_server):
+    # TASK-4603 (Gate 3 pre-walk F4): the layer follows the sub-catchments' own diversions; the API says when the line's differ
+    _mock_project()
+    sentence = "Diversions changed in step 2: take them in (step 3) before adopting."
+    carried = {"set_id": 7, "version": 1, "sub_catchments": 13, "nodes": 9, "reaches": 3}
+    respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "promoted_layer": _promoted(sub_catchments=carried, sub_catchments_changed_since=False),
+                "replaced": False,
+                "method": "Adopted",
+                "vertices_before": 900,
+                "vertices_after": 400,
+                "left_out_sentence": None,
+                "diversions_changed_sentence": sentence,
+            },
+        )
+    )
+    data = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert data["diversions_changed_sentence"] == sentence
+    assert sentence in data["say_to_user"]
+
+
+@respx.mock
 async def test_promote_catchments_is_refused_for_an_unconfirmed_line_and_says_a_person_confirms(_server):
     _mock_project()
     respx.post(PROMOTE).mock(

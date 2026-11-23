@@ -465,6 +465,9 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     left_out = (result.get("adopt_sub_catchments") or {}).get("left_out_sentence")
     if left_out:
         parts.append(f"Adopting: {left_out}")
+    not_taken_in = (result.get("adopt_sub_catchments") or {}).get("diversions_changed_sentence")
+    if not_taken_in:
+        parts.append(f"Adopting: {not_taken_in}")
     if ticks:
         parts.append(ticks)
     words = result["warnings_in_words"]
@@ -1338,6 +1341,8 @@ async def adopt_catchments(
         "vertices_after": reply.get("vertices_after"),
         # TASK-4485: what of the line's sub-catchments the entry leaves out (a draft), the API's sentence, or null
         "left_out_sentence": reply.get("left_out_sentence"),
+        # TASK-4603: the layer follows the sub-catchments' own diversions; set when a step-2 diversion is not taken in yet
+        "diversions_changed_sentence": reply.get("diversions_changed_sentence"),
         "rule": ADOPT_RULE,
     }
     what = "replaced the contents of" if replaced else "made"
@@ -1355,6 +1360,8 @@ async def adopt_catchments(
         )
     if reply.get("left_out_sentence"):
         say += f" {reply.get('left_out_sentence')}"
+    if reply.get("diversions_changed_sentence"):
+        say += f" {reply.get('diversions_changed_sentence')}"
     if layer.get("unreviewed"):
         say += " It is unreviewed until you adopt it again yourself."
     summary = {
