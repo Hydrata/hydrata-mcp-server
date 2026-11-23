@@ -380,6 +380,26 @@ def _set(doc: dict, full=True, shapes_of=()) -> dict:
     return out
 
 
+LINE_SET_RULE = (
+    "The line's set is the one the person's step 3 shows and adopt_catchments carries (its confirmed version): the set "
+    "its adopted layer was made from, else the newest set with a confirmed version. A newer set (an agent's draft) "
+    "waits beside it: step 3 offers it to the person in one line, and only a person confirms it."
+)
+
+
+def _line_set(listed) -> dict | None:
+    """TASK-4600: the line's set as the API names it (`shown_id`) and the newer set beside it, or None when it names none."""
+    if not isinstance(listed, dict) or listed.get("shown_id") is None:
+        return None
+    newer = listed.get("newer") if isinstance(listed.get("newer"), dict) else None
+    return {
+        "sub_catchments_id": listed.get("shown_id"),
+        "newer_sub_catchments_id": newer.get("id") if newer else None,
+        "newer_sentence": _data(newer.get("sentence")) if newer and newer.get("sentence") else None,
+        "rule": LINE_SET_RULE,
+    }
+
+
 def _line_words(doc: dict) -> str:
     name = doc.get("line_name")
     return _data(str(name)) if name else f"delineation {doc.get('delineation_id')}"
@@ -597,6 +617,11 @@ async def get_sub_catchments(
         listed = await client.get(_path(project_id), params=params)
         rows = (listed or {}).get("results") or [] if isinstance(listed, dict) else []
         result = {"count": len(rows), "results": [_set(r, full=False) for r in rows if isinstance(r, dict)]}
+        line_set = _line_set(listed)
+        if line_set:
+            result["line_set"] = line_set
+            if line_set.get("newer_sentence"):
+                result["say_to_user"] = line_set["newer_sentence"]
         return json.dumps(result, indent=2)
 
     async def fetch():

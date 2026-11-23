@@ -309,6 +309,34 @@ async def test_get_sub_catchments_lists_the_sets_of_a_line(_server):
 
 
 @respx.mock
+async def test_get_sub_catchments_names_the_set_the_person_sees_and_adopting_carries(_server):
+    """TASK-4600 (Gate 3 pre-walk F1): a newer agent draft never takes over the person's confirmed set; the list says which
+    set step 3 shows and adopt_catchments carries, and that the newer one waits beside it."""
+    newer = {
+        "id": 8,
+        "made_by_agent": True,
+        "sentence": "An agent made a draft set on 23-11-26.",
+        "showing_sentence": "This is the draft set an agent made on 23-11-26.",
+    }
+    body = {"count": 2, "results": [_doc(), {**_doc(), "id": 8}], "shown_id": 7, "newer": newer}
+    respx.get(LIST).mock(return_value=httpx.Response(200, json=body))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert data["line_set"]["sub_catchments_id"] == 7
+    assert data["line_set"]["newer_sub_catchments_id"] == 8
+    words = data["line_set"]["rule"]
+    assert "step 3" in words and "adopt_catchments" in words
+    assert "An agent made a draft set on 23-11-26." in data["say_to_user"]
+    assert "confirm them again" not in words.lower()
+
+
+@respx.mock
+async def test_get_sub_catchments_lists_a_line_with_no_named_set_as_before(_server):
+    respx.get(LIST).mock(return_value=httpx.Response(200, json={"count": 1, "results": [_doc()]}))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert "line_set" not in data and "say_to_user" not in data
+
+
+@respx.mock
 async def test_get_sub_catchments_reads_one_set_with_its_facts_and_no_shapes(_server):
     doc = _doc(
         line_changed_since=True,
