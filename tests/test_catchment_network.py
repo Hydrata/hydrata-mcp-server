@@ -720,6 +720,37 @@ async def test_an_agents_make_this_a_link_is_a_proposal_that_changes_nothing(_se
     assert "person accepts" in data["rule"]
 
 
+@respx.mock
+async def test_a_make_link_proposal_says_its_rise_to_two_decimals(_server):
+    """TASK-4608 (Gate 3 pre-walk P5): the sentence to the person says 'a rise of 0.37 m', not 0.374146; the data keeps it."""
+    _mock_project()
+    proposal = {
+        "id": 6,
+        "kind": "make_link",
+        "label": "Make this a link",
+        "status": "proposed",
+        "note": REASON,
+        "inputs": {"line_link_id": 640, "rise_m": 0.374146},
+        "made_by": "agent-user",
+        "made_by_agent": True,
+        "created_at": "2026-11-23T03:00:00+00:00",
+        "decided_by": None,
+        "decided_at": None,
+        "sentence": "Proposed: make this a link. A person accepts or rejects it on the map.",
+    }
+    respx.post(f"{SET}proposals/").mock(return_value=httpx.Response(201, json=proposal))
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "edit_sub_catchments",
+            {"project_id": 42, "sub_catchments_id": 7, "kind": "make_link", "note_id": 88, "reason": REASON},
+        )
+    )
+    assert "(proposal 6, a rise of 0.37 m)" in data["say_to_user"]
+    assert data["proposal"]["rise_m"] == 0.374146
+
+
 # ---------------------------------------------------------------------------
 # propose_sub_catchment_boundary
 # ---------------------------------------------------------------------------

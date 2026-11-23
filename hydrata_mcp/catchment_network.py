@@ -942,9 +942,10 @@ async def _propose_link(project_id, sub_catchments_id, payload: dict) -> str:
         "rule": PROPOSAL_RULE,
     }
     rise = proposal.get("rise_m")
+    # TASK-4608: the sentence says the rise to the centimetre (0.37 m, not 0.374146); the proposal keeps the figure
     say = (
         f"I proposed making a 'can share water' note a link (proposal {proposal.get('id')}"
-        f"{f', a rise of {rise:g} m' if isinstance(rise, (int, float)) else ''}): {proposal['note']} "
+        f"{f', a rise of {round(rise, 2):g} m' if isinstance(rise, (int, float)) else ''}): {proposal['note']} "
         "Open the link and accept or reject it on the map. Nothing changes until you accept it."
     )
     summary = {"proposal_id": proposal.get("id"), "kind": "make_link", "status": result["status"]}
