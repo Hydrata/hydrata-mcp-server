@@ -56,8 +56,9 @@ PROPOSAL_RULE = (
     "until a person accepts it on the map."
 )
 DRAG_RULE = (
-    "A boundary an agent drags is filed waiting. Only a person keeps it as drawn or makes the terrain agree (a drainage "
-    "barrier a person stores), or undoes it. The sub-catchments cannot be confirmed while it waits."
+    "A boundary an agent drags is filed waiting. Only a person keeps it as drawn or makes the terrain agree (the two "
+    "sub-catchments take the ground the terrain gives them with a drainage barrier on the line; the terrain itself does "
+    "not change), or undoes it. The sub-catchments cannot be confirmed while it waits."
 )
 OPENINGS_RULE = (
     "An agent only proposes the openings along flagged culverts. Nothing changes until a person accepts them on the map; "
@@ -992,9 +993,10 @@ async def propose_sub_catchment_boundary(
     ] = False,
 ) -> str:
     """Propose a new boundary between two sub-catchments (a dragged boundary). It is filed WAITING: the draft shows it, and
-    only a person decides it on the map (Keep as drawn, or Make the terrain agree, which stores a drainage barrier), or
-    undoes it. The sub-catchments cannot be confirmed while it waits. Read the two outlines first (get_sub_catchments
-    with outlines_of) and the ground (terrain_profile), and use it only when you can say why water goes this way and the
+    only a person decides it on the map (Keep as drawn, or Make the terrain agree, where the two sub-catchments take the
+    ground the terrain gives them with a drainage barrier on the line; the terrain itself does not change), or undoes it.
+    The sub-catchments cannot be confirmed while it waits. Read the two outlines first (get_sub_catchments with
+    outlines_of) and the ground (terrain_profile), and use it only when you can say why water goes this way and the
     terrain does not show it. Tell the user it is waiting and give them the link (`ui_url`).
     """
     ids = list(sub_catchment_ids or [])

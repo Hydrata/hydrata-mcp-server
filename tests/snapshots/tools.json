@@ -2359,7 +2359,7 @@
       "readOnlyHint": false,
       "title": "Propose a new boundary between two sub-catchments"
     },
-    "description": "Propose a new boundary between two sub-catchments (a dragged boundary). It is filed WAITING: the draft shows it, and\nonly a person decides it on the map (Keep as drawn, or Make the terrain agree, which stores a drainage barrier), or\nundoes it. The sub-catchments cannot be confirmed while it waits. Read the two outlines first (get_sub_catchments\nwith outlines_of) and the ground (terrain_profile), and use it only when you can say why water goes this way and the\nterrain does not show it. Tell the user it is waiting and give them the link (`ui_url`).",
+    "description": "Propose a new boundary between two sub-catchments (a dragged boundary). It is filed WAITING: the draft shows it, and\nonly a person decides it on the map (Keep as drawn, or Make the terrain agree, where the two sub-catchments take the\nground the terrain gives them with a drainage barrier on the line; the terrain itself does not change), or undoes it.\nThe sub-catchments cannot be confirmed while it waits. Read the two outlines first (get_sub_catchments with\noutlines_of) and the ground (terrain_profile), and use it only when you can say why water goes this way and the\nterrain does not show it. Tell the user it is waiting and give them the link (`ui_url`).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
