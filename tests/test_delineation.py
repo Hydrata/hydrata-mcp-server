@@ -441,9 +441,9 @@ async def test_delineate_with_an_id_says_a_persons_ticks_were_reapplied_and_need
         )
     )
     say = data["say_to_user"]
-    assert "1 ticked diversion to check again. Only a person can tick or check a diversion, or confirm" in say
+    assert "1 ticked diversion to check again. Only a person checks a diversion or confirms a delineation" in say
     assert "re-run" not in say  # a settings change is a regroup, not a re-run (TASK-4424)
-    assert "Give the user the link. It cannot be confirmed until they are checked." in say
+    assert "Give the user the link. A diversion to check never holds the confirm." in say
     assert data["diversions_to_check"] == 1
 
 

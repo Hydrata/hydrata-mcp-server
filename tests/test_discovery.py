@@ -83,8 +83,8 @@ class TestCrawlerDiscovery:
         resp = await _post(_server, MCPTRY, _rpc("tools/list"))
         tools = _parse(resp)["result"]["tools"]
         assert (
-            len(tools) == 57
-        )  # +TASK-4489 get_stream_corridor; +TASK-4487 propose_culvert_openings; +TASK-4486 the four sub-catchment tools
+            len(tools) == 58
+        )  # +TASK-4592 list_open_items; +TASK-4489 get_stream_corridor; +TASK-4487 propose_culvert_openings; +TASK-4486 the four sub-catchment tools
         assert sorted(t["name"] for t in tools) == SNAPSHOT_NAMES
 
     async def test_crawler_initialized_notification_is_accepted(self, _server):

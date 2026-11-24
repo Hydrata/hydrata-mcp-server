@@ -13,8 +13,9 @@ adopt_catchments      - (epic 4445 W6.2) a CONFIRMED line's catchments published
 
 Every result carries the API's own field names (TASK-4397, 4398, 4410, 4417) and, beside each chainage written
 CH k+mmm, its distance in metres. Every warning comes back as its sentence. The tools never tick, apply or undo a
-diversion and never confirm: only a person does, in the browser (decision D13). What an agent makes is unreviewed
-until a person confirms it. There is no tool that deletes a delineation or edits its line.
+diversion and never confirm: only a person confirms, in the browser (decision D13). A diversion an agent ticks (through the
+API) waits until a person accepts it on the map (TASK-4590). What an agent makes is unreviewed until a person confirms it.
+There is no tool that deletes a delineation or edits its line.
 
 Words (operator, 15-11-26): the quick run (API mode 'quick') is the FAST SCREEN (low resolution), a first look; the full run
 (mode 'full') is HIGH RESOLUTION. A fast screen is a quick result that was coarsened; its ground profile is not given anywhere.
@@ -53,12 +54,13 @@ FAST_SCREEN_LUMPED = (
     "A fast screen shows one catchment per section of the line, with no smaller catchments, diversion suggestions or "
     "shared-water points: High resolution gives those."
 )
-SUGGESTIONS_NOTE = "Diversion suggestions are information only. Only a person ticks one, in the browser."
+SUGGESTIONS_NOTE = "Diversion suggestions are information only. No tool ticks one: the person ticks it in the browser."
 BOUNDARY_RULE = (
     "Closed (Reflective) except a short Transmissive stretch at each included drainage point (5 working cells, 20 m "
     "minimum). The line itself is not open."
 )
-PERSON_ONLY = "Only a person can tick or check a diversion, or confirm a delineation."
+# TASK-4592: an agent's tick is made and waits for a person's Accept (TASK-4590), so this says nothing of ticking
+PERSON_ONLY = "Only a person checks a diversion or confirms a delineation, in the browser."
 # TASK-4545: a run on a confirmed line replaces the result a person confirmed (the Catchments pane's words before Run again)
 CONFIRMED_LAPSES = "This line is confirmed. Running it again lapses the confirmation."
 # TASK-4456 (epic 4445 W2.7): the terrain's drainage analysis, being prepared or out of date. The API's ``drainage_analysis``
@@ -186,7 +188,8 @@ def _ticks_text(doc: dict) -> str | None:
         parts.append(
             f"{len(remembered)} more tick{'' if len(remembered) == 1 else 's'} remembered, not applied at these settings"
         )
-    return "; ".join(parts) + f". {PERSON_ONLY} Give the user the link. It cannot be confirmed until they are checked."
+    # TASK-4589: a diversion to check is a warning; it never holds the confirm
+    return "; ".join(parts) + f". {PERSON_ONLY} Give the user the link. A diversion to check never holds the confirm."
 
 
 def _full_run_doc(job: dict) -> dict:
@@ -630,8 +633,8 @@ async def delineate_catchments(
     A NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's
     Catchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with
     get_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person
-    confirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool
-    that deletes a delineation or moves its line.
+    confirms it in the browser. No tool ticks a diversion or confirms; only a person confirms. A diversion an agent
+    ticks waits until a person accepts it on the map. There is no tool that deletes a delineation or moves its line.
 
     The line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless
     you pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a

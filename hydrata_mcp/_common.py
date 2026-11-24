@@ -254,8 +254,10 @@ mcp = FastMCP(
         "the map). High resolution on a fast screen makes a copy of the line, '<name> (high res)', and runs "
         "there; the fast screen stays for comparison, so read the copy's delineation_id. Say how you placed the line (authored_method, and sources "
         "when it came from a document). Relay every warning in words and each chainage with its distance in metres. "
-        "What you make is unreviewed until a person confirms it in the browser: only a person ticks a diversion "
-        "(you only report the suggestions and any tick marked check again) or confirms. "
+        "What you make is unreviewed until a person confirms it in the browser: only a person confirms. No tool ticks "
+        "a diversion (report the suggestions and any tick marked check again); a diversion an agent ticks waits until "
+        "a person accepts it. list_open_items lists what waits for the person on a line or in the project: warnings "
+        "(advice, never holding a confirm), what an agent built and an agent's proposals. "
         "SOURCES: when an input comes from a document (a flood study, a gauge record, a BoM page), pass "
         "sources=[{title, url, locator}] beside authored_method so the engineer can click through to it. "
         "TIME SERIES: create_time_series for each rain gauge or hydrograph; fix mistakes with "
@@ -426,6 +428,8 @@ TOOL_ANNOTATIONS = {
     "propose_culvert_openings": ("Propose the openings along flagged culverts", False, False, False),
     # TASK-4489 (epic 4445 W12.2): the streams and the corridor round them, read from the kept drainage analysis.
     "get_stream_corridor": ("Read the streams of a terrain and the corridor round them", True, False, True),
+    # TASK-4592 (epic 4445 W12.6): what waits for a person (warnings, what an agent built, an agent's proposals). Reads only.
+    "list_open_items": ("List what waits for a person's judgement", True, False, True),
 }
 
 

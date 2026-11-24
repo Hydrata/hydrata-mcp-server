@@ -29,7 +29,7 @@
   {
    "name": "SUGGESTIONS_NOTE",
    "old": "Diversion suggestions are information only: a drain that could send one catchment's water to its neighbour. Only a person ticks one, in the browser; no tool applies, ticks or undoes a diversion.",
-   "new": "Diversion suggestions are information only. Only a person ticks one, in the browser."
+   "new": "Diversion suggestions are information only. No tool ticks one: the person ticks it in the browser."
   },
   {
    "name": "BOUNDARY_RULE",
@@ -39,7 +39,7 @@
   {
    "name": "PERSON_ONLY",
    "old": "Only a person in the browser can tick a diversion, check one again, or confirm a delineation.",
-   "new": "Only a person can tick or check a diversion, or confirm a delineation."
+   "new": "Only a person checks a diversion or confirms a delineation, in the browser."
   },
   {
    "name": "DRAINAGE_WORDS",
@@ -74,7 +74,7 @@
   {
    "name": "_ticks_text (tail)",
    "old": "{PERSON_ONLY} Tell the user to open the link and check them; the delineation cannot be confirmed until then.",
-   "new": "{PERSON_ONLY} Give the user the link. It cannot be confirmed until they are checked."
+   "new": "{PERSON_ONLY} Give the user the link. A diversion to check never holds the confirm."
   },
   {
    "name": "_copied_from_text",

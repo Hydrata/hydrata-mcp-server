@@ -971,7 +971,7 @@
       "readOnlyHint": false,
       "title": "Make catchments from a delineation line, or change its settings"
     },
-    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.\n\nThe fast screen is optional: a NEW delineation with `mode='full'` goes straight to High resolution, on that line\nitself (no copy, the name as given). Say its estimate first (`estimate_only`).",
+    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. No tool ticks a diversion or confirms; only a person confirms. A diversion an agent\nticks waits until a person accepts it on the map. There is no tool that deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.\n\nThe fast screen is optional: a NEW delineation with `mode='full'` goes straight to High resolution, on that line\nitself (no copy, the name as given). Say its estimate first (`estimate_only`).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1954,6 +1954,43 @@
     },
     "name": "list_observations",
     "title": "List flood observation layers or observations"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List what waits for a person's judgement"
+    },
+    "description": "List what waits for a person's judgement in a project, or on one line: the warnings, what an agent built (a line,\na diversion it ticked, sub-catchments or an edit, an adopt, a model boundary) and an agent's proposals (a drainage\ncorrection, a boundary or link on sub-catchments). Each item has its `kind` (warning, agent_built or proposal), its\n`label` and `who_decides`; `counts` per kind; `decided_count` items already decided. Warnings are advice: they never\nhold a confirm. What an agent built and an agent's proposals wait for a person's one click on the map: no tool\naccepts or rejects them, and Hydrata refuses an agent key that tries. Give the user the link. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only the items on this line (its `delineation_id`): its warnings, the warnings and proposals of its sub-catchments, what an agent built on it, and the proposed drainage corrections on its terrain. Omit it for the whole project."
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "list_open_items",
+    "title": "List what waits for a person's judgement"
   },
   {
     "annotations": {
