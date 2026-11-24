@@ -47,6 +47,7 @@ READ_ONLY = {
 
 # changes something, nothing here spends compute; value = destructive?
 WRITES = {
+    "dismiss_warning": False,  # one warning (advice) dismissed under the person's grant; takeable back; TASK-4666
     "add_observation_photo_link": False,
     "add_observations": False,
     "attach_input_layer": False,
@@ -103,10 +104,10 @@ def test_tool_hints_the_three_groups_are_disjoint():
 
 async def test_tool_hints_the_table_names_every_one_of_the_51_tools(_server):
     tools = await _tools(_server)
-    assert len(tools) == 58
+    assert len(tools) == 59
     grouped = READ_ONLY | set(WRITES) | SPENDS_COMPUTE
     assert grouped == set(tools), {"unlisted": sorted(set(tools) - grouped), "stale": sorted(grouped - set(tools))}
-    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 58
+    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 59
 
 
 async def test_tool_hints_read_only_tools_say_read_only_and_not_destructive(_server):

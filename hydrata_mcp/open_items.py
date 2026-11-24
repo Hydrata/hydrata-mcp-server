@@ -5,28 +5,44 @@ list_open_items - the open items of a project, or of one line (`line_id`): the w
                   (nothing changes until a person accepts them). It reads the API's engineering decisions (GET
                   engineering-decisions/, `?line_id=`) and decides nothing.
 
+dismiss_warning - TASK-4666 (Decision 953 A): dismisses ONE warning, by the subject_type, subject_id and fingerprint
+                  list_open_items gives it, through POST engineering-decisions/ with the agent key. Hydrata records it as
+                  the agent's, under the person's grant (Decision 945). Nothing else is decided by a tool.
+
 Engineering decisions (Decisions 943-948): accepting or rejecting what an agent made is a person's act in the browser only;
-Hydrata refuses an agent key that tries (403 AGENT_KEY_SCOPE). No tool here decides anything. Words (Decision 889):
-sub-catchments, create, divide, Adopt.
+Hydrata refuses an agent key that tries (403 AGENT_KEY_SCOPE). Only a warning may be dismissed by an agent, under the
+person's grant. Words (Decision 889): sub-catchments, create, divide, Adopt.
 """
 
 import json
+import re
 from typing import Annotated
+
+from fastmcp.exceptions import ToolError
 
 from ._common import _data, _tool, client
 from ._helpers import _hand_back
 
 KINDS = ("warning", "agent_built", "proposal")
 WHO_DECIDES = {
-    "warning": "A warning is advice: it never holds a confirm. The person dismisses it on the map, or leaves it.",
+    "warning": (
+        "A warning is advice: it never holds a confirm. The person dismisses it on the map, or leaves it. An agent may "
+        "dismiss it too (dismiss_warning) under the person's grant, recorded as the agent's."
+    ),
     "agent_built": "Built by an agent: it waits until a person accepts it on the map with one click.",
     "proposal": "An agent's proposal: nothing changes until a person accepts it on the map.",
 }
 OPEN_ITEMS_RULE = (
     "Relay these to the user with the link. Warnings are advice and never hold a confirm. What an agent built and an "
     "agent's proposals wait for a person's one click on the map. No tool accepts or rejects them, and Hydrata refuses "
-    "an agent key that tries (AGENT_KEY_SCOPE)."
+    "an agent key that tries (AGENT_KEY_SCOPE). An agent may dismiss a warning it has checked (dismiss_warning, with the "
+    "warning's subject_type, subject_id and fingerprint), under the person's grant."
 )
+WARNING_SUBJECTS = (
+    "delineation",
+    "sub_catchments",
+)  # what the API dismisses: a warning on a line, or on sub-catchments
+FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -35,13 +51,18 @@ def _plural(n: int, one: str, many: str) -> str:
 
 def _row(item: dict) -> dict:
     kind = item.get("kind")
-    return {
+    row = {
         "kind": kind,
         "subject_type": item.get("subject_type"),
         "subject_id": item.get("subject_id"),
         "label": _data(str(item.get("label") or "")),
         "who_decides": WHO_DECIDES.get(kind, WHO_DECIDES["proposal"]),
     }
+    if kind == "warning" and item.get("fingerprint"):
+        row["fingerprint"] = item[
+            "fingerprint"
+        ]  # what dismiss_warning needs; only a warning can be dismissed by a tool
+    return row
 
 
 def _say(project_id, line_id, counts: dict) -> str:
@@ -83,8 +104,10 @@ async def list_open_items(
     a diversion it ticked, sub-catchments or an edit, an adopt, a model boundary) and an agent's proposals (a drainage
     correction, a boundary or link on sub-catchments). Each item has its `kind` (warning, agent_built or proposal), its
     `label` and `who_decides`; `counts` per kind; `decided_count` items already decided. Warnings are advice: they never
-    hold a confirm. What an agent built and an agent's proposals wait for a person's one click on the map: no tool
-    accepts or rejects them, and Hydrata refuses an agent key that tries. Give the user the link. Read-only.
+    hold a confirm, and an agent may dismiss one it has checked (dismiss_warning, with the warning's `subject_type`,
+    `subject_id` and `fingerprint` from here) under the person's grant. What an agent built and an agent's proposals wait
+    for a person's one click on the map: no tool accepts or rejects them, and Hydrata refuses an agent key that tries.
+    Give the user the link. Read-only.
     """
     params = {"line_id": line_id} if line_id is not None else None
     doc = await client.get(f"/projects/{project_id}/engineering-decisions/", params=params)
@@ -102,4 +125,87 @@ async def list_open_items(
         "rule": OPEN_ITEMS_RULE,
     }
     await _hand_back(result, project_id, counts, _say(project_id, line_id, counts), panel="catchments", line=line_id)
+    return json.dumps(result, indent=2)
+
+
+NOT_A_WARNING = (
+    "Only a warning is dismissed here. What an agent built and an agent's proposals are not warnings: a person accepts or "
+    "rejects them on the map with one click, and no tool does. Give the user the link. Nothing was sent."
+)
+
+
+@_tool("dismiss_warning")
+async def dismiss_warning(
+    project_id: Annotated[int, "The project ID"],
+    subject_type: Annotated[
+        str, "The warning's `subject_type` from list_open_items: 'delineation' (a line) or 'sub_catchments'"
+    ],
+    subject_id: Annotated[
+        int, "The warning's `subject_id` from list_open_items (the line, or the set of sub-catchments)"
+    ],
+    fingerprint: Annotated[str, "The warning's `fingerprint` from list_open_items (64 hex characters)"],
+) -> str:
+    """Dismiss ONE warning you have checked, under the person's grant. A warning is advice: it never holds a confirm, and
+    dismissing it changes nothing on the map. Hydrata records the dismissal as the agent's (credential agent key, with
+    the grant), and the person sees it in the project's history and can take it back on the map. Read the warning first
+    with list_open_items and pass its `subject_type`, `subject_id` and `fingerprint` unchanged; if the warning changed
+    since, Hydrata says so (CHANGED): read it again. Only a warning: what an agent built and an agent's proposals are
+    refused here without calling Hydrata, because a person accepts or rejects them on the map. Say to the user which
+    warning you dismissed and why you judged it safe.
+    """
+    if subject_type not in WARNING_SUBJECTS:
+        raise ToolError(NOT_A_WARNING)
+    if not isinstance(fingerprint, str) or not FINGERPRINT.match(fingerprint):
+        raise ToolError(
+            "fingerprint is the warning's fingerprint exactly as list_open_items gives it (64 hex characters). "
+            "Nothing was sent."
+        )
+    payload = {
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+        "fingerprint": fingerprint,
+        "decision": "dismissed",
+    }
+    body, status = await client.post(
+        f"/projects/{project_id}/engineering-decisions/", json=payload, raise_for_status=False
+    )
+    if status >= 500:
+        raise ToolError(f"Hydrata API returned {status} for POST engineering-decisions/: {str(body)[:300]}")
+    doc = body if isinstance(body, dict) else {}
+    line = subject_id if subject_type == "delineation" else None
+    if status >= 400:
+        sentence = doc.get("detail") or doc.get("error") or doc.get("error_code") or f"HTTP {status}"
+        result = {
+            "outcome": "refused",
+            "http_status": status,
+            "error_code": doc.get("error_code"),
+            "detail": _data(str(sentence)),
+        }
+        say = f"Refused dismissing the warning: {_data(str(sentence))} Nothing changed."
+        await _hand_back(
+            result,
+            project_id,
+            {"http_status": status, "error_code": result["error_code"]},
+            say,
+            panel="catchments",
+            line=line,
+        )
+        return json.dumps(result, indent=2)
+    decision = doc.get("decision") if isinstance(doc.get("decision"), dict) else {}
+    again = status == 200
+    result = {
+        "outcome": "already_dismissed" if again else "dismissed",
+        "http_status": status,
+        "decision_id": decision.get("id"),
+        "credential": decision.get("credential"),
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+    }
+    say = (
+        "That warning was already dismissed. Nothing changed."
+        if again
+        else "Dismissed the warning under the person's grant. It is recorded as yours (the agent's) in the project's "
+        "history, and the person can take it back on the map."
+    )
+    await _hand_back(result, project_id, {"decision_id": result["decision_id"]}, say, panel="catchments", line=line)
     return json.dumps(result, indent=2)

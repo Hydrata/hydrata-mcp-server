@@ -257,7 +257,8 @@ mcp = FastMCP(
         "What you make is unreviewed until a person confirms it in the browser: only a person confirms. No tool ticks "
         "a diversion (report the suggestions and any tick marked check again); a diversion an agent ticks waits until "
         "a person accepts it. list_open_items lists what waits for the person on a line or in the project: warnings "
-        "(advice, never holding a confirm), what an agent built and an agent's proposals. "
+        "(advice, never holding a confirm), what an agent built and an agent's proposals. dismiss_warning dismisses one "
+        "warning you have checked, under the person's grant, recorded as yours; nothing else is decided by a tool. "
         "SOURCES: when an input comes from a document (a flood study, a gauge record, a BoM page), pass "
         "sources=[{title, url, locator}] beside authored_method so the engineer can click through to it. "
         "TIME SERIES: create_time_series for each rain gauge or hydrograph; fix mistakes with "
@@ -430,6 +431,8 @@ TOOL_ANNOTATIONS = {
     "get_stream_corridor": ("Read the streams of a terrain and the corridor round them", True, False, True),
     # TASK-4592 (epic 4445 W12.6): what waits for a person (warnings, what an agent built, an agent's proposals). Reads only.
     "list_open_items": ("List what waits for a person's judgement", True, False, True),
+    # TASK-4666 (Decision 953 A): dismisses one warning (advice) under the person's grant; never accepts or rejects.
+    "dismiss_warning": ("Dismiss a warning under the person's grant", False, False, True),
 }
 
 

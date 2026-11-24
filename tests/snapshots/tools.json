@@ -1156,6 +1156,46 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Dismiss a warning under the person's grant"
+    },
+    "description": "Dismiss ONE warning you have checked, under the person's grant. A warning is advice: it never holds a confirm, and\ndismissing it changes nothing on the map. Hydrata records the dismissal as the agent's (credential agent key, with\nthe grant), and the person sees it in the project's history and can take it back on the map. Read the warning first\nwith list_open_items and pass its `subject_type`, `subject_id` and `fingerprint` unchanged; if the warning changed\nsince, Hydrata says so (CHANGED): read it again. Only a warning: what an agent built and an agent's proposals are\nrefused here without calling Hydrata, because a person accepts or rejects them on the map. Say to the user which\nwarning you dismissed and why you judged it safe.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": {
+          "description": "The warning's `fingerprint` from list_open_items (64 hex characters)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "subject_id": {
+          "description": "The warning's `subject_id` from list_open_items (the line, or the set of sub-catchments)",
+          "type": "integer"
+        },
+        "subject_type": {
+          "description": "The warning's `subject_type` from list_open_items: 'delineation' (a line) or 'sub_catchments'",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "subject_type",
+        "subject_id",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "name": "dismiss_warning",
+    "title": "Dismiss a warning under the person's grant"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
@@ -1963,7 +2003,7 @@
       "readOnlyHint": true,
       "title": "List what waits for a person's judgement"
     },
-    "description": "List what waits for a person's judgement in a project, or on one line: the warnings, what an agent built (a line,\na diversion it ticked, sub-catchments or an edit, an adopt, a model boundary) and an agent's proposals (a drainage\ncorrection, a boundary or link on sub-catchments). Each item has its `kind` (warning, agent_built or proposal), its\n`label` and `who_decides`; `counts` per kind; `decided_count` items already decided. Warnings are advice: they never\nhold a confirm. What an agent built and an agent's proposals wait for a person's one click on the map: no tool\naccepts or rejects them, and Hydrata refuses an agent key that tries. Give the user the link. Read-only.",
+    "description": "List what waits for a person's judgement in a project, or on one line: the warnings, what an agent built (a line,\na diversion it ticked, sub-catchments or an edit, an adopt, a model boundary) and an agent's proposals (a drainage\ncorrection, a boundary or link on sub-catchments). Each item has its `kind` (warning, agent_built or proposal), its\n`label` and `who_decides`; `counts` per kind; `decided_count` items already decided. Warnings are advice: they never\nhold a confirm, and an agent may dismiss one it has checked (dismiss_warning, with the warning's `subject_type`,\n`subject_id` and `fingerprint` from here) under the person's grant. What an agent built and an agent's proposals wait\nfor a person's one click on the map: no tool accepts or rejects them, and Hydrata refuses an agent key that tries.\nGive the user the link. Read-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

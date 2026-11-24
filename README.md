@@ -66,6 +66,7 @@ Version 0.2.5 exposes fifty-one tools, all listed below; twenty-one of them only
 | `get_stream_corridor` | Read the streams of a terrain at a threshold you choose, and the corridor round them (a polygon to write as a mesh region), from the terrain's kept drainage analysis; starts nothing |
 | `propose_culvert_openings` | Propose the drainage opening every flagged culvert offers, in one request; nothing changes until a person accepts them on the map |
 | `list_open_items` | List what waits for a person's judgement in a project or on one line: warnings (advice, never holding a confirm), what an agent built and an agent's proposals, each with who decides it; decides nothing |
+| `dismiss_warning` | Dismiss one warning (advice) you have checked, under the person's grant, recorded as the agent's; a thing an agent built or a proposal is refused without calling Hydrata, a person decides those on the map |
 | `sample_terrain` | Ground level at points (null where the terrain has no data), to place a culvert, inflow or boundary on the ground |
 | `terrain_profile` | Ground along a line (a cross-section) with the lowest sample, to find where a channel runs |
 | `create_time_series` | Create a time series (rain gauge, hydrograph or tide/stage — `series_type` and `units` are top-level fields) from `{"rowData": [...]}`; a rainfall polygon binds to its gauge by the series name; summary = row count + first/last timestamp; the link opens the Hydrology panel |

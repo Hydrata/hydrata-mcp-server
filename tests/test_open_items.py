@@ -74,7 +74,7 @@ async def test_open_items_of_a_line_are_listed_by_kind_with_who_decides_each_and
     first = data["open"][0]
     assert (first["kind"], first["subject_type"], first["subject_id"]) == ("warning", "delineation", 65)
     assert first["label"].startswith("Warning on 'Rail': CH 0+120")
-    assert "fingerprint" not in first and "judged" not in first  # nothing here decides
+    assert "judged" not in first  # the warning's fingerprint (TASK-4666) is the only thing handed on
     words = {i["kind"]: i["who_decides"] for i in data["open"]}
     assert "never holds a confirm" in words["warning"]
     assert "a person accepts it on the map" in words["agent_built"]
@@ -177,3 +177,133 @@ async def test_agent_refusal_words_a_diversion_to_check_never_holds_the_confirm(
         "2 ticked diversions to check again. Only a person checks a diversion or confirms a delineation, in the browser. "
         "Give the user the link. A diversion to check never holds the confirm."
     )
+
+
+# ---------------------------------------------------------------------------
+# TASK-4666 (Decision 953 A): an agent dismisses a warning under the person's grant
+# ---------------------------------------------------------------------------
+
+
+async def _dismiss(srv, **arguments):
+    return await _call_as_caller(srv, "dismiss_warning", {"project_id": 42, **arguments})
+
+
+WARNING = {"subject_type": "delineation", "subject_id": 65, "fingerprint": FP}
+
+
+@respx.mock
+async def test_dismiss_warning_posts_the_dismissal_and_says_it_was_the_agents_under_the_grant(_server):
+    _mock_project()
+    route = respx.post(DECISIONS).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "decision": {
+                    "id": 31,
+                    "decision": "dismissed",
+                    "credential": "agent_key",
+                    "grant": "key-1",
+                    "subject_type": "delineation",
+                    "subject_id": 65,
+                }
+            },
+        )
+    )
+    data = _tool_json(await _dismiss(_server, **WARNING))
+    assert json.loads(route.calls[0].request.content) == {**WARNING, "decision": "dismissed"}
+    assert data["outcome"] == "dismissed" and data["decision_id"] == 31 and data["http_status"] == 201
+    assert "under the person's grant" in data["say_to_user"] and "recorded as yours" in data["say_to_user"]
+    assert data["ui_url"].endswith("/catalogue/#/map/77?panel=catchments&line=65")
+
+
+@respx.mock
+async def test_dismiss_warning_of_sub_catchments_is_allowed(_server):
+    _mock_project()
+    route = respx.post(DECISIONS).mock(return_value=httpx.Response(201, json={"decision": {"id": 32}}))
+    await _dismiss(_server, subject_type="sub_catchments", subject_id=9, fingerprint=FP)
+    assert route.called
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "subject_type", ["diversion", "sub_catchment_proposal", "drainage_correction", "sub_catchments_edit"]
+)
+async def test_dismiss_warning_refuses_agent_built_work_and_proposals_in_plain_words_and_calls_nothing(
+    _server, subject_type
+):
+    route = respx.post(DECISIONS).mock(return_value=httpx.Response(201, json={}))
+    text = _tool_error_text(await _dismiss(_server, subject_type=subject_type, subject_id=884, fingerprint=FP))
+    assert (
+        "Only a warning is dismissed" in text and "a person accepts or rejects" in text and "Nothing was sent" in text
+    )
+    assert not route.called
+
+
+@respx.mock
+async def test_dismiss_warning_refuses_a_fingerprint_that_is_not_one_and_calls_nothing(_server):
+    route = respx.post(DECISIONS).mock(return_value=httpx.Response(201, json={}))
+    text = _tool_error_text(await _dismiss(_server, subject_type="delineation", subject_id=65, fingerprint="abc"))
+    assert "fingerprint" in text and "list_open_items" in text and "Nothing was sent" in text
+    assert not route.called
+
+
+@respx.mock
+async def test_dismiss_warning_when_the_warning_changed_says_read_it_again(_server):
+    _mock_project()
+    respx.post(DECISIONS).mock(
+        return_value=httpx.Response(
+            409, json={"error_code": "CHANGED", "detail": "This item changed since it was read, so it is open again."}
+        )
+    )
+    data = _tool_json(await _dismiss(_server, **WARNING))
+    assert data["outcome"] == "refused" and data["error_code"] == "CHANGED" and "Nothing changed" in data["say_to_user"]
+
+
+@respx.mock
+async def test_dismiss_warning_without_a_grant_is_refused_in_the_servers_words(_server):
+    _mock_project()
+    respx.post(DECISIONS).mock(
+        return_value=httpx.Response(
+            403,
+            json={
+                "error_code": "AGENT_KEY_SCOPE",
+                "detail": "An agent dismisses a warning only under the key the person gave it.",
+            },
+        )
+    )
+    data = _tool_json(await _dismiss(_server, **WARNING))
+    assert data["outcome"] == "refused" and data["error_code"] == "AGENT_KEY_SCOPE"
+    assert "only under the key the person gave it" in data["say_to_user"]
+
+
+@respx.mock
+async def test_dismiss_warning_already_dismissed_says_so(_server):
+    _mock_project()
+    respx.post(DECISIONS).mock(
+        return_value=httpx.Response(
+            200, json={"decision": {"id": 31, "decision": "dismissed"}, "sentence": "Already decided so."}
+        )
+    )
+    data = _tool_json(await _dismiss(_server, **WARNING))
+    assert data["outcome"] == "already_dismissed" and data["decision_id"] == 31
+
+
+@respx.mock
+async def test_open_items_warnings_carry_the_fingerprint_dismiss_warning_needs_and_nothing_else_does(_server):
+    _mock_project()
+    respx.get(DECISIONS).mock(return_value=httpx.Response(200, json={"open": OPEN, "decided": []}))
+    data = _tool_json(await _list(_server, line_id=65))
+    by_kind = {}
+    for row in data["open"]:
+        by_kind.setdefault(row["kind"], []).append(row)
+    assert all(r["fingerprint"] == FP for r in by_kind["warning"])
+    assert all("fingerprint" not in r for r in by_kind["agent_built"] + by_kind["proposal"])
+    assert "dismiss_warning" in by_kind["warning"][0]["who_decides"]
+    assert "under the person's grant" in by_kind["warning"][0]["who_decides"]
+    assert "dismiss_warning" in data["rule"]
+
+
+async def test_dismiss_warning_is_a_write_tool_that_is_not_destructive(_server):
+    tools = {t.name: t for t in await _server.mcp.list_tools()}
+    annotations = tools["dismiss_warning"].to_mcp_tool().annotations
+    assert annotations.read_only_hint is False and annotations.destructive_hint is False

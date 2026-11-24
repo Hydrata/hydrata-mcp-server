@@ -335,8 +335,8 @@ class TestToolAnnotations:
             resp = await c.post("/", headers=KEY_HEADERS, json=_rpc("tools/list"))
         tools = {t["name"]: t for t in _parse(resp)["result"]["tools"]}
         assert (
-            len(tools) == 58
-        )  # +TASK-4592 list_open_items; +TASK-4489 get_stream_corridor; +TASK-4487 propose_culvert_openings; +TASK-4486 the four sub-catchment tools
+            len(tools) == 59
+        )  # +TASK-4666 dismiss_warning; +TASK-4592 list_open_items; +TASK-4489 get_stream_corridor; +TASK-4487 propose_culvert_openings; +TASK-4486 the four sub-catchment tools
         for name, tool in tools.items():
             ann = tool.get("annotations") or {}
             assert ann.get("title"), name
