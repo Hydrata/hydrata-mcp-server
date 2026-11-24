@@ -1022,6 +1022,21 @@ async def test_use_catchments_as_boundary_says_nothing_extra_without_notes(_serv
 
 
 @respx.mock
+async def test_use_catchments_as_boundary_says_it_waits_for_the_persons_one_click(_server):
+    # TASK-4590 (epic 4445 W12.6, Walk 3 D7): an agent's model boundary is an agent-built feature, waiting for a person
+    _mock_project()
+    waiting = "Built by an agent: it waits until a person accepts it on the map with one click."
+    respx.post(BOUNDARY).mock(return_value=httpx.Response(201, json={**_boundary_reply(), "waiting_sentence": waiting}))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101, 102]}
+        )
+    )
+    assert f"Tell the person: {waiting} They accept it under Apply, in the Catchments panel." in data["say_to_user"]
+
+
+@respx.mock
 async def test_use_catchments_as_boundary_relays_a_refusal_in_words(_server):
     sentence = "The chosen catchments do not touch each other, so they cannot make one model boundary. Choose catchments that are next to each other."
     respx.post(BOUNDARY).mock(

@@ -1230,6 +1230,11 @@ async def use_catchments_as_boundary(
         f"update_scenario(boundary={boundary.get('id')}), then give the user the link."
     )
     parts = [say]
+    # TASK-4590 (epic 4445 W12.6): an agent's boundary is an agent-built feature, waiting for the person's one click
+    if isinstance(made.get("waiting_sentence"), str) and made["waiting_sentence"]:
+        parts.append(
+            "Tell the person: " + made["waiting_sentence"] + " They accept it under Apply, in the Catchments panel."
+        )
     if notes:
         parts.append("Tell the person: " + " ".join(notes))
     if _is_fast_screen(doc.get("shown_result")):
@@ -1266,7 +1271,7 @@ async def use_catchments_as_boundary(
 ADOPT_RULE = (
     "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains) and the "
     "line itself, drawn as the Catchments panel drew them. It does not follow later changes; adopting again replaces "
-    "its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
+    "its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person accepts it on the map."
 )
 
 
