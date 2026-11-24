@@ -24,6 +24,8 @@ from . import projects  # noqa: F401
 from . import runs  # noqa: F401
 from . import terrain  # noqa: F401
 from . import delineation  # noqa: F401
+from . import catchment_network  # noqa: F401
+from . import open_items  # noqa: F401
 from . import inputs  # noqa: F401
 from . import observations  # noqa: F401
 from . import calibration  # noqa: F401

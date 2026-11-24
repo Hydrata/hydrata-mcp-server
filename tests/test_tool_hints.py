@@ -29,6 +29,9 @@ READ_ONLY = {
     "get_terrain",
     "get_terrain_merge",
     "get_delineation",
+    "get_sub_catchments",
+    "get_stream_corridor",  # reads the kept drainage analysis; starts nothing (TASK-4489)
+    "list_open_items",  # reads the engineering decisions; decides nothing (TASK-4592)
     "sample_terrain",
     "terrain_profile",
     "list_inputs",
@@ -44,6 +47,7 @@ READ_ONLY = {
 
 # changes something, nothing here spends compute; value = destructive?
 WRITES = {
+    "dismiss_warning": False,  # one warning (advice) dismissed under the person's grant; takeable back; TASK-4666
     "add_observation_photo_link": False,
     "add_observations": False,
     "attach_input_layer": False,
@@ -57,6 +61,10 @@ WRITES = {
     "use_catchments_as_boundary": False,  # a new boundary input; nothing is overwritten
     "propose_drainage_correction": False,  # a proposal a person accepts on the map; nothing is applied (TASK-4467)
     "adopt_catchments": False,  # a new layer, or a replace the user said yes to (replace=true); TASK-4469
+    "create_sub_catchments": False,  # a draft set of sub-catchments (a person confirms); TASK-4486
+    "edit_sub_catchments": False,  # an edit on the draft, recorded in order; make_link only proposes; TASK-4486
+    "propose_sub_catchment_boundary": False,  # a dragged boundary filed waiting for a person; TASK-4486
+    "propose_culvert_openings": False,  # openings along flagged culverts, proposals a person accepts; TASK-4487
     "convert_terrain_datum": False,  # makes a shifted copy; the source terrain is kept
     "finalize_terrain_upload": False,
     "presign_terrain_upload": False,
@@ -96,10 +104,10 @@ def test_tool_hints_the_three_groups_are_disjoint():
 
 async def test_tool_hints_the_table_names_every_one_of_the_51_tools(_server):
     tools = await _tools(_server)
-    assert len(tools) == 51
+    assert len(tools) == 59
     grouped = READ_ONLY | set(WRITES) | SPENDS_COMPUTE
     assert grouped == set(tools), {"unlisted": sorted(set(tools) - grouped), "stale": sorted(grouped - set(tools))}
-    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 51
+    assert len(READ_ONLY) + len(WRITES) + len(SPENDS_COMPUTE) == 59
 
 
 async def test_tool_hints_read_only_tools_say_read_only_and_not_destructive(_server):

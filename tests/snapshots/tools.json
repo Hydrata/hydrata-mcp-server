@@ -640,6 +640,115 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Create sub-catchments from a line's catchments"
+    },
+    "description": "Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,\nslope, flow length...), the nodes' total catchments and the reaches between nodes.\n\nThe line must have a High resolution result: a fast-screen result is refused with the sentence 'High res only' (run\nthe line at High resolution first). Creating is by a target number (about 20 by default) or a stream threshold, not\nboth. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and\nget_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),\nand give them the link (`ui_url`). Shapes stay on the map. With estimate_only, nothing is created: the answer is\nthe threshold and number Create would make (the number made can differ from the one asked for).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "catchment_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The line's catchments to cover (get_delineation's catchment ids). Default: all of them (or the set's own)."
+        },
+        "delineation_id": {
+          "description": "`delineation_id` of a line run at High resolution (read it with get_delineation)",
+          "type": "integer"
+        },
+        "estimate_only": {
+          "default": false,
+          "description": "True: create nothing, and answer what Create would make with these choices (the stream threshold and the number of sub-catchments and nodes, the engine's own figures), as the step shows before Create.",
+          "type": "boolean"
+        },
+        "forced_points": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Places that must be a node, as [[lon, lat], ...] (WGS84), for example a gauge or a road crossing."
+        },
+        "name": {
+          "default": "",
+          "description": "A short name for a new set (up to 200 characters)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "sub_catchments_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "To create a set again (its draft, or a new draft after a confirmed version): its `sub_catchments_id`. Omit it to create a new set. An agent creates again only a set an agent made."
+        },
+        "target_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "About how many sub-catchments to make (1 to 500). The default is about 20. Not with threshold_m2."
+        },
+        "threshold_m2": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Instead of a target number: the stream threshold in square metres (a stream starts where this much ground drains to it). Not with target_count."
+        }
+      },
+      "required": [
+        "project_id",
+        "delineation_id"
+      ],
+      "type": "object"
+    },
+    "name": "create_sub_catchments",
+    "title": "Create sub-catchments from a line's catchments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Fetch terrain from a Hydrata source"
     },
     "description": "Have Hydrata fetch a terrain from one of its own sources, then wait for the import (like get_terrain).\n\nNever fetch terrain from outside Hydrata where a Hydrata source covers the site;\nif none does, the person uploads their own DEM in the project map.\n\nUse a `key` from list_terrain_sources. Hydrata fetches, reprojects and publishes the\nDEM and seeds the project's default input rows; the DEM's datum is stamped by the source.\nThe result is get_terrain's envelope (`outcome` ready | error | timed_out, `terrain`,\n`polls`) plus `terrain_source`: the source's `key`, `name`, `resolution_m`, `licence`,\n`credit` and `vertical_datum`. `timed_out` is normal for a large area: keep calling\nget_terrain(project_id, terrain_id). A refusal (the box is over the source's size cap,\nthe source has no data there, an unknown source) comes back as `outcome: refused`\nwith the reason in `say_to_user` and nothing is created.",
@@ -862,7 +971,7 @@
       "readOnlyHint": false,
       "title": "Make catchments from a delineation line, or change its settings"
     },
-    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool\nthat deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.",
+    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. No tool ticks a diversion or confirms; only a person confirms. A diversion an agent\nticks waits until a person accepts it on the map. There is no tool that deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.\n\nThe fast screen is optional: a NEW delineation with `mode='full'` goes straight to High resolution, on that line\nitself (no copy, the name as given). Say its estimate first (`estimate_only`).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -881,7 +990,7 @@
             }
           ],
           "default": null,
-          "description": "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with mode='full', to start High resolution (on a copy of the line when its result is a fast screen). A delineation a person made or confirmed is refused."
+          "description": "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with mode='full', to start High resolution (on a copy of the line when its result is a fast screen; on the line itself when it has no result). A delineation a person made or confirmed is refused."
         },
         "estimate_only": {
           "default": false,
@@ -944,7 +1053,7 @@
             }
           ],
           "default": null,
-          "description": "'quick' (the default for a new delineation) is the FAST SCREEN: low resolution, coarsened to the web server's limit, seconds to a couple of minutes; a first look. 'full' is HIGH RESOLUTION: the terrain's own resolution, on AWS Batch, can take many hours (up to about 24), and the person can close the map. Do the fast screen first and offer High resolution with its estimate. With delineation_id, 'full' starts High resolution: over a fast screen it makes a COPY of the line, '<name> (high res)', and runs there (the fast screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast screen again."
+          "description": "'quick' (the default for a new delineation) is the FAST SCREEN: low resolution, coarsened to the web server's limit, seconds to a couple of minutes; an optional first look. 'full' is HIGH RESOLUTION: the terrain's own resolution; a big terrain runs on AWS Batch and can take many hours (up to about 24), and the person can close the map. The fast screen is optional: a new line can go straight to 'full', on that line itself (no copy); say its estimate first (estimate_only). With delineation_id, 'full' starts High resolution: over a fast screen it makes a COPY of the line, '<name> (high res)', and runs there (the fast screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast screen again."
         },
         "name": {
           "default": "",
@@ -1047,6 +1156,198 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Dismiss a warning under the person's grant"
+    },
+    "description": "Dismiss ONE warning you have checked, under the person's grant. A warning is advice: it never holds a confirm, and\ndismissing it changes nothing on the map. Hydrata records the dismissal as the agent's (credential agent key, with\nthe grant), and the person sees it in the project's history and can take it back on the map. Read the warning first\nwith list_open_items and pass its `subject_type`, `subject_id` and `fingerprint` unchanged; if the warning changed\nsince, Hydrata says so (CHANGED): read it again. Only a warning: what an agent built and an agent's proposals are\nrefused here without calling Hydrata, because a person accepts or rejects them on the map. Say to the user which\nwarning you dismissed and why you judged it safe.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "fingerprint": {
+          "description": "The warning's `fingerprint` from list_open_items (64 hex characters)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "subject_id": {
+          "description": "The warning's `subject_id` from list_open_items (the line, or the set of sub-catchments)",
+          "type": "integer"
+        },
+        "subject_type": {
+          "description": "The warning's `subject_type` from list_open_items: 'delineation' (a line) or 'sub_catchments'",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "subject_type",
+        "subject_id",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "name": "dismiss_warning",
+    "title": "Dismiss a warning under the person's grant"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Divide, merge or move sub-catchments by hand"
+    },
+    "description": "Change sub-catchments by hand on the draft: divide a sub-catchment, merge two, move a node, add a forced point,\nundo a dragged boundary, or undo another edit made by hand (its seq), or take the culverts or the diversions in (the\ndiversions: a preview first, then preview false). An edit after a confirm starts a new draft; the confirmed version\nnever changes. The answer names the sub-catchments measured again. Ids change when an edit writes the draft again:\nread the set again with get_sub_catchments before the next edit.\n\nmake_link changes nothing: it is filed as a proposal a person accepts or rejects on the map. Tell the user it is\nwaiting and give them the link (`ui_url`). It is refused when filed if the link would make a loop, or if the water\nof the two sub-catchments already ends up in one place (the read lists no note for such a pass). To propose a new\nboundary, use propose_sub_catchment_boundary.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "drag_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For undo_drag: the dragged boundary's `drag_id`"
+        },
+        "kind": {
+          "description": "divide: a new node on the stream of the sub-catchment at lon/lat (it divides there; aim at a stream get_sub_catchments' streams_of gives); merge: two sub-catchments of one node, or one with the one its water runs into (sub_catchment_ids); move_node: node_id to lon/lat; add_forced_point: a node exactly at lon/lat; undo_drag: take back a dragged boundary (drag_id); undo: take back one other edit made by hand (seq, from the read's hand_edits), as the map's Undo last and History do; make_link: PROPOSE that a 'can share water' note (note_id) becomes a link, with a reason: a person accepts it on the map; take_culverts_in: when the read says 'Culverts have changed since these were created.', place the project's culverts as they are now (the draft is made again, its edits by hand kept; after a confirm, a new draft); take_diversions_in: when the read says 'Diversions changed in step 2.', make the sub-catchments again with the line's diversions as they are now, every edit made by hand made again (after a confirm, a new draft). It previews first (preview, default true).",
+          "enum": [
+            "divide",
+            "merge",
+            "move_node",
+            "add_forced_point",
+            "undo_drag",
+            "undo",
+            "make_link",
+            "take_culverts_in",
+            "take_diversions_in"
+          ],
+          "type": "string"
+        },
+        "lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For divide, move_node and add_forced_point: latitude (WGS84)"
+        },
+        "lon": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For divide, move_node and add_forced_point: longitude (WGS84)"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For move_node: the node's id"
+        },
+        "node_kind": {
+          "default": "forced_point",
+          "description": "For add_forced_point: a forced point (default) or a culvert inlet",
+          "enum": [
+            "forced_point",
+            "culvert_inlet"
+          ],
+          "type": "string"
+        },
+        "note_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For make_link: the note's id (get_sub_catchments, a sub-catchment's notes)"
+        },
+        "preview": {
+          "default": true,
+          "description": "For take_diversions_in: true (default) stores nothing and answers which edits are made again and which cannot be, each with its sentence; false takes the diversions in.",
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "reason": {
+          "default": "",
+          "description": "For make_link: one or two sentences the person reads before accepting (what you saw, and why).",
+          "type": "string"
+        },
+        "seq": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For undo: the edit's `seq` (get_sub_catchments, version.hand_edits)"
+        },
+        "sub_catchment_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For merge: the ids of the two sub-catchments"
+        },
+        "sub_catchments_id": {
+          "description": "The set to change: its `sub_catchments_id`",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "sub_catchments_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "edit_sub_catchments",
+    "title": "Divide, merge or move sub-catchments by hand"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
@@ -1107,7 +1408,7 @@
       "readOnlyHint": true,
       "title": "Wait for and read a delineation"
     },
-    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;\nit never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a\nfirst look: say so, and offer High resolution before the person relies on it; its profile is not available) or\n'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High\nresolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's\nprogress, elapsed time, expected finish, where it runs and whether it was handed to Batch. `drainage_analysis` says\nwhether the terrain's drainage analysis is being prepared (the run waits for it) or out of date (the next run works it\nout again), with the sentence to relay. Read-only.",
+    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it (a person's diversion tick keeps a confirmation; when a change to the catchments lapsed\nit, `delineation.confirmation_lapsed` says why until a person confirms again), the working and terrain resolution and\nthe tally. `timed_out` is normal: call again;\nit never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a\nfirst look: say so, and offer High resolution before the person relies on it; its profile is not available) or\n'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High\nresolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's\nprogress, elapsed time, expected finish, where it runs and whether it was handed to Batch. `drainage_analysis` says\nwhether the terrain's drainage analysis is being prepared (the run waits for it) or out of date (the next run works it\nout again), with the sentence to relay. Read-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1362,6 +1663,195 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "Read the streams of a terrain and the corridor round them"
+    },
+    "description": "Read the streams of a terrain and the corridor round them, from the terrain's kept drainage analysis.\n\nA stream is where at least `threshold_ha` of ground drains through. The corridor is the streams widened by\n`half_width_m` each side: a polygon to write as a mesh_region (write_input_layer) so the mesh is finer along the\nstreams. Use it instead of working streams out yourself, and pass its `authored_method` when you write the corridor.\nAsk the user for the mesh region's resolution (a triangle edge length in metres, never finer than the terrain's\n`resolution_m`).\n\nIt starts nothing (no line run, no drainage analysis, nothing written): a terrain with no kept drainage analysis is\nrefused in words. Returns the corridor (a GeoJSON Feature in lon/lat), its area, the streams largest first (drainage\narea and length; their lines with include_stream_lines), the grid read, whether the drainage analysis is out of date\n(with the sentence to relay) and `authored_method`. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "bbox": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Keep the streams inside this box: [west, south, east, north] in degrees (lon/lat)."
+        },
+        "delineation_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Keep the streams inside this line's catchments (a line on this terrain). Or give bbox; leave both out for the whole terrain."
+        },
+        "grid": {
+          "anyOf": [
+            {
+              "enum": [
+                "quick",
+                "full"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "'full' (high resolution) or 'quick' (the fast screen's coarser grid). Leave it out for the finest kept."
+        },
+        "half_width_m": {
+          "default": 40.0,
+          "description": "How far the corridor reaches each side of a stream, in metres (0 to 1000; default 40). 0 gives the streams with no corridor.",
+          "type": "number"
+        },
+        "include_stream_lines": {
+          "default": false,
+          "description": "False (default): each stream as its drainage area and length only. True: with its line in lon/lat too.",
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "terrain_id": {
+          "description": "The terrain whose streams to read (a delineation's `line.terrain_id`, or get_terrain)",
+          "type": "integer"
+        },
+        "threshold_ha": {
+          "description": "Where a stream starts: the drainage area in hectares that must drain through a cell for it to be a stream (0.1 to 1,000,000). Larger keeps only the bigger streams. Choose it with the user for what the model needs.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "project_id",
+        "terrain_id",
+        "threshold_ha"
+      ],
+      "type": "object"
+    },
+    "name": "get_stream_corridor",
+    "title": "Read the streams of a terrain and the corridor round them"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Wait for and read sub-catchments"
+    },
+    "description": "Read sub-catchments. Without sub_catchments_id: the project's sets (of one line, with delineation_id), each with its\nversions. With it: one set, waiting while it is created on cloud compute: its nodes (each with its total catchment's\nfacts; a diverted point says the node its water goes on to, `diverted_to`), sub-catchments (id, label, where its\nlabel sits as `label_point`, the node it drains to, area, facts and its 'can share water' notes with their ids),\nreaches and links with their facts (a diversion's: area arriving, length, fall, slope, drain depth), the dragged\nboundaries and their state (waiting, in the terrain, kept as drawn), the proposals waiting for a person, and\n`sentences` to relay (for example 'The line has run again since these were created.', or 'Diversions changed in\nstep 2. Take the diversions in.', which never holds a confirm). Each fact's unit, definition and source is given\nonce, in `fact_definitions`. Shapes stay on the map, except the outlines you ask for with outlines_of, and the\nstreams a divide goes on with streams_of (aim a divide at one). `timed_out` is normal: read again later. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "delineation_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Without sub_catchments_id: list the sets of this line"
+        },
+        "outlines_of": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With sub_catchments_id: the sub-catchments whose outlines to include (GeoJSON in lon/lat, as `outline`), for example the two either side of a boundary you want to propose moving. At most 10."
+        },
+        "poll_interval_seconds": {
+          "default": 5.0,
+          "description": "Seconds between polls (default 5)",
+          "type": "number"
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        },
+        "streams_of": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With sub_catchments_id: the sub-catchments whose streams to include (GeoJSON MultiLineString in lon/lat, as `streams`): the streams a divide goes on, as the map draws them. Every sub-catchment then says `has_stream` (false: no stream to divide on; add a forced point instead). At most 10."
+        },
+        "sub_catchments_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "One set to read: its `sub_catchments_id`"
+        },
+        "timeout_seconds": {
+          "default": 110,
+          "description": "With sub_catchments_id: how long to wait while they are created on cloud compute before returning `timed_out` (default 110, ceiling 110). 0 = one read.",
+          "type": "integer"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "With sub_catchments_id: read this version number (default: the draft, else the latest)"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_sub_catchments",
+    "title": "Wait for and read sub-catchments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "Wait for a terrain import"
     },
     "description": "Poll a terrain's import until it is `ready` (or `error`), bounded by timeout_seconds.\n\nReturns `outcome` — exactly one of `ready`, `error`, `timed_out`, `not_found`\n(the project has no terrain yet; an unknown terrain_id is an API 404 error\ninstead) — plus the last `status` seen (creating → styling → ready | error)\nand `phase` (that status, or `not_found`; never empty),\n`polls`, `elapsed_seconds` and the full `terrain` record (its `gn_layer` is\nthe published elevation dataset pk once ready). An import takes minutes to\ntens of minutes (the SAME 32 MB 1 m DEM measured 4.5 min once and 26 min\nonce — the worker's S3 download speed dominates), so `timed_out` is normal\nand NOT a failure: keep calling with the same arguments while `status` is\nstill `creating`/`styling`; several calls in a row is expected. `error` is\nterminal — the import failed and no default input rows were seeded; upload\na corrected GeoTIFF as a new terrain.\n\nA ready terrain whose import check found extrapolated ground (flat-sided triangles padding it out to its\nedge, not surveyed ground) carries `extrapolated_ground` (`state` `flagged` or `left_out`) and a WARNING in\n`say_to_user`: relay it. Only the person can leave that ground out of the drainage analysis, on the map.\n\n`ready` is written by the import task; the project's default input rows\n(Boundary 01, Friction 01, Inflow 01, Rainfall 01, Building 01,\nMeshRegion 01, one GeoNode layer each) are seeded by the NEXT task in the\nchain and appear over the following ~30 s. Poll the input-layer list until\nit is non-empty before attaching your own layer to a default row.",
@@ -1504,6 +1994,43 @@
     },
     "name": "list_observations",
     "title": "List flood observation layers or observations"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List what waits for a person's judgement"
+    },
+    "description": "List what waits for a person's judgement in a project, or on one line: the warnings, what an agent built (a line,\na diversion it ticked, sub-catchments or an edit, an adopt, a model boundary) and an agent's proposals (a drainage\ncorrection, a boundary or link on sub-catchments). Each item has its `kind` (warning, agent_built or proposal), its\n`label` and `who_decides`; `counts` per kind; `decided_count` items already decided. Warnings are advice: they never\nhold a confirm, and an agent may dismiss one it has checked (dismiss_warning, with the warning's `subject_type`,\n`subject_id` and `fingerprint` from here) under the person's grant. What an agent built and an agent's proposals wait\nfor a person's one click on the map: no tool accepts or rejects them, and Hydrata refuses an agent key that tries.\nGive the user the link. Read-only.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only the items on this line (its `delineation_id`): its warnings, the warnings and proposals of its sub-catchments, what an agent built on it, and the proposed drainage corrections on its terrain. Omit it for the whole project."
+        },
+        "project_id": {
+          "description": "The project ID",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "name": "list_open_items",
+    "title": "List what waits for a person's judgement"
   },
   {
     "annotations": {
@@ -1754,6 +2281,61 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "Propose the openings along flagged culverts"
+    },
+    "description": "Propose the drainage opening every flagged culvert of the sub-catchments offers, in ONE request (D15's measured\nladder: where the water reaching a culvert's inlet leaves past its outlet, an opening along the culvert would carry it\nthrough). The openings are filed as PROPOSALS: nothing changes until a person accepts them on the map, and only then\nis the terrain's drainage analysis worked out again (once) and the line run again. Read the culverts first with\nget_sub_catchments (version.culverts: each culvert's area across the inlet, its flags and whether an opening is\noffered). Tell the user they are waiting and give them the link (`ui_url`).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "culverts": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only these culverts' openings, as [[culvert, feature], ...] (get_sub_catchments: version.culverts.placed, where opening_offered is true). Omit it for every opening offered, which is the usual one action."
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "sub_catchments_id": {
+          "description": "The set of sub-catchments: its `sub_catchments_id`",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "sub_catchments_id"
+      ],
+      "type": "object"
+    },
+    "name": "propose_culvert_openings",
+    "title": "Propose the openings along flagged culverts"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Propose a drainage barrier, opening or excluded ground"
     },
     "description": "Propose a drainage barrier, a drainage opening or excluded ground for a terrain. It is stored as a PROPOSAL and is\nNOT applied: a person accepts it on the map, and only then does the drainage analysis use it.\n\nUse it when a delineation warning names a fix (a `drainage_analysis_changed_ground` warning's `fix` is\n`drainage_barrier` or `drainage_opening`, with `fix_sentence`, `where` and the cut or fill `geometry`), or when you\ncan say exactly where water really goes and the terrain does not show it. Read the ground first with terrain_profile. Tell the user the proposal is waiting and\ngive them the link (`ui_url`): it opens a line on this terrain (`line_to_open`, named in the sentence) with the\nproposal. Lines on the terrain change only after the person accepts it and they run again.",
@@ -1845,6 +2427,65 @@
     },
     "name": "propose_drainage_correction",
     "title": "Propose a drainage barrier, opening or excluded ground"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Propose a new boundary between two sub-catchments"
+    },
+    "description": "Propose a new boundary between two sub-catchments (a dragged boundary). It is filed WAITING: the draft shows it, and\nonly a person decides it on the map (Keep as drawn, or Make the terrain agree, where the two sub-catchments take the\nground the terrain gives them with a drainage barrier on the line; the terrain itself does not change), or undoes it.\nThe sub-catchments cannot be confirmed while it waits. Read the two outlines first (get_sub_catchments with\noutlines_of) and the ground (terrain_profile), and use it only when you can say why water goes this way and the\nterrain does not show it. Tell the user it is waiting and give them the link (`ui_url`).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "description": "The new stretch of boundary as [[lon, lat], ...] (at least 2 points, WGS84). Start and end it ON the boundary the two share now; the ground between the old and the new boundary changes sides.",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "preview_terrain": {
+          "default": false,
+          "description": "True: also work out (without storing anything) how much of the dragged ground the terrain would send the same way with a drainage barrier along the line, and say so. It takes a little longer.",
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "The project ID (Editor rights)",
+          "type": "integer"
+        },
+        "reason": {
+          "description": "One or two sentences the person reads before deciding: what you saw (for example a road or a drain the terrain does not hold) and why the boundary goes this way.",
+          "type": "string"
+        },
+        "sub_catchment_ids": {
+          "description": "The two sub-catchments either side of the boundary (their ids)",
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "sub_catchments_id": {
+          "description": "The set: its `sub_catchments_id`",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "sub_catchments_id",
+        "sub_catchment_ids",
+        "line",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "propose_sub_catchment_boundary",
+    "title": "Propose a new boundary between two sub-catchments"
   },
   {
     "annotations": {

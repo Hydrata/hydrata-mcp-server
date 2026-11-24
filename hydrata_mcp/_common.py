@@ -241,19 +241,24 @@ mcp = FastMCP(
         "friction, inflow, rainfall, building, mesh_region, culvert) inline with "
         "write_input_layer. For a file above the inline cap, call request_input_upload and "
         "give the user the link, so they drop the file in their browser. "
-        "The design storm and the mesh region are supplied by you or the user. "
-        "Say how you made them with authored_method. "
+        "The design storm is supplied by you or the user. For a mesh region along the streams, read "
+        "get_stream_corridor (the terrain's kept streams at a threshold you choose); never derive streams off the "
+        "platform. Say how you made each input with authored_method. "
         "CATCHMENTS AND THE MODEL BOUNDARY: never draw a catchment or a model boundary off the platform: use "
         "delineate_catchments for the catchments, get_delineation to wait for and read them, and "
         "use_catchments_as_boundary for the model boundary. First read the ground along a candidate line with "
         "terrain_profile, and put the line on natural ground where the water arrives, not on a crest (the toe of a "
-        "slope, or in the channel). Do the fast screen first (mode 'quick', low resolution: a first look, and say so), "
-        "then offer the High resolution run (mode 'full') with its estimate (it can take many hours, and the person can "
-        "close the map). High resolution on a fast screen makes a copy of the line, '<name> (high res)', and runs "
+        "slope, or in the channel). The fast screen is optional (mode 'quick', low resolution: a first look, and say so "
+        "when you use it). A new line can go straight to its run at the terrain's resolution (mode 'full'), on that line "
+        "itself: say its estimate first (estimate_only; on a big terrain it can take many hours, and the person can close "
+        "the map). High resolution on a fast screen makes a copy of the line, '<name> (high res)', and runs "
         "there; the fast screen stays for comparison, so read the copy's delineation_id. Say how you placed the line (authored_method, and sources "
         "when it came from a document). Relay every warning in words and each chainage with its distance in metres. "
-        "What you make is unreviewed until a person confirms it in the browser: only a person ticks a diversion "
-        "(you only report the suggestions and any tick marked check again) or confirms. "
+        "What you make is unreviewed until a person confirms it in the browser: only a person confirms. No tool ticks "
+        "a diversion (report the suggestions and any tick marked check again); a diversion an agent ticks waits until "
+        "a person accepts it. list_open_items lists what waits for the person on a line or in the project: warnings "
+        "(advice, never holding a confirm), what an agent built and an agent's proposals. dismiss_warning dismisses one "
+        "warning you have checked, under the person's grant, recorded as yours; nothing else is decided by a tool. "
         "SOURCES: when an input comes from a document (a flood study, a gauge record, a BoM page), pass "
         "sources=[{title, url, locator}] beside authored_method so the engineer can click through to it. "
         "TIME SERIES: create_time_series for each rain gauge or hydrograph; fix mistakes with "
@@ -413,6 +418,21 @@ TOOL_ANNOTATIONS = {
     "propose_drainage_correction": ("Propose a drainage barrier, opening or excluded ground", False, False, False),
     # TASK-4469 (epic 4445 W6.2, D8): a confirmed line's catchments to a layer; replaces only with replace=true.
     "adopt_catchments": ("Adopt a confirmed line's catchments as a layer", False, False, False),
+    # TASK-4486 (epic 4445 W11.4, D16): sub-catchments. An agent creates and edits a draft (never confirms); a dragged
+    # boundary and 'make this a link' are proposals a person decides on the map. None is destructive.
+    "create_sub_catchments": ("Create sub-catchments from a line's catchments", False, False, False),
+    "get_sub_catchments": ("Wait for and read sub-catchments", True, False, True),
+    "edit_sub_catchments": ("Divide, merge or move sub-catchments by hand", False, False, False),
+    "propose_sub_catchment_boundary": ("Propose a new boundary between two sub-catchments", False, False, False),
+    # TASK-4487 (epic 4445 W11.5, D15/D16): every flagged culvert's opening, filed as proposals a person accepts on the
+    # map; no drainage analysis job starts until a person does. Not destructive.
+    "propose_culvert_openings": ("Propose the openings along flagged culverts", False, False, False),
+    # TASK-4489 (epic 4445 W12.2): the streams and the corridor round them, read from the kept drainage analysis.
+    "get_stream_corridor": ("Read the streams of a terrain and the corridor round them", True, False, True),
+    # TASK-4592 (epic 4445 W12.6): what waits for a person (warnings, what an agent built, an agent's proposals). Reads only.
+    "list_open_items": ("List what waits for a person's judgement", True, False, True),
+    # TASK-4666 (Decision 953 A): dismisses one warning (advice) under the person's grant; never accepts or rejects.
+    "dismiss_warning": ("Dismiss a warning under the person's grant", False, False, True),
 }
 
 

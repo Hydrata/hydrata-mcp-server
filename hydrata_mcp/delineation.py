@@ -13,11 +13,14 @@ adopt_catchments      - (epic 4445 W6.2) a CONFIRMED line's catchments published
 
 Every result carries the API's own field names (TASK-4397, 4398, 4410, 4417) and, beside each chainage written
 CH k+mmm, its distance in metres. Every warning comes back as its sentence. The tools never tick, apply or undo a
-diversion and never confirm: only a person does, in the browser (decision D13). What an agent makes is unreviewed
-until a person confirms it. There is no tool that deletes a delineation or edits its line.
+diversion and never confirm: only a person confirms, in the browser (decision D13). A diversion an agent ticks (through the
+API) waits until a person accepts it on the map (TASK-4590). What an agent makes is unreviewed until a person confirms it.
+There is no tool that deletes a delineation or edits its line.
 
 Words (operator, 15-11-26): the quick run (API mode 'quick') is the FAST SCREEN (low resolution), a first look; the full run
 (mode 'full') is HIGH RESOLUTION. A fast screen is a quick result that was coarsened; its ground profile is not given anywhere.
+TASK-4567 (operator, 21-11-26): the fast screen is optional, not necessary: a new line may go straight to High resolution, on
+that line itself (no copy).
 """
 
 import json
@@ -35,6 +38,7 @@ from ._helpers import (
     _poll_until,
     _token_cap_spent,
 )
+from .client import HydrataAPIError
 from .terrain import _lon_lat_pairs
 
 LIVE_STATUSES = ("pending", "running")
@@ -50,12 +54,13 @@ FAST_SCREEN_LUMPED = (
     "A fast screen shows one catchment per section of the line, with no smaller catchments, diversion suggestions or "
     "shared-water points: High resolution gives those."
 )
-SUGGESTIONS_NOTE = "Diversion suggestions are information only. Only a person ticks one, in the browser."
+SUGGESTIONS_NOTE = "Diversion suggestions are information only. No tool ticks one: the person ticks it in the browser."
 BOUNDARY_RULE = (
     "Closed (Reflective) except a short Transmissive stretch at each included drainage point (5 working cells, 20 m "
     "minimum). The line itself is not open."
 )
-PERSON_ONLY = "Only a person can tick or check a diversion, or confirm a delineation."
+# TASK-4592: an agent's tick is made and waits for a person's Accept (TASK-4590), so this says nothing of ticking
+PERSON_ONLY = "Only a person checks a diversion or confirms a delineation, in the browser."
 # TASK-4545: a run on a confirmed line replaces the result a person confirmed (the Catchments pane's words before Run again)
 CONFIRMED_LAPSES = "This line is confirmed. Running it again lapses the confirmation."
 # TASK-4456 (epic 4445 W2.7): the terrain's drainage analysis, being prepared or out of date. The API's ``drainage_analysis``
@@ -183,7 +188,8 @@ def _ticks_text(doc: dict) -> str | None:
         parts.append(
             f"{len(remembered)} more tick{'' if len(remembered) == 1 else 's'} remembered, not applied at these settings"
         )
-    return "; ".join(parts) + f". {PERSON_ONLY} Give the user the link. It cannot be confirmed until they are checked."
+    # TASK-4589: a diversion to check is a warning; it never holds the confirm
+    return "; ".join(parts) + f". {PERSON_ONLY} Give the user the link. A diversion to check never holds the confirm."
 
 
 def _full_run_doc(job: dict) -> dict:
@@ -335,6 +341,9 @@ def _result(doc: dict) -> dict:
         "drainage_changed": doc.get("drainage_changed"),
         # epic 4445 W6.2: the line's adopted layer and whether the line has changed since (null: never adopted)
         "adopted_layer": _adopted_doc(doc.get("promoted_layer")),
+        # epic 4445 W11.3 (TASK-4485): what adopting now carries of the line's confirmed sub-catchments, and what it leaves
+        # out (a draft) as the API's sentence (null: the line has none)
+        "adopt_sub_catchments": doc.get("adopt_sub_catchments"),
         "omitted": OMITTED,
     }
     shown = doc.get("shown_result")
@@ -406,9 +415,23 @@ def _who(doc: dict) -> str:
     d = doc.get("delineation") or {}
     if d.get("confirmed"):
         return f"Confirmed by {_data(str(d.get('confirmed_by')))} on {d.get('confirmed_at')}."
+    lapse = _lapse_sentence(doc)
     if d.get("agent_authored"):
+        if lapse:  # a person confirmed the agent's line and a change lapsed it: say why (said only here)
+            return f"Made by an agent. Not confirmed. {lapse} Only a person confirms it again, in the browser."
         return "Made by an agent, unreviewed. Only a person confirms it, in the browser."
+    if lapse:
+        return f"Made by {_data(str(d.get('created_by')))}. Not confirmed. {lapse} Only a person confirms it again, in the browser."
     return f"Made by {_data(str(d.get('created_by')))}. Not confirmed."
+
+
+def _lapse_sentence(doc: dict) -> str | None:
+    """Epic 4445 W12.5 (TASK-4579, TASK-4598): why a person's confirmation lapsed, the API's sentence (a person's diversion
+    tick keeps it; a re-run, a new terrain, a moved line, a Minimum catchment area or side change, or diversions to check
+    again lapse it). The API keeps it (``delineation.confirmation_lapsed``) until a person confirms again; else None."""
+    lapse = (doc.get("delineation") or {}).get("confirmation_lapsed")
+    sentence = lapse.get("sentence") if isinstance(lapse, dict) else None
+    return sentence if isinstance(sentence, str) and sentence else None
 
 
 def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
@@ -442,6 +465,12 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
     adopted = _adopted_words(result.get("adopted_layer"))
     if adopted:
         parts.append(adopted)
+    left_out = (result.get("adopt_sub_catchments") or {}).get("left_out_sentence")
+    if left_out:
+        parts.append(f"Adopting: {left_out}")
+    not_taken_in = (result.get("adopt_sub_catchments") or {}).get("diversions_changed_sentence")
+    if not_taken_in:
+        parts.append(f"Adopting: {not_taken_in}")
     if ticks:
         parts.append(ticks)
     words = result["warnings_in_words"]
@@ -456,7 +485,7 @@ def _read_words(doc: dict, result: dict, ticks: str | None = None) -> list[str]:
         lost = (replaced.get("not_carried_over") or {}).get("catchments") or []
         if lost:
             parts.append(f"New high resolution result. {len(lost)} earlier catchment(s) have no match.")
-        if replaced.get("confirmation_lapsed"):
+        if replaced.get("confirmation_lapsed") and not _lapse_sentence(doc):  # the stored reason is said in _who
             parts.append("Confirmation lapsed. A person must confirm again.")
     return parts
 
@@ -471,6 +500,15 @@ def _estimate_words(estimate: dict) -> str:
         low = (e.get("expected_seconds") or {}).get("low")
         high = (e.get("expected_seconds") or {}).get("high")
         where = "AWS Batch" if e.get("runs_on") == "batch" else "the web server"
+        if e.get("drainage_analysis_first"):
+            # TASK-4559: the run waits for the terrain's drainage analysis first (the range already holds the wait), as
+            # the Catchments footer says
+            wait = e.get("drainage_analysis_seconds") or {}
+            first = "AWS Batch" if e.get("drainage_analysis_runs_on") == "batch" else "the web server"
+            where += (
+                f", after the drainage analysis (prepared first on {first}, "
+                f"{_duration(wait.get('low'))} to {_duration(wait.get('high'))})"
+            )
         text = (
             f"{MODE_WORDS[mode]}: {e.get('cells'):,} cells at {_m(e.get('working_resolution_m'))} m on {where}, "
             f"{_duration(low)} to {_duration(high)}"
@@ -541,7 +579,8 @@ async def delineate_catchments(
         int | None,
         "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, "
         "start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with "
-        "mode='full', to start High resolution (on a copy of the line when its result is a fast screen). A "
+        "mode='full', to start High resolution (on a copy of the line when its result is a fast screen; on the line "
+        "itself when it has no result). A "
         "delineation a person made or confirmed is refused.",
     ] = None,
     line: Annotated[
@@ -568,9 +607,10 @@ async def delineate_catchments(
     mode: Annotated[
         Literal["quick", "full"] | None,
         "'quick' (the default for a new delineation) is the FAST SCREEN: low resolution, coarsened to the web "
-        "server's limit, seconds to a couple of minutes; a first look. 'full' is HIGH RESOLUTION: the terrain's own "
-        "resolution, on AWS Batch, can take many hours (up to about 24), and the person can close the map. Do the "
-        "fast screen first and offer High resolution with its estimate. With delineation_id, 'full' starts High "
+        "server's limit, seconds to a couple of minutes; an optional first look. 'full' is HIGH RESOLUTION: the "
+        "terrain's own resolution; a big terrain runs on AWS Batch and can take many hours (up to about 24), and the "
+        "person can close the map. The fast screen is optional: a new line can go straight to 'full', on that line "
+        "itself (no copy); say its estimate first (estimate_only). With delineation_id, 'full' starts High "
         "resolution: over a fast screen it makes a COPY of the line, '<name> (high res)', and runs there (the fast "
         "screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast "
         "screen again.",
@@ -593,8 +633,8 @@ async def delineate_catchments(
     A NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's
     Catchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with
     get_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person
-    confirms it in the browser. Only a person ticks a diversion or confirms; no tool does, and there is no tool
-    that deletes a delineation or moves its line.
+    confirms it in the browser. No tool ticks a diversion or confirms; only a person confirms. A diversion an agent
+    ticks waits until a person accepts it on the map. There is no tool that deletes a delineation or moves its line.
 
     The line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless
     you pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a
@@ -606,6 +646,9 @@ async def delineate_catchments(
     words. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata
     makes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names
     the copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.
+
+    The fast screen is optional: a NEW delineation with `mode='full'` goes straight to High resolution, on that line
+    itself (no copy, the name as given). Say its estimate first (`estimate_only`).
     """
     clean_sources = _clean_sources(sources)
     method = authored_method.strip() if isinstance(authored_method, str) else ""
@@ -638,7 +681,8 @@ async def delineate_catchments(
             project_id,
             {"estimate": _estimate_summary(estimate), "terrain_id": estimate.get("terrain_id")},
             _estimate_words(estimate)
-            + " Nothing was run. Offer the fast screen first; then offer High resolution with this estimate.",
+            + " Nothing was run. The fast screen is optional: offer High resolution with this estimate, and the fast "
+            "screen as a first look if the person wants one.",
             panel="catchments",
         )
         return json.dumps(result, indent=2)
@@ -718,7 +762,9 @@ async def delineate_catchments(
         else " Upstream side: automatic. The result names the side per section."
     )
     if chosen == "full":
-        say += " High resolution can take many hours. No fast screen is made. The person can close the map."
+        say += " High resolution, on this line (no copy). No fast screen is made: it is optional."
+        if (estimate.get("full") or {}).get("can_take_hours"):
+            say += " It can take many hours. The person can close the map."
     else:
         say += (
             " The fast screen takes seconds to minutes. It is a first look: offer High resolution before the person "
@@ -952,7 +998,9 @@ async def get_delineation(
     result: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a
     lower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person
     applied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and
-    whether a person confirmed it, the working and terrain resolution and the tally. `timed_out` is normal: call again;
+    whether a person confirmed it (a person's diversion tick keeps a confirmation; when a change to the catchments lapsed
+    it, `delineation.confirmation_lapsed` says why until a person confirms again), the working and terrain resolution and
+    the tally. `timed_out` is normal: call again;
     it never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a
     first look: say so, and offer High resolution before the person relies on it; its profile is not available) or
     'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High
@@ -1185,6 +1233,11 @@ async def use_catchments_as_boundary(
         f"update_scenario(boundary={boundary.get('id')}), then give the user the link."
     )
     parts = [say]
+    # TASK-4590 (epic 4445 W12.6): an agent's boundary is an agent-built feature, waiting for the person's one click
+    if isinstance(made.get("waiting_sentence"), str) and made["waiting_sentence"]:
+        parts.append(
+            "Tell the person: " + made["waiting_sentence"] + " They accept it under Apply, in the Catchments panel."
+        )
     if notes:
         parts.append("Tell the person: " + " ".join(notes))
     if _is_fast_screen(doc.get("shown_result")):
@@ -1221,7 +1274,7 @@ async def use_catchments_as_boundary(
 ADOPT_RULE = (
     "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains) and the "
     "line itself, drawn as the Catchments panel drew them. It does not follow later changes; adopting again replaces "
-    "its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
+    "its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person accepts it on the map."
 )
 
 
@@ -1268,7 +1321,7 @@ async def adopt_catchments(
                 f"Adoption refused: {reply.get('detail')} Ask the user to check and confirm the line in the browser "
                 "(the link), then adopt."
             )
-        elif code == "PROMOTED_ALREADY":
+        elif ADOPT_WORDS.get(code, code) == "ADOPTED_ALREADY":  # TASK-4587: the API's code since W12.5, or its old one
             layer = _adopted_doc(reply.get("promoted_layer"))
             result["adopted_layer"] = layer
             changed = bool(layer and layer.get("line_changed_since"))
@@ -1280,7 +1333,9 @@ async def adopt_catchments(
         else:
             say = result.pop("say_to_user")
         result.pop("say_to_user", None)
-        await _hand_back(result, project_id, {"http_status": status, "error_code": code}, say, **links)
+        # the summary carries the adopt word too (Walk 3 finding E: it relayed 'PROMOTED_ALREADY')
+        summary = {"http_status": status, "error_code": ADOPT_WORDS.get(code, code)}
+        await _hand_back(result, project_id, summary, say, **links)
         return json.dumps(result, indent=2)
     layer = _adopted_doc(reply.get("promoted_layer")) or {}
     replaced = bool(reply.get("replaced"))
@@ -1292,6 +1347,10 @@ async def adopt_catchments(
         "method": reply.get("method"),
         "vertices_before": reply.get("vertices_before"),
         "vertices_after": reply.get("vertices_after"),
+        # TASK-4485: what of the line's sub-catchments the entry leaves out (a draft), the API's sentence, or null
+        "left_out_sentence": reply.get("left_out_sentence"),
+        # TASK-4603: the layer follows the sub-catchments' own diversions; set when a step-2 diversion is not taken in yet
+        "diversions_changed_sentence": reply.get("diversions_changed_sentence"),
         "rule": ADOPT_RULE,
     }
     what = "replaced the contents of" if replaced else "made"
@@ -1300,6 +1359,17 @@ async def adopt_catchments(
         f"catchments of delineation {delineation_id}. It is on the map in "
         f"{layer.get('map_group') or 'Adopted catchments'}. It is a snapshot: it does not follow later changes."
     )
+    carried = layer.get("sub_catchments") if isinstance(layer.get("sub_catchments"), dict) else None
+    if carried:
+        say += (
+            f" It carries version {carried.get('version')} of the sub-catchments, as confirmed: "
+            f"{carried.get('sub_catchments')} sub-catchments, {carried.get('nodes')} nodes and {carried.get('reaches')} "
+            "reaches."
+        )
+    if reply.get("left_out_sentence"):
+        say += f" {reply.get('left_out_sentence')}"
+    if reply.get("diversions_changed_sentence"):
+        say += f" {reply.get('diversions_changed_sentence')}"
     if layer.get("unreviewed"):
         say += " It is unreviewed until you adopt it again yourself."
     summary = {
@@ -1447,4 +1517,183 @@ async def propose_drainage_correction(
         )
     summary = {"proposal_id": proposal.get("id"), "kind": kind, "status": result["status"]}
     await _hand_back(result, project_id, summary, say, **links)
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# get_stream_corridor (epic 4445 W12.2, TASK-4489; replaces TASK-4044): the streams of a terrain at a threshold the agent
+# chooses, and the corridor round them, read from the terrain's KEPT drainage analysis. It starts nothing: no line run, no
+# drainage analysis job, no conditioning, and it writes nothing.
+# ---------------------------------------------------------------------------
+STREAMS_LISTED = 20
+CORRIDOR_NO_ANALYSIS_STEP = (
+    "This terrain has no kept drainage analysis yet. A line run on it (delineate_catchments) makes one: ask the user "
+    "before you start one, then read the streams again."
+)
+
+
+def _corridor_refusal(exc: HydrataAPIError) -> dict:
+    """The API's refusal (a 400 or 409 whose body carries ``detail``), as a result the agent relays."""
+    text = str(exc)
+    body: dict = {}
+    if " — " in text:
+        try:
+            parsed = json.loads(text.split(" — ", 1)[1])
+            body = parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            body = {}
+    detail = body.get("detail") or text
+    return {
+        "outcome": "refused",
+        "http_status": exc.status,
+        "error_code": body.get("error_code") or exc.code,
+        "detail": detail,
+        "ran_anything": False,
+    }
+
+
+@_tool("get_stream_corridor")
+async def get_stream_corridor(
+    project_id: Annotated[int, "The project ID"],
+    terrain_id: Annotated[int, "The terrain whose streams to read (a delineation's `line.terrain_id`, or get_terrain)"],
+    threshold_ha: Annotated[
+        float,
+        "Where a stream starts: the drainage area in hectares that must drain through a cell for it to be a stream "
+        "(0.1 to 1,000,000). Larger keeps only the bigger streams. Choose it with the user for what the model needs.",
+    ],
+    half_width_m: Annotated[
+        float,
+        "How far the corridor reaches each side of a stream, in metres (0 to 1000; default 40). 0 gives the streams "
+        "with no corridor.",
+    ] = 40.0,
+    delineation_id: Annotated[
+        int | None,
+        "Keep the streams inside this line's catchments (a line on this terrain). Or give bbox; leave both out for the "
+        "whole terrain.",
+    ] = None,
+    bbox: Annotated[
+        list[float] | None,
+        "Keep the streams inside this box: [west, south, east, north] in degrees (lon/lat).",
+    ] = None,
+    grid: Annotated[
+        Literal["full", "quick"] | None,
+        "'full' (high resolution) or 'quick' (the fast screen's coarser grid). Leave it out for the finest kept.",
+    ] = None,
+    include_stream_lines: Annotated[
+        bool,
+        "False (default): each stream as its drainage area and length only. True: with its line in lon/lat too.",
+    ] = False,
+) -> str:
+    """Read the streams of a terrain and the corridor round them, from the terrain's kept drainage analysis.
+
+    A stream is where at least `threshold_ha` of ground drains through. The corridor is the streams widened by
+    `half_width_m` each side: a polygon to write as a mesh_region (write_input_layer) so the mesh is finer along the
+    streams. Use it instead of working streams out yourself, and pass its `authored_method` when you write the corridor.
+    Ask the user for the mesh region's resolution (a triangle edge length in metres, never finer than the terrain's
+    `resolution_m`).
+
+    It starts nothing (no line run, no drainage analysis, nothing written): a terrain with no kept drainage analysis is
+    refused in words. Returns the corridor (a GeoJSON Feature in lon/lat), its area, the streams largest first (drainage
+    area and length; their lines with include_stream_lines), the grid read, whether the drainage analysis is out of date
+    (with the sentence to relay) and `authored_method`. Read-only.
+    """
+    if threshold_ha is None or not 0.1 <= float(threshold_ha) <= 1_000_000:
+        raise ToolError("threshold_ha must be a number from 0.1 to 1,000,000 (hectares). Nothing was sent.")
+    if half_width_m is None or not 0 <= float(half_width_m) <= 1000:
+        raise ToolError("half_width_m must be a number from 0 to 1000 (metres). Nothing was sent.")
+    params: dict = {"threshold_ha": float(threshold_ha), "half_width_m": float(half_width_m)}
+    if bbox is not None:
+        if delineation_id is not None:
+            raise ToolError("Give delineation_id or bbox, not both. Nothing was sent.")
+        ok = isinstance(bbox, list) and len(bbox) == 4 and all(isinstance(v, (int, float)) for v in bbox)
+        if not ok or not (-180 <= bbox[0] < bbox[2] <= 180 and -90 <= bbox[1] < bbox[3] <= 90):
+            raise ToolError(
+                "bbox is [west, south, east, north] in degrees (lon/lat), west < east and south < north. "
+                "Nothing was sent."
+            )
+        params["bbox"] = ",".join(f"{float(v):g}" for v in bbox)
+    if delineation_id is not None:
+        params["delineation_id"] = delineation_id
+    if grid is not None:
+        params["grid"] = grid
+    links = {"panel": "catchments", "line": delineation_id}
+    try:
+        doc = await client.get(f"/projects/{project_id}/terrain/{terrain_id}/stream-corridor/", params=params)
+    except HydrataAPIError as exc:
+        if exc.status not in (400, 409):
+            raise
+        result = _corridor_refusal(exc)
+        if result["error_code"] == "NO_DRAINAGE_ANALYSIS":
+            result["next_step"] = CORRIDOR_NO_ANALYSIS_STEP
+        say = f"Could not read the streams of terrain {terrain_id}: {result['detail']}"
+        summary = {"terrain_id": terrain_id, "error_code": result["error_code"]}
+        await _hand_back(result, project_id, summary, say, **links)
+        return json.dumps(result, indent=2)
+    doc = doc if isinstance(doc, dict) else {}
+    features = ((doc.get("streams") or {}).get("features")) or []
+    streams = []
+    for feature in features[:STREAMS_LISTED] if not include_stream_lines else features:
+        props = feature.get("properties") or {}
+        item = {"drainage_area_ha": props.get("drainage_area_ha"), "length_m": props.get("length_m")}
+        if include_stream_lines:
+            item["geometry"] = feature.get("geometry")
+        streams.append(item)
+    corridor = doc.get("corridor")
+    grid_read = doc.get("grid")
+    resolution_m = doc.get("resolution_m")
+    result = {
+        "outcome": "ready",
+        "terrain_id": doc.get("terrain_id", terrain_id),
+        "terrain_title": _data(str(doc["terrain_title"])) if doc.get("terrain_title") is not None else None,
+        "grid": grid_read,
+        "resolution": HIGH_RES if grid_read == "full" else FAST_SCREEN if grid_read == "quick" else None,
+        "resolution_m": resolution_m,
+        "threshold_ha": doc.get("threshold_ha"),
+        "kept_stream_threshold_ha": doc.get("kept_stream_threshold_ha"),
+        "half_width_m": doc.get("half_width_m"),
+        "area": doc.get("area"),
+        "drainage_analysis": doc.get("drainage_analysis"),
+        "read_from": doc.get("read_from"),
+        "ran_anything": False,
+        "stream_count": doc.get("stream_count", len(features)),
+        "stream_length_m": doc.get("stream_length_m"),
+        "longest_stream_m": doc.get("longest_stream_m"),
+        "largest_drainage_area_ha": doc.get("largest_drainage_area_ha"),
+        "streams": streams,
+        "corridor": corridor,
+        "corridor_area_ha": doc.get("corridor_area_ha"),
+        "authored_method": doc.get("authored_method"),
+    }
+    if not include_stream_lines and len(features) > STREAMS_LISTED:
+        result["streams_listed"] = f"The {STREAMS_LISTED} largest of {len(features)}."
+    if corridor:
+        finest = f"{resolution_m:g} m" if isinstance(resolution_m, (int, float)) else "the terrain's cell size"
+        result["next_step"] = (
+            "To make the mesh finer along these streams, ask the user for the resolution (a triangle edge length in "
+            f"metres, never finer than {finest}), then write_input_layer(project_id={project_id}, kind='mesh_region', "
+            "features=[the corridor with properties {'resolution': <their figure>, 'resolution_units': 'm'}], "
+            "authored_method=<authored_method>)."
+        )
+    count = result["stream_count"]
+    threshold = doc.get("threshold_ha", threshold_ha)
+    parts = [
+        f"{count} stream{'s' if count != 1 else ''} draining at least {threshold:g} ha on terrain {terrain_id} "
+        f"({result['resolution'] or grid_read}, {resolution_m:g} m)."
+        if isinstance(resolution_m, (int, float))
+        else f"{count} streams draining at least {threshold:g} ha on terrain {terrain_id}."
+    ]
+    if corridor:
+        parts.append(
+            f"The corridor {doc.get('half_width_m', half_width_m):g} m each side covers {doc.get('corridor_area_ha')} ha."
+        )
+    if doc.get("sentence"):
+        parts.append(str(doc["sentence"]))
+    summary = {
+        "terrain_id": terrain_id,
+        "threshold_ha": threshold,
+        "streams": count,
+        "corridor_area_ha": doc.get("corridor_area_ha"),
+        "drainage_analysis": (doc.get("drainage_analysis") or {}).get("state"),
+    }
+    await _hand_back(result, project_id, summary, " ".join(parts), **links)
     return json.dumps(result, indent=2)

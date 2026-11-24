@@ -441,9 +441,9 @@ async def test_delineate_with_an_id_says_a_persons_ticks_were_reapplied_and_need
         )
     )
     say = data["say_to_user"]
-    assert "1 ticked diversion to check again. Only a person can tick or check a diversion, or confirm" in say
+    assert "1 ticked diversion to check again. Only a person checks a diversion or confirms a delineation" in say
     assert "re-run" not in say  # a settings change is a regroup, not a re-run (TASK-4424)
-    assert "Give the user the link. It cannot be confirmed until they are checked." in say
+    assert "Give the user the link. A diversion to check never holds the confirm." in say
     assert data["diversions_to_check"] == 1
 
 
@@ -614,6 +614,80 @@ async def test_get_delineation_counts_every_suggestion_and_how_many_are_shallow(
     assert "1 suggested, 0 with a drain 2 m deep or less" in say
     assert "0 suggested" not in say
     assert "1 diversion applied" in say and "1 diversions" not in say
+
+
+@respx.mock
+async def test_get_delineation_relays_what_adopting_now_leaves_out_of_the_sub_catchments(_server):
+    # review of W11 (TASK-4485): the line read's adopt_sub_catchments, as the Apply step says it
+    _mock_project()
+    left_out = "The sub-catchments are a draft: confirm them (step 3) to include them."
+    adopt = {"set_id": 7, "version": None, "sub_catchments": 0, "nodes": 0, "reaches": 0, "left_out_sentence": left_out}
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(adopt_sub_catchments=adopt)))
+    data = await _read(_server, timeout_seconds=30, poll_interval_seconds=0)
+    assert data["adopt_sub_catchments"] == adopt
+    assert f"Adopting: {left_out}" in data["say_to_user"]
+
+
+# TASK-4598 (epic 4445 W12.5, TASK-4579 / Walk 3 D5): a person's diversion tick keeps the confirmation; a change to the
+# catchments lapses it, and the API keeps why (delineation.confirmation_lapsed) until a person confirms again
+LAPSE = {
+    "reason": "rerun",
+    "sentence": "Confirmation lapsed: the line was run again.",
+    "at": "2026-11-22T06:00:00+00:00",
+    "by": "engineer",
+}
+
+
+def _persons_line(**delineation):
+    doc = _doc()
+    doc["delineation"].update({"agent_authored": False, "unreviewed": False, "created_by": "engineer", **delineation})
+    return doc
+
+
+@respx.mock
+async def test_get_delineation_says_why_the_confirmation_lapsed(_server):
+    _mock_project()
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_persons_line(confirmation_lapsed=LAPSE)))
+    data = await _read(_server, timeout_seconds=0)
+    assert data["delineation"]["confirmation_lapsed"] == LAPSE
+    say = data["say_to_user"]
+    assert "Not confirmed. Confirmation lapsed: the line was run again." in say
+    assert "Only a person confirms it again, in the browser." in say
+
+
+@respx.mock
+async def test_get_delineation_says_the_lapse_once_when_a_new_result_replaced_the_confirmed_one(_server):
+    # the replaced block's own flag says the same thing: the stored reason is said, not a second, vaguer sentence
+    _mock_project()
+    doc = _persons_line(confirmation_lapsed=LAPSE)
+    doc["shown_result"] = {**doc["shown_result"], "mode": "full", "replaced": {"confirmation_lapsed": True}}
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = await _read(_server, timeout_seconds=0)
+    say = data["say_to_user"]
+    assert say.count("Confirmation lapsed") == 1 and "the line was run again" in say
+
+
+@respx.mock
+async def test_get_delineation_says_the_lapse_on_an_agents_line_a_person_had_confirmed(_server):
+    # W12.5 review: a person confirms an agent's line, a re-run lapses it; the reason must still be said (the replaced block's
+    # generic sentence is held back when the reason is stored, so _who saying nothing here would say it zero times)
+    _mock_project()
+    doc = _doc()
+    doc["delineation"].update({"agent_authored": True, "unreviewed": True, "confirmation_lapsed": LAPSE})
+    doc["shown_result"] = {**doc["shown_result"], "mode": "full", "replaced": {"confirmation_lapsed": True}}
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+    data = await _read(_server, timeout_seconds=0)
+    say = data["say_to_user"]
+    assert say.count("Confirmation lapsed") == 1 and "the line was run again" in say
+    assert "Only a person confirms it again, in the browser." in say
+
+
+@respx.mock
+async def test_get_delineation_a_persons_line_never_confirmed_says_no_lapse(_server):
+    _mock_project()
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_persons_line(confirmation_lapsed=None)))
+    data = await _read(_server, timeout_seconds=0)
+    assert "Not confirmed." in data["say_to_user"] and "lapsed" not in data["say_to_user"]
 
 
 @respx.mock
@@ -948,6 +1022,21 @@ async def test_use_catchments_as_boundary_says_nothing_extra_without_notes(_serv
 
 
 @respx.mock
+async def test_use_catchments_as_boundary_says_it_waits_for_the_persons_one_click(_server):
+    # TASK-4590 (epic 4445 W12.6, Walk 3 D7): an agent's model boundary is an agent-built feature, waiting for a person
+    _mock_project()
+    waiting = "Built by an agent: it waits until a person accepts it on the map with one click."
+    respx.post(BOUNDARY).mock(return_value=httpx.Response(201, json={**_boundary_reply(), "waiting_sentence": waiting}))
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101, 102]}
+        )
+    )
+    assert f"Tell the person: {waiting} They accept it under Apply, in the Catchments panel." in data["say_to_user"]
+
+
+@respx.mock
 async def test_use_catchments_as_boundary_relays_a_refusal_in_words(_server):
     sentence = "The chosen catchments do not touch each other, so they cannot make one model boundary. Choose catchments that are next to each other."
     respx.post(BOUNDARY).mock(
@@ -1081,7 +1170,9 @@ def test_ui_url_for_a_delineation_is_panel_catchments_and_line(env_vars):
 def test_instructions_send_agents_to_these_tools_for_the_catchment_and_the_boundary(env_vars):
     text = reload_server().mcp.instructions
     assert "The design storm, the catchment and the mesh region are supplied by you or the user" not in text
-    assert "design storm and the mesh region are supplied by you or the user" in text
+    # TASK-4489 (W12.2): the mesh region along the streams now comes from get_stream_corridor
+    assert "design storm and the mesh region are supplied by you or the user" not in text
+    assert "The design storm is supplied by you or the user" in text
     for needle in (
         "delineate_catchments",
         "get_delineation",
@@ -1089,7 +1180,7 @@ def test_instructions_send_agents_to_these_tools_for_the_catchment_and_the_bound
         "never draw a catchment or a model boundary off the platform",
         "terrain_profile",
         "natural ground where the water arrives, not on a crest",
-        "fast screen first",
+        "fast screen is optional",  # TASK-4567: was 'fast screen first'
         "High resolution",
         "(high res)",
         "authored_method",
@@ -1531,6 +1622,60 @@ async def test_promote_catchments_makes_the_layer_and_says_it_is_unreviewed(_ser
 
 
 @respx.mock
+async def test_adopt_catchments_says_what_of_the_sub_catchments_it_carries_and_what_it_leaves_out(_server):
+    # review of W11 (TASK-4485, Decision 889: one entry; D16: the MCP relays what the Apply step says)
+    _mock_project()
+    left_out = (
+        "Changes to the sub-catchments since they were confirmed are left out: confirm them (step 3) to include them."
+    )
+    carried = {"set_id": 7, "version": 2, "sub_catchments": 13, "nodes": 9, "reaches": 3}
+    respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "promoted_layer": _promoted(sub_catchments=carried, sub_catchments_changed_since=False),
+                "replaced": False,
+                "method": "Adopted",
+                "vertices_before": 900,
+                "vertices_after": 400,
+                "left_out_sentence": left_out,
+            },
+        )
+    )
+    data = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert data["left_out_sentence"] == left_out
+    assert data["adopted_layer"]["sub_catchments"] == carried
+    say = data["say_to_user"]
+    assert "version 2 of the sub-catchments" in say and "13 sub-catchments, 9 nodes and 3 reaches" in say
+    assert left_out in say
+
+
+@respx.mock
+async def test_adopt_catchments_relays_that_a_step_2_diversion_is_not_taken_in(_server):
+    # TASK-4603 (Gate 3 pre-walk F4): the layer follows the sub-catchments' own diversions; the API says when the line's differ
+    _mock_project()
+    sentence = "Diversions changed in step 2: take them in (step 3) before adopting."
+    carried = {"set_id": 7, "version": 1, "sub_catchments": 13, "nodes": 9, "reaches": 3}
+    respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "promoted_layer": _promoted(sub_catchments=carried, sub_catchments_changed_since=False),
+                "replaced": False,
+                "method": "Adopted",
+                "vertices_before": 900,
+                "vertices_after": 400,
+                "left_out_sentence": None,
+                "diversions_changed_sentence": sentence,
+            },
+        )
+    )
+    data = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert data["diversions_changed_sentence"] == sentence
+    assert sentence in data["say_to_user"]
+
+
+@respx.mock
 async def test_promote_catchments_is_refused_for_an_unconfirmed_line_and_says_a_person_confirms(_server):
     _mock_project()
     respx.post(PROMOTE).mock(
@@ -1581,6 +1726,29 @@ async def test_promote_catchments_again_asks_the_user_first_and_reads_the_change
     assert done["outcome"] == "replaced" and "replaced the contents of" in done["say_to_user"]
 
 
+@pytest.mark.parametrize("api_code", ["ADOPTED_ALREADY", "PROMOTED_ALREADY"])
+@respx.mock
+async def test_adopt_again_refusal_never_says_promote_to_the_agent(_server, api_code):
+    """TASK-4587 (Walk 3 finding E): the summary relayed the API's code 'PROMOTED_ALREADY'. The API says ADOPTED_ALREADY now;
+    a server still on the old code reads the same, and nothing the agent reads says promote."""
+    _mock_project()
+    respx.post(PROMOTE).mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_code": api_code,
+                "detail": "Already the layer 'Catchments of W4 line', adopted on 17-11-26. Send replace: true to replace "
+                "its contents.",
+                "promoted_layer": _promoted(line_changed_since=False, sentences=[AGENT_MARK]),
+            },
+        )
+    )
+    refused = _tool_json(await _call_as_caller(_server, "adopt_catchments", {"project_id": 42, "delineation_id": 9}))
+    assert refused["error_code"] == "ADOPTED_ALREADY" and refused["summary"]["error_code"] == "ADOPTED_ALREADY"
+    assert refused["adopted_layer"]["line_changed_since"] is False and "replace=true" in refused["say_to_user"]
+    assert "promot" not in json.dumps({k: v for k, v in refused.items() if k != "ui_url"}).lower()
+
+
 @respx.mock
 async def test_promote_get_delineation_reads_the_same_mark(_server):
     _mock_project()
@@ -1603,3 +1771,323 @@ async def test_promote_get_delineation_of_a_line_never_promoted_says_nothing_of_
         await _call_as_caller(_server, "get_delineation", {"project_id": 42, "delineation_id": 9, "timeout_seconds": 0})
     )
     assert data["adopted_layer"] is None and "adopted" not in data["say_to_user"].lower()
+
+
+# ---------------------------------------------------------------------------
+# TASK-4567 (operator, 21-11-26: 'just make it optional instead of necessary now'): the fast screen is optional. A new
+# line can go straight to its run at the terrain's resolution, on that line (no copy); the instructions say so.
+# ---------------------------------------------------------------------------
+def _small_estimate():
+    """A terrain small enough for the web server at its own resolution: High resolution in minutes, not hours."""
+    est = _estimate()
+    est["full"].update(
+        cells=200_000, runs_on="web_server", expected_seconds={"low": 20, "high": 300}, can_take_hours=False
+    )
+    return est
+
+
+def test_fast_screen_optional_the_instructions_say_the_fast_screen_is_optional(env_vars):
+    text = reload_server().mcp.instructions
+    assert "fast screen first" not in text.lower()
+    assert "The fast screen is optional" in text
+    assert "A new line can go straight to its run at the terrain's resolution (mode 'full')" in text
+    assert "(high res)" in text  # the copy route over a fast screen is kept
+
+
+@respx.mock
+async def test_fast_screen_optional_a_new_line_goes_straight_to_high_resolution_on_itself(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_small_estimate()))
+    post = respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary(_job("pending", "full"))))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "mode": "full"}))
+    assert post.call_count == 1 and json.loads(post.calls[0].request.content)["mode"] == "full"
+    assert data["outcome"] == "started" and data["mode"] == "full" and data["delineation_id"] == 9
+    say = data["say_to_user"]
+    assert "High resolution (mode 'full') delineation 'W4 line'" in say and "on the web server" in say
+    assert "on this line (no copy)" in say
+    assert "many hours" not in say  # a small terrain: minutes, and the estimate says so
+    assert "offer High resolution" not in say  # it is already the High resolution run
+
+
+@respx.mock
+async def test_fast_screen_optional_a_big_new_line_straight_to_high_resolution_says_it_can_take_hours(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary(_job("pending", "full", runs_on="batch"))))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "mode": "full"}))
+    say = data["say_to_user"]
+    assert "on AWS Batch" in say and "can take many hours" in say and "close the map" in say
+
+
+@respx.mock
+async def test_fast_screen_optional_the_estimate_offers_both_and_the_fast_screen_as_optional(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "terrain_id": 37, "estimate_only": True}
+        )
+    )
+    say = data["say_to_user"]
+    assert "fast screen first" not in say.lower()
+    assert "The fast screen is optional" in say
+
+
+@respx.mock
+async def test_fast_screen_optional_a_fast_screen_says_it_is_a_first_look_without_saying_it_must_come_first(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
+    say = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))["say_to_user"]
+    assert "It is a first look" in say and "offer High resolution" in say
+
+
+async def test_fast_screen_optional_the_mode_argument_says_the_fast_screen_is_optional(_server):
+    tools = {t.name: t for t in await _server.mcp.list_tools()}
+    mode = tools["delineate_catchments"].parameters["properties"]["mode"]["description"]
+    assert "fast screen first" not in mode.lower() and "optional" in mode
+    assert "on AWS Batch, can take many hours" not in mode
+
+
+# ---------------------------------------------------------------------------
+# get_stream_corridor (epic 4445 W12.2, TASK-4489; replaces TASK-4044): the streams of a terrain at a threshold the agent
+# chooses, and the corridor round them, read from the terrain's KEPT drainage analysis. It starts nothing.
+# ---------------------------------------------------------------------------
+CORRIDOR = f"{PROJECT}terrain/37/stream-corridor/"
+CORRIDOR_RING = [[149.10, -35.28], [149.11, -35.28], [149.11, -35.27], [149.10, -35.27], [149.10, -35.28]]
+CORRIDOR_METHOD = (
+    "Stream corridor read on the platform from terrain 37's kept drainage analysis (high resolution, 5 m cells, "
+    "method 3.abc): streams draining at least 50 ha, widened 40 m each side."
+)
+
+
+def _corridor_doc(**over):
+    doc = {
+        "terrain_id": 37,
+        "terrain_title": "Sullivans Creek GA 5 m",
+        "grid": "full",
+        "resolution_m": 5.0,
+        "method_version": "3.abc",
+        "threshold_ha": 50.0,
+        "kept_stream_threshold_ha": 1.0,
+        "half_width_m": 40.0,
+        "area": {"kind": "line_catchments", "delineation_id": 9, "line_name": "Kaleen"},
+        "drainage_analysis": {"state": "current", "reason": None},
+        "read_from": "kept_drainage_analysis",
+        "ran_anything": False,
+        "stream_count": 2,
+        "stream_length_m": 3100.0,
+        "longest_stream_m": 2000.0,
+        "largest_drainage_area_ha": 812.4,
+        "streams": {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": [[149.101, -35.279], [149.105, -35.275]]},
+                    "properties": {"drainage_area_ha": 812.4, "length_m": 2000.0},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": [[149.108, -35.279], [149.105, -35.275]]},
+                    "properties": {"drainage_area_ha": 61.2, "length_m": 1100.0},
+                },
+            ],
+        },
+        "streams_simplified_m": 5.0,
+        "corridor": {
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [CORRIDOR_RING]},
+            "properties": {},
+        },
+        "corridor_area_ha": 24.8,
+        "corridor_simplified_m": 2.5,
+        "authored_method": CORRIDOR_METHOD,
+        "sentence": "Read from the kept drainage analysis. Nothing was run.",
+    }
+    doc.update(over)
+    return doc
+
+
+async def _corridor(srv, **args):
+    return _tool_json(
+        await _call_as_caller(
+            srv, "get_stream_corridor", {"project_id": 42, "terrain_id": 37, "threshold_ha": 50, **args}
+        )
+    )
+
+
+@respx.mock
+async def test_get_stream_corridor_reads_the_kept_streams_at_the_chosen_threshold(_server):
+    _mock_project()
+    route = respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=_corridor_doc()))
+    data = await _corridor(_server, delineation_id=9)
+    sent = route.calls.last.request.url.params
+    assert sent["threshold_ha"] == "50.0" and sent["half_width_m"] == "40.0" and sent["delineation_id"] == "9"
+    assert "bbox" not in sent and "grid" not in sent
+    assert data["outcome"] == "ready" and data["ran_anything"] is False
+    assert data["read_from"] == "kept_drainage_analysis" and data["threshold_ha"] == 50.0
+    assert data["resolution"] == "high resolution" and data["resolution_m"] == 5.0
+    # the corridor is a feature ready to be written as a mesh region; the streams come as figures, largest first
+    assert data["corridor"]["geometry"]["coordinates"] == [CORRIDOR_RING] and data["corridor_area_ha"] == 24.8
+    assert data["streams"] == [
+        {"drainage_area_ha": 812.4, "length_m": 2000.0},
+        {"drainage_area_ha": 61.2, "length_m": 1100.0},
+    ]
+    assert data["authored_method"] == CORRIDOR_METHOD
+    step = data["next_step"]
+    assert "write_input_layer" in step and "mesh_region" in step and "resolution" in step and "5 m" in step
+    assert "ask the user" in step.lower()
+    say = data["say_to_user"]
+    assert "2 streams draining at least 50 ha" in say and "24.8 ha" in say and "Nothing was run." in say
+    assert data["ui_url"].endswith("/catalogue/#/map/77?panel=catchments&line=9")
+
+
+@respx.mock
+async def test_get_stream_corridor_starts_nothing_and_is_read_only(_server):
+    _mock_project()
+    route = respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=_corridor_doc()))
+    await _corridor(_server, bbox=[149.1, -35.29, 149.12, -35.27], grid="quick", half_width_m=0)
+    for call in respx.calls:
+        assert call.request.method == "GET", call.request.url
+    assert route.call_count == 1
+    sent = route.calls.last.request.url.params
+    assert sent["bbox"] == "149.1,-35.29,149.12,-35.27" and sent["grid"] == "quick" and sent["half_width_m"] == "0.0"
+    tools = {t.name: t for t in await _server.mcp.list_tools()}
+    hints = tools["get_stream_corridor"].annotations
+    assert hints.readOnlyHint is True and hints.destructiveHint is False
+
+
+@respx.mock
+async def test_get_stream_corridor_gives_the_stream_lines_only_when_asked(_server):
+    _mock_project()
+    respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=_corridor_doc()))
+    data = await _corridor(_server, include_stream_lines=True)
+    assert data["streams"][0]["geometry"]["type"] == "LineString"
+    assert data["streams"][0]["drainage_area_ha"] == 812.4
+
+
+@respx.mock
+async def test_get_stream_corridor_relays_a_terrain_with_no_drainage_analysis_in_words_and_starts_nothing(_server):
+    _mock_project()
+    detail = (
+        "This terrain has no kept drainage analysis yet. Run a line on it (Catchments), then read the streams again. "
+        "Nothing was started."
+    )
+    respx.get(CORRIDOR).mock(
+        return_value=httpx.Response(
+            409, json={"error_code": "NO_DRAINAGE_ANALYSIS", "detail": detail, "ran_anything": False}
+        )
+    )
+    data = await _corridor(_server)
+    assert data["outcome"] == "refused" and data["error_code"] == "NO_DRAINAGE_ANALYSIS" and data["http_status"] == 409
+    assert data["ran_anything"] is False
+    assert detail in data["say_to_user"]
+    assert "delineate_catchments" in data["next_step"]
+    assert all(call.request.method == "GET" for call in respx.calls)
+
+
+@respx.mock
+async def test_get_stream_corridor_relays_an_out_of_date_analysis_and_no_streams(_server):
+    _mock_project()
+    sentence = (
+        "Read from the kept drainage analysis. Nothing was run. Drainage analysis is out of date (drainage corrections "
+        "have changed since). These streams are from the kept one until a line on this terrain runs again. "
+        "No stream drains 50 ha or more in this area. Lower threshold_ha or give a larger area."
+    )
+    doc = _corridor_doc(
+        drainage_analysis={"state": "out_of_date", "reason": "corrections"},
+        sentence=sentence,
+        stream_count=0,
+        streams={"type": "FeatureCollection", "features": []},
+        corridor=None,
+        corridor_area_ha=0.0,
+    )
+    respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=doc))
+    data = await _corridor(_server)
+    assert data["drainage_analysis"] == {"state": "out_of_date", "reason": "corrections"}
+    assert sentence in data["say_to_user"] and data["corridor"] is None
+    assert "write_input_layer" not in data.get("next_step", "")
+
+
+async def test_get_stream_corridor_checks_its_arguments_before_anything_is_sent(_server):
+    for args, needle in (
+        ({"bbox": [1, 2, 3]}, "bbox is [west, south, east, north]"),
+        ({"bbox": [3, 2, 1, 4]}, "bbox is [west, south, east, north]"),
+        ({"bbox": [1, 2, 3, 4], "delineation_id": 9}, "not both"),
+        ({"threshold_ha": 0}, "threshold_ha"),
+        ({"half_width_m": -1}, "half_width_m"),
+    ):
+        text = _tool_error_text(
+            await _call_as_caller(
+                _server, "get_stream_corridor", {"project_id": 42, "terrain_id": 37, "threshold_ha": 50, **args}
+            )
+        )
+        assert needle in text and "Nothing was sent" in text, (args, text)
+
+
+async def test_get_stream_corridor_words_use_none_of_the_retired_or_never_words(_server):
+    tools = {t.name: t for t in await _server.mcp.list_tools()}
+    blob = json.dumps(
+        tools["get_stream_corridor"].to_mcp_tool().model_dump(mode="json", by_alias=True, exclude_none=True)
+    )
+    never = re.compile(
+        r"\b(outlets?|crossings?|alignments?|stations?|divides?|pour points?|outlines?|networks?|cuts?|promote\w*)\b",
+        re.IGNORECASE,
+    )
+    assert never.findall(blob) == []
+    assert "kept drainage analysis" in blob and "mesh_region" in blob
+
+
+def test_get_stream_corridor_the_instructions_send_agents_to_it_for_the_mesh_region(env_vars):
+    text = reload_server().mcp.instructions
+    assert "get_stream_corridor" in text
+    assert "never derive streams off the platform" in text
+
+
+# ---------------------------------------------------------------------------
+# TASK-4559 review (epic 4445 W12 part 1, D16 parity): the estimate names where the run goes by the run's own rule, and
+# says when it waits for the terrain's drainage analysis first, as the Catchments footer does.
+# ---------------------------------------------------------------------------
+def _waits_estimate():
+    """Sullivans 765 on hydrata.com 20-11-26: no kept analysis yet, so the run waits for one on cloud compute, then reads
+    it on the web server."""
+    est = _estimate()
+    est["full"].update(
+        cells=4_862_360,
+        working_resolution_m=5.0,
+        runs_on="web_server",
+        expected_seconds={"low": 61, "high": 654},
+        can_take_hours=False,
+        drainage_analysis_first=True,
+        drainage_analysis_runs_on="batch",
+        drainage_analysis_seconds={"low": 60, "high": 649},
+    )
+    return est
+
+
+@respx.mock
+async def test_estimate_says_a_run_waits_for_the_drainage_analysis_first(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_waits_estimate()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "terrain_id": 37, "estimate_only": True}
+        )
+    )
+    say = data["say_to_user"]
+    assert "on the web server, after the drainage analysis (prepared first on AWS Batch, 60 s to 11 min)" in say
+    # a run that goes at once says nothing of a wait
+    assert say.count("after the drainage analysis") == 1
+
+
+@respx.mock
+async def test_estimate_of_a_run_that_goes_at_once_says_no_wait(_server):
+    _mock_project()
+    respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "terrain_id": 37, "estimate_only": True}
+        )
+    )
+    assert "after the drainage analysis" not in data["say_to_user"]

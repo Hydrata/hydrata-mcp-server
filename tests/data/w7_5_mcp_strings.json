@@ -29,7 +29,7 @@
   {
    "name": "SUGGESTIONS_NOTE",
    "old": "Diversion suggestions are information only: a drain that could send one catchment's water to its neighbour. Only a person ticks one, in the browser; no tool applies, ticks or undoes a diversion.",
-   "new": "Diversion suggestions are information only. Only a person ticks one, in the browser."
+   "new": "Diversion suggestions are information only. No tool ticks one: the person ticks it in the browser."
   },
   {
    "name": "BOUNDARY_RULE",
@@ -39,7 +39,7 @@
   {
    "name": "PERSON_ONLY",
    "old": "Only a person in the browser can tick a diversion, check one again, or confirm a delineation.",
-   "new": "Only a person can tick or check a diversion, or confirm a delineation."
+   "new": "Only a person checks a diversion or confirms a delineation, in the browser."
   },
   {
    "name": "DRAINAGE_WORDS",
@@ -74,7 +74,7 @@
   {
    "name": "_ticks_text (tail)",
    "old": "{PERSON_ONLY} Tell the user to open the link and check them; the delineation cannot be confirmed until then.",
-   "new": "{PERSON_ONLY} Give the user the link. It cannot be confirmed until they are checked."
+   "new": "{PERSON_ONLY} Give the user the link. A diversion to check never holds the confirm."
   },
   {
    "name": "_copied_from_text",
@@ -304,7 +304,7 @@
   {
    "name": "ADOPT_RULE",
    "old": "A promoted layer is a snapshot of a CONFIRMED line's catchments, published as a layer of the project (name, chainage, area and where each drains), to style, print and share like any other layer. It does not follow later changes to the line; it is marked 'the line has changed since', and promoting again replaces its contents. Only a person confirms a line, in the browser. A layer an agent promotes is marked as made by an agent and unreviewed until a person promotes it again.",
-   "new": "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains) and the line itself, drawn as the Catchments panel drew them. It does not follow later changes; adopting again replaces its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person adopts it again."
+   "new": "An adopted layer is a snapshot of a CONFIRMED line's catchments (name, chainage, area, where each drains) and the line itself, drawn as the Catchments panel drew them. It does not follow later changes; adopting again replaces its contents. Only a person confirms a line. A layer an agent adopts is unreviewed until a person accepts it on the map."
   },
   {
    "name": "adopt_catchments (not confirmed)",
