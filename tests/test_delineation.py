@@ -73,7 +73,7 @@ WARNINGS = [
 ]
 
 
-def _job(status="complete", mode="quick", **extra):
+def _job(status="complete", mode="full", **extra):
     job = {
         "status": status,
         "progress": 100.0 if status == "complete" else 40.0,
@@ -227,8 +227,8 @@ def _doc(**over):
 
 
 def _estimate(full_can_run=True):
-    quick = {
-        "mode": "quick",
+    base = {
+        "mode": "full",
         "cells": 90_000,
         "working_resolution_m": 30.0,
         "coarsened": False,
@@ -240,14 +240,14 @@ def _estimate(full_can_run=True):
         "may_move_to_batch": False,
         "note": "Flat or built-up ground is slower.",
     }
-    full = dict(quick, mode="full", cells=13_700_000, working_resolution_m=1.0, runs_on="batch")
+    full = dict(base, cells=13_700_000, working_resolution_m=1.0, runs_on="batch")
     full.update(
         expected_seconds={"low": 66, "high": 7750},
         can_take_hours=True,
         can_run=full_can_run,
         cannot_run_reason=None if full_can_run else NO_LANE,
     )
-    return {"terrain_id": 37, "terrain_resolution_m": 1.0, "on_box_max_cells": 250000, "quick": quick, "full": full}
+    return {"terrain_id": 37, "terrain_resolution_m": 1.0, "on_box_max_cells": 250000, "full": full}
 
 
 def _summary(job=None):
@@ -320,12 +320,12 @@ async def test_delineate_catchments_returns_at_once_with_id_ui_url_and_estimate(
     assert body["geometry"] == {"type": "LineString", "coordinates": LINE}
     assert body["name"] == "W4 line" and body["start_chainage_m"] == 5000
     assert body["min_area_ha"] == 1.0 and body["max_divert_area_ha"] == 5.0 and body["terrain_id"] == 37
-    assert body["mode"] == "quick"  # the default
+    assert "mode" not in body  # one run: High resolution (epic 4674 D10)
     assert body["authored_method"].startswith("Placed on the toe") and body["sources"][0]["title"] == "Flood study"
     assert post.calls[0].request.headers["authorization"] == CALLER_KEY
     assert data["outcome"] == "started" and data["delineation_id"] == 9 and data["job"]["status"] == "pending"
     assert data["ui_url"].endswith(MAP_URL)
-    assert data["estimate"]["quick"]["runs_on"] == "web_server" and data["estimate"]["full"]["can_run"] is True
+    assert set(data["estimate"]) == {"terrain_id", "terrain_resolution_m", "on_box_max_cells", "full"}
     assert "get_delineation" in data["next_step"]
     # returned at once: only the estimate, the start and the map lookup were called; no read of the delineation
     urls = [str(c.request.url) for c in respx.calls]
@@ -338,7 +338,7 @@ async def test_delineate_catchments_returns_at_once_with_id_ui_url_and_estimate(
 async def test_delineate_catchments_a_full_run_on_a_site_with_no_lane_is_relayed_and_nothing_is_made(_server):
     est = respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate(full_can_run=False)))
     post = respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
-    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "mode": "full"}))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))
     assert est.call_count == 1 and post.call_count == 0
     assert (
         data["outcome"] == "cannot_run"
@@ -360,8 +360,7 @@ async def test_delineate_catchments_estimate_only_runs_nothing_and_gives_the_ran
     assert post.call_count == 0 and data["outcome"] == "estimate"
     assert data["estimate"]["full"]["expected_seconds"] == {"low": 66, "high": 7750}
     say = data["say_to_user"]
-    assert "quick" in say and "full" in say and "batch" in say.lower() and "hours" in say
-    assert "Flat or built-up ground is slower" in say
+    assert "High resolution" in say and "quick" not in say and "batch" in say.lower() and "hours" in say
 
 
 @respx.mock
@@ -474,9 +473,11 @@ async def test_delineate_with_an_id_and_mode_full_starts_the_full_run_and_never_
         return_value=httpx.Response(200, json=_doc(job=_job("running", "full", runs_on="batch")))
     )
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
-    assert json.loads(run.calls[0].request.content) == {"mode": "full"}
+    assert json.loads(run.calls[0].request.content) == {}
     assert read.call_count == 1  # one read, not a wait
     assert (
         data["outcome"] == "started"
@@ -486,7 +487,7 @@ async def test_delineate_with_an_id_and_mode_full_starts_the_full_run_and_never_
     say = data["say_to_user"]
     assert "up to about 24 h" in say and "High resolution started on AWS Batch" in say and "close the map" in say
     # the shown result is already high resolution (not coarsened), so it ran in place: no copy
-    assert data["created_copy"] is False and data["delineation_id"] == 9 and "copy" not in say
+    assert "created_copy" not in data and data["delineation_id"] == 9 and "copy" not in say
     assert "stays usable" in say
 
 
@@ -498,7 +499,9 @@ async def test_delineate_with_an_id_and_mode_full_where_the_site_has_no_lane_rel
     respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json=_estimate(full_can_run=False)))
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(job=failed)))
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
     assert data["outcome"] == "cannot_run" and NO_LANE in data["say_to_user"]
     assert "did not start: " + NO_LANE + " Result unchanged." in data["say_to_user"]
@@ -519,7 +522,9 @@ async def test_a_run_on_a_confirmed_line_says_the_confirmation_lapses(_server):
     respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json=_estimate()))
     read = respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(job=running)))
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
     assert data["outcome"] == "started" and data["confirmation_lapses"] is True
     assert CONFIRMED_LAPSES in data["say_to_user"]
@@ -533,7 +538,9 @@ async def test_a_refused_run_on_a_confirmed_line_carries_the_same_sentence_for_t
     respx.post(RUN).mock(return_value=httpx.Response(403, json={"error_code": "AGENT_KEY_SCOPE", "detail": detail}))
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_confirmed_doc()))
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
     assert data["outcome"] == "refused" and data["confirmed"] is True
     say = data["say_to_user"]
@@ -548,7 +555,9 @@ async def test_a_run_on_a_line_that_is_not_confirmed_says_nothing_of_a_confirmat
     respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json=_estimate()))
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(job=running)))
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
     assert "confirmation_lapses" not in data and "lapses" not in data["say_to_user"]
 
@@ -560,7 +569,9 @@ async def test_a_refused_run_on_a_persons_unconfirmed_line_says_nothing_of_a_con
     respx.post(RUN).mock(return_value=httpx.Response(403, json={"error_code": "AGENT_KEY_SCOPE", "detail": detail}))
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc()))
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "quick"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
     assert data["outcome"] == "refused" and "confirmed" not in data and "lapses" not in data["say_to_user"]
 
@@ -571,7 +582,9 @@ async def test_a_refused_run_whose_line_cannot_be_read_is_still_the_refusal(_ser
     respx.post(RUN).mock(return_value=httpx.Response(403, json={"error_code": "AGENT_KEY_SCOPE", "detail": "No."}))
     respx.get(ONE).mock(return_value=httpx.Response(404, json={"detail": "Not found."}))
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
     assert data["outcome"] == "refused" and "lapses" not in data["say_to_user"]
 
@@ -1110,7 +1123,7 @@ async def test_no_tool_can_apply_a_diversion(_server):
     respx.post(BOUNDARY).mock(return_value=httpx.Response(201, json=_boundary_reply()))
     calls = [
         ("delineate_catchments", NEW_ARGS),
-        ("delineate_catchments", {"project_id": 42, "delineation_id": 9, "min_area_ha": 2.0, "mode": "full"}),
+        ("delineate_catchments", {"project_id": 42, "delineation_id": 9, "min_area_ha": 2.0, "run_again": True}),
         ("delineate_catchments", {"project_id": 42, "delineation_id": 9, "estimate_only": True}),
         ("get_delineation", {"project_id": 42, "delineation_id": 9, "timeout_seconds": 0}),
         ("use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101]}),
@@ -1180,9 +1193,8 @@ def test_instructions_send_agents_to_these_tools_for_the_catchment_and_the_bound
         "never draw a catchment or a model boundary off the platform",
         "terrain_profile",
         "natural ground where the water arrives, not on a crest",
-        "fast screen is optional",  # TASK-4567: was 'fast screen first'
-        "High resolution",
-        "(high res)",
+        "Every line runs at the terrain's own resolution (High resolution), on the line itself",  # TASK-4689
+        "More than one line",
         "authored_method",
     ):
         assert needle in text, needle
@@ -1193,9 +1205,11 @@ def test_instructions_send_agents_to_these_tools_for_the_catchment_and_the_bound
 
 
 # ---------------------------------------------------------------------------
-# Fast screen and High resolution (operator, 15-11-26): labelled plainly; High resolution on a fast screen makes a copy
+# An old coarse result (epic 4674 D10, TASK-4689): no run makes one any more. A line that still shows one reads the API's label
+# and what to do about it, relayed as the API gives them; running it again runs on the line itself (no copy).
 # ---------------------------------------------------------------------------
-COPY = f"{LIST}12/"
+OLD_LABEL = "Old fast screen"  # the API's label (W2.3), relayed as data: no string of this server says it
+OLD_FIX = "Run at high resolution, or delete the line."
 FAST_SHOWN = {
     "mode": "quick",
     "working_resolution_m": 30.0,
@@ -1204,70 +1218,50 @@ FAST_SHOWN = {
     "computed_at": "2026-11-14T10:01:00+00:00",
     "replaced": None,
     "fast_screen": True,
-    "label": "Fast screen (low resolution)",
+    "old_fast_screen": True,
+    "label": OLD_LABEL,
+    "fix_sentence": OLD_FIX,
     "profile_available": False,
 }
 
 
-def _copy_doc(**over):
-    line = {**_doc()["line"], "id": 12, "name": "W4 line (high res)", "derived_from": {"id": 9, "name": "W4 line"}}
-    fields = {"line": line, "shown_result": None, "catchments": [], "job": _job("running", "full", runs_on="batch")}
-    return _doc(**{**fields, **over})
-
-
 @respx.mock
 async def test_high_resolution_on_a_fast_screen_reports_the_copy_and_sends_the_agent_to_it(_server):
+    """Running a line over an old coarse result runs on the line itself: no copy, the same id, one read of it."""
     _mock_project()
     run = respx.post(RUN).mock(
-        return_value=httpx.Response(
-            202,
-            json={
-                **_summary(_job("pending", "full", runs_on="batch")),
-                "line": {k: v for k, v in _copy_doc()["line"].items() if k != "geometry"},
-                "delineation_id": 12,
-                "created_copy": True,
-                "derived_from": 9,
-            },
+        return_value=httpx.Response(202, json=_summary(_job("pending", "full", runs_on="batch")))
+    )
+    read = respx.get(ONE).mock(
+        return_value=httpx.Response(200, json=_doc(shown_result=FAST_SHOWN, job=_job("running", runs_on="batch")))
+    )
+    respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json=_estimate()))
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
         )
     )
-    source_read = respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result=FAST_SHOWN)))
-    copy_read = respx.get(COPY).mock(return_value=httpx.Response(200, json=_copy_doc()))
-    copy_estimate = respx.get(f"{COPY}estimate/").mock(return_value=httpx.Response(200, json=_estimate()))
-    raw = await _call_as_caller(
-        _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"}
-    )
-    data, text = _tool_json(raw), raw["content"][0]["text"]
-    assert json.loads(run.calls[0].request.content) == {"mode": "full"}
-    assert copy_read.call_count == 1 and copy_estimate.call_count == 1 and source_read.call_count == 0
-    assert data["outcome"] == "started" and data["created_copy"] is True
-    assert data["delineation_id"] == 12 and data["source_delineation_id"] == 9
-    assert data["derived_from"] == {"id": 9, "name": "W4 line"}
-    assert "delineation_id=12" in data["next_step"] and data["ui_url"].endswith("panel=catchments&line=12")
-    assert data["summary"]["delineation_id"] == 12 and data["summary"]["created_copy"] is True
+    assert json.loads(run.calls[0].request.content) == {} and read.call_count == 1
+    assert data["outcome"] == "started" and data["delineation_id"] == 9
+    assert "created_copy" not in data and "source_delineation_id" not in data and "derived_from" not in data
+    assert "delineation_id=9" in data["next_step"] and data["ui_url"].endswith("panel=catchments&line=9")
     say = data["say_to_user"]
-    assert "High resolution runs on a copy, W4 line (high res) (delineation 12)." in say
-    assert "The fast screen (delineation 9) stays. Read delineation 12 from now on." in say
-    assert "W4 line (high res)" in say and "copy of delineation 9 (W4 line)" in say
-    # the line names are a person's words: wrapped as data on the wire
-    assert "<untrusted-data>W4 line (high res)</untrusted-data>" in text
-    assert "copy of delineation 9 (<untrusted-data>W4 line</untrusted-data>)" in text
+    assert "copy" not in say.lower() and OLD_FIX in say
 
 
 @respx.mock
 async def test_a_second_high_resolution_while_the_copy_runs_names_the_running_copy(_server):
+    """A run asked for while one runs is the API's refusal in words, on the same line: no other line to follow."""
     _mock_project()
-    detail = (
-        "A High resolution copy of this line is already running (W4 line (high res), delineation 12): follow that one. "
-        "Cancel it first to start another."
-    )
-    respx.post(RUN).mock(
-        return_value=httpx.Response(409, json={"error_code": "RUN_IN_PROGRESS", "detail": detail, "delineation_id": 12})
-    )
+    detail = "A run is in progress for this delineation. Cancel it, or wait for it to finish."
+    respx.post(RUN).mock(return_value=httpx.Response(409, json={"error_code": "RUN_IN_PROGRESS", "detail": detail}))
     data = _tool_json(
-        await _call_as_caller(_server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "mode": "full"})
+        await _call_as_caller(
+            _server, "delineate_catchments", {"project_id": 42, "delineation_id": 9, "run_again": True}
+        )
     )
-    assert data["outcome"] == "refused" and data["delineation_id"] == 12
-    assert "delineation_id=12" in data["next_step"] and "Follow delineation 12" in data["say_to_user"]
+    assert data["outcome"] == "refused" and data["error_code"] == "RUN_IN_PROGRESS" and detail in data["say_to_user"]
+    assert "delineation_id" not in data and "copy" not in data["say_to_user"].lower()
 
 
 @respx.mock
@@ -1275,54 +1269,61 @@ async def test_get_delineation_says_plainly_that_a_fast_screen_is_low_resolution
     _mock_project()
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result=FAST_SHOWN)))
     data = await _read(_server, timeout_seconds=0)
-    assert data["resolution"] == "fast screen (low resolution)" and data["profile_available"] is False
-    assert data["summary"]["resolution"] == "fast screen (low resolution)"
-    assert "Fast screen: no ground profile anywhere." in data["omitted"] and "profile" not in data
+    assert data["resolution"] == OLD_LABEL and data["profile_available"] is False
+    assert data["summary"]["resolution"] == OLD_LABEL
+    assert "No ground profile for this result." in data["omitted"] and "profile" not in data
     say = data["say_to_user"]
-    assert "Fast screen (low resolution) at " in say
-    assert "first look at low resolution" in say and "offer High resolution" in say
-    assert "Fast screen: no ground profile anywhere. Run High resolution to see it." in say
+    assert f"{OLD_LABEL} at 30 m on a 5 m terrain. {OLD_FIX}" in say and say.count(OLD_LABEL) == 1
 
 
 @respx.mock
 async def test_get_delineation_says_a_lumped_fast_screen_shows_one_catchment_per_section(_server):
-    """TASK-4532: a fast screen is one whole catchment per section; an older fast screen (not lumped) does not say so."""
+    """TASK-4532: an old lumped result is one whole catchment per section; one not lumped does not say so."""
     _mock_project()
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result={**FAST_SHOWN, "lumped": True})))
     say = (await _read(_server, timeout_seconds=0))["say_to_user"]
-    assert "A fast screen shows one catchment per section of the line" in say
+    assert "One catchment per section: no smaller catchments" in say
     respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result=FAST_SHOWN)))
-    assert "one catchment per section" not in (await _read(_server, timeout_seconds=0))["say_to_user"]
+    assert "One catchment per section" not in (await _read(_server, timeout_seconds=0))["say_to_user"]
 
 
 @respx.mock
 async def test_get_delineation_says_high_resolution_and_which_line_a_copy_came_from(_server):
+    """A High resolution result reads its label; a line copied before epic 4674 D10 names no line it came from."""
     _mock_project()
-    high = {**FAST_SHOWN, "mode": "full", "coarsened": False, "fast_screen": False, "label": "High resolution"}
+    high = {
+        **FAST_SHOWN,
+        "mode": "full",
+        "coarsened": False,
+        "fast_screen": False,
+        "old_fast_screen": False,
+        "label": "High resolution",
+        "fix_sentence": None,
+    }
     high.pop("profile_available")
-    respx.get(ONE).mock(
-        return_value=httpx.Response(200, json=_copy_doc(shown_result=high, job=_job("complete", "full")))
-    )
+    line = {**_doc()["line"], "id": 9, "derived_from": {"id": 7, "name": "W4 line"}}  # an older API's field: ignored
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(line=line, shown_result=high)))
     data = await _read(_server, timeout_seconds=0)
-    assert data["resolution"] == "high resolution" and data["profile_available"] is True
-    assert data["derived_from"]["id"] == 9
+    assert data["resolution"] == "High resolution" and data["profile_available"] is True
+    assert "derived_from" not in data
     say = data["say_to_user"]
-    assert "High resolution at " in say and "Its fast screen is kept." in say  # the source's fast screen, kept
-    assert "High resolution copy of delineation 9 (W4 line)" in say
-    assert "first look" not in say
+    assert "High resolution at " in say and "copy" not in say.lower() and OLD_FIX not in say
 
 
 @respx.mock
 async def test_get_delineation_on_an_older_api_counts_a_coarsened_quick_result_as_a_fast_screen(_server):
+    """Only the API says a result is old (`old_fast_screen`, with its label): a read without them is relayed as High
+    resolution and says nothing old."""
     _mock_project()
-    old = {k: v for k, v in FAST_SHOWN.items() if k not in ("fast_screen", "label", "profile_available")}
-    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result=old)))
+    unlabelled = {k: v for k, v in FAST_SHOWN.items() if k not in ("old_fast_screen", "label", "fix_sentence")}
+    respx.get(ONE).mock(return_value=httpx.Response(200, json=_doc(shown_result=unlabelled)))
     data = await _read(_server, timeout_seconds=0)
-    assert data["resolution"] == "fast screen (low resolution)"
+    assert data["resolution"] == "high resolution" and OLD_FIX not in data["say_to_user"]
 
 
 @respx.mock
 async def test_the_estimate_says_high_resolution_makes_a_copy(_server):
+    """The estimate is High resolution only, and says nothing of a copy even from an older API that sends the flag."""
     _mock_project()
     respx.get(f"{ONE}estimate/").mock(return_value=httpx.Response(200, json={**_estimate(), "full_makes_copy": True}))
     data = _tool_json(
@@ -1331,8 +1332,8 @@ async def test_the_estimate_says_high_resolution_makes_a_copy(_server):
         )
     )
     say = data["say_to_user"]
-    assert "Fast screen (mode 'quick', low resolution)" in say and "High resolution (mode 'full')" in say
-    assert "High resolution runs on a copy, '<name> (high res)'. The fast screen stays." in say
+    assert say.startswith("Estimate (a range). High resolution: 13,700,000 cells")
+    assert "copy" not in say.lower() and "mode" not in say
 
 
 @respx.mock
@@ -1345,7 +1346,8 @@ async def test_a_boundary_from_a_fast_screen_says_so(_server):
             _server, "use_catchments_as_boundary", {"project_id": 42, "delineation_id": 9, "catchment_ids": [101, 102]}
         )
     )
-    assert data["outcome"] == "made" and "From a fast screen: tell the person" in data["say_to_user"]
+    assert data["outcome"] == "made"
+    assert f"From an old coarse result ({OLD_LABEL}. {OLD_FIX}): a run may move the boundary." in data["say_to_user"]
 
 
 # ---------------------------------------------------------------------------
@@ -1356,7 +1358,7 @@ OUT_OF_DATE = "Drainage analysis is out of date. Next run takes longer."
 
 
 def _drainage(state, sentence=None, **extra):
-    return {"state": state, "grid": "quick", "reason": None, "line_waiting": False, "sentence": sentence, **extra}
+    return {"state": state, "grid": "full", "reason": None, "line_waiting": False, "sentence": sentence, **extra}
 
 
 @respx.mock
@@ -1399,12 +1401,12 @@ async def test_drainage_analysis_wait_a_current_analysis_adds_no_sentence(_serve
 async def test_drainage_analysis_wait_a_new_line_on_a_terrain_being_prepared_is_told_it_waits(_server):
     _mock_project()
     estimate = _estimate()
-    estimate["quick"]["drainage_analysis"] = _drainage("being_prepared", BEING_PREPARED)
+    estimate["full"]["drainage_analysis"] = _drainage("being_prepared", BEING_PREPARED)
     respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=estimate))
     respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
     data = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))
     assert data["outcome"] == "started" and BEING_PREPARED in data["say_to_user"]
-    assert data["summary"]["estimate"]["quick"]["drainage_analysis"] == "being_prepared"
+    assert data["summary"]["estimate"]["drainage_analysis"] == "being_prepared"
 
 
 @respx.mock
@@ -1419,7 +1421,7 @@ async def test_drainage_analysis_wait_the_estimate_names_the_grid_whose_analysis
         )
     )
     say = data["say_to_user"]
-    assert f"High resolution (mode 'full'): {OUT_OF_DATE}" in say
+    assert OUT_OF_DATE in say
     assert say.count("Drainage analysis") == 1
 
 
@@ -1774,8 +1776,7 @@ async def test_promote_get_delineation_of_a_line_never_promoted_says_nothing_of_
 
 
 # ---------------------------------------------------------------------------
-# TASK-4567 (operator, 21-11-26: 'just make it optional instead of necessary now'): the fast screen is optional. A new
-# line can go straight to its run at the terrain's resolution, on that line (no copy); the instructions say so.
+# TASK-4567, then epic 4674 D10 (TASK-4689): there is one run, High resolution, on the line itself; nothing offers another.
 # ---------------------------------------------------------------------------
 def _small_estimate():
     """A terrain small enough for the web server at its own resolution: High resolution in minutes, not hours."""
@@ -1788,10 +1789,8 @@ def _small_estimate():
 
 def test_fast_screen_optional_the_instructions_say_the_fast_screen_is_optional(env_vars):
     text = reload_server().mcp.instructions
-    assert "fast screen first" not in text.lower()
-    assert "The fast screen is optional" in text
-    assert "A new line can go straight to its run at the terrain's resolution (mode 'full')" in text
-    assert "(high res)" in text  # the copy route over a fast screen is kept
+    assert "fast screen" not in text.lower() and "(high res)" not in text and "mode 'full'" not in text
+    assert "Every line runs at the terrain's own resolution (High resolution), on the line itself" in text
 
 
 @respx.mock
@@ -1799,14 +1798,13 @@ async def test_fast_screen_optional_a_new_line_goes_straight_to_high_resolution_
     _mock_project()
     respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_small_estimate()))
     post = respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary(_job("pending", "full"))))
-    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "mode": "full"}))
-    assert post.call_count == 1 and json.loads(post.calls[0].request.content)["mode"] == "full"
-    assert data["outcome"] == "started" and data["mode"] == "full" and data["delineation_id"] == 9
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))
+    assert post.call_count == 1 and "mode" not in json.loads(post.calls[0].request.content)
+    assert data["outcome"] == "started" and "mode" not in data and data["delineation_id"] == 9
     say = data["say_to_user"]
-    assert "High resolution (mode 'full') delineation 'W4 line'" in say and "on the web server" in say
-    assert "on this line (no copy)" in say
+    assert "High resolution delineation 'W4 line'" in say and "on the web server" in say
+    assert "copy" not in say.lower()
     assert "many hours" not in say  # a small terrain: minutes, and the estimate says so
-    assert "offer High resolution" not in say  # it is already the High resolution run
 
 
 @respx.mock
@@ -1814,13 +1812,14 @@ async def test_fast_screen_optional_a_big_new_line_straight_to_high_resolution_s
     _mock_project()
     respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
     respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary(_job("pending", "full", runs_on="batch"))))
-    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", {**NEW_ARGS, "mode": "full"}))
+    data = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))
     say = data["say_to_user"]
     assert "on AWS Batch" in say and "can take many hours" in say and "close the map" in say
 
 
 @respx.mock
 async def test_fast_screen_optional_the_estimate_offers_both_and_the_fast_screen_as_optional(_server):
+    """The estimate offers the one run there is."""
     _mock_project()
     respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
     data = _tool_json(
@@ -1829,24 +1828,25 @@ async def test_fast_screen_optional_the_estimate_offers_both_and_the_fast_screen
         )
     )
     say = data["say_to_user"]
-    assert "fast screen first" not in say.lower()
-    assert "The fast screen is optional" in say
+    assert "fast screen" not in say.lower() and say.count("High resolution") == 1 and say.endswith("Nothing was run.")
 
 
 @respx.mock
 async def test_fast_screen_optional_a_fast_screen_says_it_is_a_first_look_without_saying_it_must_come_first(_server):
+    """A new line is the High resolution run: it is never called a first look, nor offered High resolution after."""
     _mock_project()
     respx.get(ESTIMATE).mock(return_value=httpx.Response(200, json=_estimate()))
     respx.post(LIST).mock(return_value=httpx.Response(202, json=_summary()))
     say = _tool_json(await _call_as_caller(_server, "delineate_catchments", NEW_ARGS))["say_to_user"]
-    assert "It is a first look" in say and "offer High resolution" in say
+    assert "first look" not in say and "offer High resolution" not in say
 
 
 async def test_fast_screen_optional_the_mode_argument_says_the_fast_screen_is_optional(_server):
+    """There is no mode argument: run_again is the one way to run a line again."""
     tools = {t.name: t for t in await _server.mcp.list_tools()}
-    mode = tools["delineate_catchments"].parameters["properties"]["mode"]["description"]
-    assert "fast screen first" not in mode.lower() and "optional" in mode
-    assert "on AWS Batch, can take many hours" not in mode
+    props = tools["delineate_catchments"].parameters["properties"]
+    assert "mode" not in props
+    assert "fast screen" not in props["run_again"]["description"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1947,12 +1947,12 @@ async def test_get_stream_corridor_reads_the_kept_streams_at_the_chosen_threshol
 async def test_get_stream_corridor_starts_nothing_and_is_read_only(_server):
     _mock_project()
     route = respx.get(CORRIDOR).mock(return_value=httpx.Response(200, json=_corridor_doc()))
-    await _corridor(_server, bbox=[149.1, -35.29, 149.12, -35.27], grid="quick", half_width_m=0)
+    await _corridor(_server, bbox=[149.1, -35.29, 149.12, -35.27], half_width_m=0)
     for call in respx.calls:
         assert call.request.method == "GET", call.request.url
     assert route.call_count == 1
     sent = route.calls.last.request.url.params
-    assert sent["bbox"] == "149.1,-35.29,149.12,-35.27" and sent["grid"] == "quick" and sent["half_width_m"] == "0.0"
+    assert sent["bbox"] == "149.1,-35.29,149.12,-35.27" and "grid" not in sent and sent["half_width_m"] == "0.0"
     tools = {t.name: t for t in await _server.mcp.list_tools()}
     hints = tools["get_stream_corridor"].annotations
     assert hints.readOnlyHint is True and hints.destructiveHint is False

@@ -87,3 +87,11 @@ def test_the_word_is_adopt_not_promote():
     for tool in json.loads((Path(__file__).parent / "snapshots" / "tools.json").read_text()):
         assert not re.search("promot", json.dumps(tool), re.I), tool["name"]
     assert not any(re.search("promot", str(row["new"]), re.I) for row in ROWS)
+
+
+def test_no_quick_mode_no_fast_screen_words_remain():
+    """TASK-4689 (epic 4674 D10): no string the delineation tools hold says fast screen, offers mode 'quick' or a copy of
+    a line run at high resolution. An old coarse result is relayed in the API's own label and sentence."""
+    said = SOURCE.lower()
+    for old in ("fast screen", "mode 'quick'", "mode='quick'", "(high res)", "runs on a copy"):
+        assert old not in said, old

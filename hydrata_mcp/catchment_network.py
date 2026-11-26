@@ -1,8 +1,8 @@
 """Epic 4445 W11.4 - sub-catchments through four tools (D16: an agent edits; what overrules the terrain is a proposal).
 
 create_sub_catchments  - creates sub-catchments from a High resolution line's catchments, by a target number (about 20 by
-                         default) or a stream threshold, with forced points; or creates a set again. A fast-screen result is
-                         refused with the engine's sentence ('High res only', D20). A terrain too large for the web server is
+                         default) or a stream threshold, with forced points; or creates a set again. An old coarse result
+                         is refused with the engine's sentence ('High res only', D20). A terrain too large for the web server is
                          done on cloud compute: the answer is 'creating', and get_sub_catchments waits for it.
 get_sub_catchments     - the sets of a line, or one set read compactly: nodes, sub-catchments, reaches and their facts (each
                          fact's definition, unit and source once, in `fact_definitions`), the 'can share water' notes, the
@@ -430,7 +430,7 @@ def _refused(body, status: int, what: str) -> dict:
             out[key] = reply[key]
     if reply.get("error_code") in ("HIGH_RES_ONLY", "NOT_RUN"):
         out["next_step"] = (
-            "Run the line at High resolution (delineate_catchments with mode 'full'), wait with get_delineation, then "
+            "Run the line again (delineate_catchments with run_again=True), wait with get_delineation, then "
             "create the sub-catchments."
         )
     return out
@@ -485,8 +485,8 @@ async def create_sub_catchments(
     """Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,
     slope, flow length...), the nodes' total catchments and the reaches between nodes.
 
-    The line must have a High resolution result: a fast-screen result is refused with the sentence 'High res only' (run
-    the line at High resolution first). Creating is by a target number (about 20 by default) or a stream threshold, not
+    The line must have a High resolution result: an old coarse result is refused with the sentence 'High res only' (run
+    the line again first). Creating is by a target number (about 20 by default) or a stream threshold, not
     both. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and
     get_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),
     and give them the link (`ui_url`). Shapes stay on the map. With estimate_only, nothing is created: the answer is

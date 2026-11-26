@@ -642,7 +642,7 @@
       "readOnlyHint": false,
       "title": "Create sub-catchments from a line's catchments"
     },
-    "description": "Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,\nslope, flow length...), the nodes' total catchments and the reaches between nodes.\n\nThe line must have a High resolution result: a fast-screen result is refused with the sentence 'High res only' (run\nthe line at High resolution first). Creating is by a target number (about 20 by default) or a stream threshold, not\nboth. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and\nget_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),\nand give them the link (`ui_url`). Shapes stay on the map. With estimate_only, nothing is created: the answer is\nthe threshold and number Create would make (the number made can differ from the one asked for).",
+    "description": "Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,\nslope, flow length...), the nodes' total catchments and the reaches between nodes.\n\nThe line must have a High resolution result: an old coarse result is refused with the sentence 'High res only' (run\nthe line again first). Creating is by a target number (about 20 by default) or a stream threshold, not\nboth. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and\nget_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),\nand give them the link (`ui_url`). Shapes stay on the map. With estimate_only, nothing is created: the answer is\nthe threshold and number Create would make (the number made can differ from the one asked for).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -971,7 +971,7 @@
       "readOnlyHint": false,
       "title": "Make catchments from a delineation line, or change its settings"
     },
-    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. No tool ticks a diversion or confirms; only a person confirms. A diversion an agent\nticks waits until a person accepts it on the map. There is no tool that deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `mode='full'` starts High resolution: when the line's result is a fast screen (low resolution), Hydrata\nmakes a COPY of the line, '<name> (high res)', and runs there, so the two can be compared; the result then names\nthe copy's `delineation_id` (`created_copy` true): read THAT one with get_delineation.\n\nThe fast screen is optional: a NEW delineation with `mode='full'` goes straight to High resolution, on that line\nitself (no copy, the name as given). Say its estimate first (`estimate_only`).",
+    "description": "Make catchments from a delineation line on the project's terrain, or change the settings of your own.\n\nA NEW delineation starts a job and returns AT ONCE with `delineation_id`, `ui_url` (the map on this line's\nCatchments pane) and the `estimate` (cells, resolution, where it runs, expected time range); follow it with\nget_delineation. It never waits on a run. Nothing is confirmed: what you make is unreviewed until a person\nconfirms it in the browser. No tool ticks a diversion or confirms; only a person confirms. A diversion an agent\nticks waits until a person accepts it on the map. There is no tool that deletes a delineation or moves its line.\n\nThe line has an upstream side for each section (`side`): Hydrata adopts the side most ground arrives from unless\nyou pass one, and ground on a section's downstream side is left out (one sentence says how much). Every reply with a\nresult names the side used per section; relay it.\n\nWith `delineation_id`: changing the name, start chainage, either area or the side regroups the stored result without\nrepeating the terrain step (no new job). A person's diversion ticks survive the change: they are re-applied and\nmarked check again until a person checks them; say so. A delineation a person made or confirmed is refused in\nwords. `run_again=True` runs the line again; its result replaces the one shown.\n\nEvery run is High resolution, at the terrain's own resolution, on the line itself. A big terrain runs on AWS Batch\nand can take many hours; the person can close the map. Say the estimate first (`estimate_only`). A project has one\nline unless the person turns \"More than one line\" on in the browser: a second line is refused in words.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -990,7 +990,7 @@
             }
           ],
           "default": null,
-          "description": "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with mode='full', to start High resolution (on a copy of the line when its result is a fast screen; on the line itself when it has no result). A delineation a person made or confirmed is refused."
+          "description": "Omit to make a NEW delineation. Give the id of YOUR OWN unconfirmed delineation to change its name, start_chainage_m, min_area_ha or max_divert_area_ha (the result is regrouped, no new job) or, with run_again=True, to run it again. A delineation a person made or confirmed is refused."
         },
         "estimate_only": {
           "default": false,
@@ -1039,22 +1039,6 @@
           "default": null,
           "description": "Minimum catchment area in hectares: smaller catchments are grouped with a neighbour"
         },
-        "mode": {
-          "anyOf": [
-            {
-              "enum": [
-                "quick",
-                "full"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "'quick' (the default for a new delineation) is the FAST SCREEN: low resolution, coarsened to the web server's limit, seconds to a couple of minutes; an optional first look. 'full' is HIGH RESOLUTION: the terrain's own resolution; a big terrain runs on AWS Batch and can take many hours (up to about 24), and the person can close the map. The fast screen is optional: a new line can go straight to 'full', on that line itself (no copy); say its estimate first (estimate_only). With delineation_id, 'full' starts High resolution: over a fast screen it makes a COPY of the line, '<name> (high res)', and runs there (the fast screen stays, for comparison; read the copy's delineation_id with get_delineation); 'quick' runs the fast screen again."
-        },
         "name": {
           "default": "",
           "description": "A new delineation's name (required); with delineation_id, the new name",
@@ -1063,6 +1047,11 @@
         "project_id": {
           "description": "The project ID (Contributor rights)",
           "type": "integer"
+        },
+        "run_again": {
+          "default": false,
+          "description": "With delineation_id: run the line again (after a failure, on a newer terrain, or over an old result). Its result replaces the one shown, on the line itself.",
+          "type": "boolean"
         },
         "side": {
           "anyOf": [
@@ -1408,7 +1397,7 @@
       "readOnlyHint": true,
       "title": "Wait for and read a delineation"
     },
-    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it (a person's diversion tick keeps a confirmation; when a change to the catchments lapsed\nit, `delineation.confirmation_lapsed` says why until a person confirms again), the working and terrain resolution and\nthe tally. `timed_out` is normal: call again;\nit never starts a second job. `resolution` says plainly whether the result is a 'fast screen (low resolution)' (a\nfirst look: say so, and offer High resolution before the person relies on it; its profile is not available) or\n'high resolution'; `shown_result` carries the API's fields (mode quick or full, fast_screen, label). A High\nresolution copy of a line says which line it came from (`derived_from`). `full_run` reports a High resolution run's\nprogress, elapsed time, expected finish, where it runs and whether it was handed to Batch. `drainage_analysis` says\nwhether the terrain's drainage analysis is being prepared (the run waits for it) or out of date (the next run works it\nout again), with the sentence to relay. Read-only.",
+    "description": "Read a delineation and wait for its job, the way get_terrain_merge waits for a merge.\n\nReturns `outcome` (ready | error | timed_out), `phase` (the job's step, then ready or error) and, once there is a\nresult: the catchment names, each chainage as CH k+mmm with `distance_m` beside it, areas (saying when one is a\nlower bound), `arrives_ha`, the arrival point, diversion suggestions (information only), the diversions a person\napplied and any marked check again, every warning as its sentence, which neighbours share water, how it was made and\nwhether a person confirmed it (a person's diversion tick keeps a confirmation; when a change to the catchments lapsed\nit, `delineation.confirmation_lapsed` says why until a person confirms again), the working and terrain resolution and\nthe tally. `timed_out` is normal: call again;\nit never starts a second job. `resolution` is the API's label of the result shown ('High resolution'; an old\nresult made before every run was High resolution carries its own label and what to do, to relay). `full_run` reports a\nHigh resolution run's\nprogress, elapsed time, expected finish, where it runs and whether it was handed to Batch. `drainage_analysis` says\nwhether the terrain's drainage analysis is being prepared (the run waits for it) or out of date (the next run works it\nout again), with the sentence to relay. Read-only.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -1432,7 +1421,7 @@
         },
         "wait_for_full_run": {
           "default": false,
-          "description": "False (default): a result already shown is returned as `ready` at once even while a High resolution run goes over it (a high resolution line run again), with that run's progress in `full_run`. True: also wait (bounded) for it; a `timed_out` read is normal, since it can take many hours: read again later, do not wait in a loop. (High resolution over a fast screen runs on a COPY of the line: read the copy's own id.)",
+          "description": "False (default): a result already shown is returned as `ready` at once even while a High resolution run goes over it (a high resolution line run again), with that run's progress in `full_run`. True: also wait (bounded) for it; a `timed_out` read is normal, since it can take many hours: read again later, do not wait in a loop.",
           "type": "boolean"
         }
       },
@@ -1695,22 +1684,6 @@
           ],
           "default": null,
           "description": "Keep the streams inside this line's catchments (a line on this terrain). Or give bbox; leave both out for the whole terrain."
-        },
-        "grid": {
-          "anyOf": [
-            {
-              "enum": [
-                "quick",
-                "full"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "'full' (high resolution) or 'quick' (the fast screen's coarser grid). Leave it out for the finest kept."
         },
         "half_width_m": {
           "default": 40.0,

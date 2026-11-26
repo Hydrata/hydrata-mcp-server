@@ -1,5 +1,5 @@
 {
- "_about": "Section 5 (sentences an agent relays) of deploy docs/reports/2026-11-17-drainage-analysis-networks/w7.5-strings.md (TASK-4530), as TASK-4535 applied it: old text to new. One row differs from the table: the read's lead keeps the words '2 m deep or less' (the operator asked for words, not symbols).",
+ "_about": "Section 5 (sentences an agent relays) of deploy docs/reports/2026-11-17-drainage-analysis-networks/w7.5-strings.md (TASK-4530), as TASK-4535 applied it: old text to new. One row differs from the table: the read's lead keeps the words '2 m deep or less' (the operator asked for words, not symbols). TASK-4689 (epic 4674 W3.1): the fast-screen and copy rows are '(removed)', their last text kept as 'old' so none comes back.",
  "rows": [
   {
    "name": "OMITTED",
@@ -9,7 +9,8 @@
   {
    "name": "FAST_SCREEN",
    "old": "fast screen (low resolution)",
-   "new": "(unchanged)"
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "HIGH_RES",
@@ -18,13 +19,15 @@
   },
   {
    "name": "FAST_SCREEN_PROFILE",
-   "old": "This is a fast screen: its ground profile is not available anywhere (not on the map either), because the coarsened ground misleads. Run High resolution to see the profile.",
-   "new": "Fast screen: no ground profile anywhere. Run High resolution to see it."
+   "old": "Fast screen: no ground profile anywhere. Run High resolution to see it.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "FAST_SCREEN_CAVEAT",
-   "old": "A fast screen is a first look at low resolution: tell the person so, and offer High resolution before they rely on it (it can still be used as the model boundary).",
-   "new": "Fast screen: a first look at low resolution. Say so and offer High resolution. It can still be the model boundary."
+   "old": "Fast screen: a first look at low resolution. Say so and offer High resolution. It can still be the model boundary.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "SUGGESTIONS_NOTE",
@@ -78,8 +81,9 @@
   },
   {
    "name": "_copied_from_text",
-   "old": "It is the High resolution copy of delineation {id} ({name}), whose fast screen is kept for comparison.",
-   "new": "High resolution copy of delineation {id} ({name}). Its fast screen is kept."
+   "old": "High resolution copy of delineation {id} ({name}). Its fast screen is kept.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "SIDE_ARGUMENT_HELP",
@@ -169,7 +173,8 @@
   {
    "name": "MODE_WORDS",
    "old": "Fast screen (mode 'quick', low resolution) / High resolution (mode 'full')",
-   "new": "(unchanged)"
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "_estimate_words (lead)",
@@ -188,8 +193,9 @@
   },
   {
    "name": "_estimate_words (copy)",
-   "old": " High resolution on this line makes a copy of it, '<name> (high res)', and runs there; the fast screen stays as it is, for comparison.",
-   "new": " High resolution runs on a copy, '<name> (high res)'. The fast screen stays."
+   "old": " High resolution runs on a copy, '<name> (high res)'. The fast screen stays.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "_refused",
@@ -203,8 +209,9 @@
   },
   {
    "name": "delineate_catchments (cannot start)",
-   "old": "The {mode} run cannot start, so no delineation was made: {sentence} Do the fast screen instead (mode='quick'): ...",
-   "new": "{mode} cannot start. No delineation was made: {sentence} Do the fast screen instead (mode='quick'): ..."
+   "old": "{mode} cannot start. No delineation was made: {sentence} Do the fast screen instead (mode='quick'): ...",
+   "new": "{run} cannot start. No delineation was made: {sentence}",
+   "removed_by": "TASK-4689"
   },
   {
    "name": "delineate_catchments (started)",
@@ -218,13 +225,15 @@
   },
   {
    "name": "delineate_catchments (full)",
-   "old": " High resolution can take many hours: no fast screen is made by this call, and the person can close the map.",
-   "new": " High resolution can take many hours. No fast screen is made. The person can close the map."
+   "old": " High resolution can take many hours. No fast screen is made. The person can close the map.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "delineate_catchments (quick)",
-   "old": " The fast screen takes seconds to a couple of minutes; I will read it and tell you the catchments and every warning. It is a first look at low resolution: offer High resolution before the person relies on it.",
-   "new": " The fast screen takes seconds to minutes. It is a first look: offer High resolution before the person relies on it."
+   "old": " The fast screen takes seconds to minutes. It is a first look: offer High resolution before the person relies on it.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "_change (changed)",
@@ -233,8 +242,9 @@
   },
   {
    "name": "_change (copy)",
-   "old": "High resolution does not replace the fast screen: Hydrata made a copy of the line, {copy_name} (delineation {copy_id}), and runs High resolution on the copy. The fast screen (delineation {id}) stays as it is, so the person can compare the two. From now on read delineation {copy_id}.",
-   "new": "High resolution runs on a copy, {copy_name} (delineation {copy_id}). The fast screen (delineation {id}) stays. Read delineation {copy_id} from now on."
+   "old": "High resolution runs on a copy, {copy_name} (delineation {copy_id}). The fast screen (delineation {id}) stays. Read delineation {copy_id} from now on.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "_change (started)",
@@ -243,13 +253,15 @@
   },
   {
    "name": "_change (quick again)",
-   "old": "The fast screen (low resolution) is running again.",
-   "new": "Fast screen running again."
+   "old": "Fast screen running again.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "_change (did not start)",
-   "old": "The {mode} run did not start: {error} The copy (delineation {copy_id}) has no result; the fast screen (delineation {id}) is unchanged. / The result shown is unchanged.",
-   "new": "{mode} did not start: {error} Copy {copy_id} has no result. Fast screen {id} is unchanged. / Result unchanged."
+   "old": "{mode} did not start: {error} Copy {copy_id} has no result. Fast screen {id} is unchanged. / Result unchanged.",
+   "new": "{run} did not start: {error} Result unchanged.",
+   "removed_by": "TASK-4689"
   },
   {
    "name": "get_delineation (error)",
@@ -293,8 +305,9 @@
   },
   {
    "name": "use_catchments_as_boundary (fast screen)",
-   "old": "These catchments are from a fast screen (low resolution): tell the person, and that a High resolution run of the line may move the boundary.",
-   "new": "From a fast screen: tell the person a High resolution run may move the boundary."
+   "old": "From a fast screen: tell the person a High resolution run may move the boundary.",
+   "new": "(removed)",
+   "removed_by": "TASK-4689 (epic 4674 D10: no fast screen, no copy of a line)"
   },
   {
    "name": "use_catchments_as_boundary (warnings)",
