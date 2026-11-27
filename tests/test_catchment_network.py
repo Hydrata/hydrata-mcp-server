@@ -1516,6 +1516,35 @@ async def test_create_sub_catchments_estimate_only_answers_what_create_makes_and
     assert not _words(json.dumps(data))
 
 
+@respx.mock
+async def test_create_sub_catchments_estimate_only_under_the_minimum_relays_the_refusal(_server):
+    # gate G2 pre-walk G2-01: line 68 'Rail' (one 7.16 ha catchment, minimum 1 ha) asked at 0.5 ha
+    _mock_project()
+    preview = {
+        "max_area_ha": 0.5,
+        "suggested_max_area_ha": 1.0,
+        "catchment_count": 1,
+        "over_count": 1,
+        "about_count": 15,
+        "sentence": "1 of 1 catchment divided · about 15 sub-catchments",
+        "over": [],
+        "refusal": "The maximum area must be at least the Minimum catchment area (1 ha).",
+    }
+    respx.post(LIST).mock(return_value=httpx.Response(200, json={"preview": preview}))
+    data = _tool_json(
+        await _call_as_caller(
+            _server,
+            "create_sub_catchments",
+            {"project_id": 42, "delineation_id": 9, "max_area_ha": 0.5, "estimate_only": True},
+        )
+    )
+    assert data["preview"]["refusal"] == preview["refusal"]
+    assert data["say_to_user"].startswith(
+        "A divide at 0.5 ha would be refused: The maximum area must be at least the Minimum catchment area (1 ha)."
+    )
+    assert "The suggested maximum is 1 ha." in data["say_to_user"]
+
+
 async def _create_tool(srv) -> dict:
     tool = next(t for t in await srv.mcp.list_tools() if t.name == "create_sub_catchments")
     return tool.to_mcp_tool().model_dump(mode="json", by_alias=True, exclude_none=True)

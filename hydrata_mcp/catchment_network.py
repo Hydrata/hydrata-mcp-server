@@ -615,12 +615,21 @@ async def _preview(project_id, preview: dict, status: int, links: dict) -> str:
         for o in over[:PREVIEW_OVER_SHOWN]
     ]
     maximum, suggested = shown["max_area_ha"], shown["suggested_max_area_ha"]
+    # gate G2 pre-walk G2-01: a maximum under the line's Minimum catchment area is the divide's refusal sentence
+    refusal = preview.get("refusal") if isinstance(preview.get("refusal"), str) else None
+    if refusal:
+        shown["refusal"] = refusal
     say = (
         f"At a maximum of {maximum:,.4g} ha: {_data(shown['sentence'])}. The suggested maximum is {suggested:,.4g} ha. "
         "Nothing was stored; ask the person for the maximum before dividing."
         if isinstance(maximum, (int, float)) and isinstance(suggested, (int, float))
         else "No preview here. Nothing was stored."
     )
+    if refusal and isinstance(suggested, (int, float)):
+        say = (
+            f"A divide at {maximum:,.4g} ha would be refused: {refusal} The suggested maximum is "
+            f"{suggested:,.4g} ha. Nothing was stored; ask the person for the maximum before dividing."
+        )
     result = {"outcome": "preview", "http_status": status, "preview": shown}
     await _hand_back(result, project_id, {"preview": {k: shown[k] for k in keys}}, say, **links)
     return json.dumps(result, indent=2)
