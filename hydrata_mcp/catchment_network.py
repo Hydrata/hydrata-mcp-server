@@ -583,24 +583,11 @@ async def _preview(project_id, preview: dict, status: int, links: dict) -> str:
 
 
 async def _estimate(project_id, body, status: int, links: dict) -> str:
-    """TASK-4587: what Create would make (the server's estimate_only), nothing stored; TASK-4697: the divide's preview."""
+    """TASK-4697: the divide's preview (the server's estimate_only), nothing stored."""
     reply = body if isinstance(body, dict) else {}
-    if isinstance(reply.get("preview"), dict):
-        return await _preview(project_id, reply["preview"], status, links)
-    estimate = reply.get("estimate") if isinstance(reply.get("estimate"), dict) else {}
-    estimate = {k: estimate.get(k) for k in ("threshold_m2", "count", "node_count", "target_count", "sentence")}
-    count, nodes, threshold, target = (estimate[k] for k in ("count", "node_count", "threshold_m2", "target_count"))
-    if isinstance(count, int) and isinstance(threshold, (int, float)):
-        asked = f"at {target}" if target is not None else "at that stream threshold"
-        say = (
-            f"Creating {asked} would make {_plural(count, 'sub-catchment')} ({_plural(nodes or 0, 'node')}) at a "
-            f"stream threshold of {round(threshold / 10_000, 2):g} ha. Nothing was stored."
-        )
-    else:
-        say = f"{_data(estimate.get('sentence')) or 'No estimate here.'} Nothing was stored."
-    result = {"outcome": "estimate", "http_status": status, "estimate": estimate}
-    await _hand_back(result, project_id, {"estimate": estimate}, say, **links)
-    return json.dumps(result, indent=2)
+    return await _preview(
+        project_id, reply.get("preview") if isinstance(reply.get("preview"), dict) else {}, status, links
+    )
 
 
 # ---------------------------------------------------------------------------
