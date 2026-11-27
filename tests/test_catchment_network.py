@@ -1534,3 +1534,90 @@ async def test_max_area_ha_the_tool_description_says_divide_never_cut_or_split(_
     assert "divide" in words.lower() and "estimate_only" in words
     assert "cut" not in words.lower().replace("shortcut", "") and "split" not in words.lower()
     assert "never choose the number" in words.lower()
+
+
+# ---------------------------------------------------------------------------
+# Epic 4674 W5.5 (TASK-4705): names in the agent tools
+# ---------------------------------------------------------------------------
+
+
+def _named_doc(provisional=True):
+    doc = _doc()
+    version = doc["version"]
+    version["status"] = "draft" if provisional else "confirmed"
+    a, b = version["sub_catchments"]
+    a.update(uid="0b1c-a", name="CH5+081-01A", provisional=provisional, drains_to_name="Line", name_history=[])
+    b.update(uid="0b1c-b", name="CH5+081-02A", provisional=provisional, drains_to_name="CH5+081-01A", name_history=[])
+    a["notes"] = [{**NOTE, "other": 12}]
+    changes = {"changed": [], "added": ["CH5+081-01A", "CH5+081-02A"], "retired": [], "first": True, "key": "k1"}
+    version["names"] = {"form": "chainage", "provisional": provisional, "changes": changes if provisional else None}
+    doc["chainage_names"] = True
+    return doc
+
+
+@respx.mock
+async def test_subcatchment_name_read_carries_the_permanent_id_name_provisional_and_drains_to(_server):
+    _mock_project()
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_named_doc()))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    a, b = data["version"]["sub_catchments"]
+    assert (a["id"], a["name"], a["provisional"], a["drains_to"], a["drains_to_node"]) == (
+        "0b1c-a",
+        "CH5+081-01A",
+        True,
+        "Line",
+        31,
+    )
+    assert (b["id"], b["drains_to"]) == ("0b1c-b", "CH5+081-01A")
+    assert a["notes"][0]["other"] == "0b1c-b"  # the note names the other by its permanent ID
+    names = data["version"]["names"]
+    assert names["form"] == "chainage" and names["chainage_names"] is True and names["provisional"] is True
+    assert names["changes"]["added"] == ["CH5+081-01A", "CH5+081-02A"]
+    assert "The names are provisional until a person confirms." in data["say_to_user"]
+
+
+@respx.mock
+async def test_subcatchment_name_confirmed_names_are_not_provisional(_server):
+    _mock_project()
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_named_doc(provisional=False)))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    assert not any(s["provisional"] for s in data["version"]["sub_catchments"])
+    assert data["version"]["names"]["changes"] is None
+    assert "provisional" not in (data.get("say_to_user") or "")
+
+
+@respx.mock
+async def test_subcatchment_name_an_old_set_keeps_its_numbers_and_says_divided(_server):
+    _mock_project()
+    doc = _doc()
+    sentence = "These sub-catchments keep their numbers until they are divided by maximum area and confirmed."
+    doc["version"]["names"] = None
+    doc["version"]["names_sentence"] = sentence
+    respx.get(SET).mock(return_value=httpx.Response(200, json=doc))
+    data = _tool_json(await _call_as_caller(_server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7}))
+    a = data["version"]["sub_catchments"][0]
+    assert a["id"] == 11 and a["label"] == 1 and "name" not in a and a["drains_to"] == 31
+    assert data["version"]["names"] is None
+    assert sentence in data["say_to_user"] and not FORBIDDEN.search(sentence) and "split" not in sentence
+
+
+@respx.mock
+async def test_subcatchment_name_edits_and_outlines_act_on_the_permanent_id(_server):
+    _mock_project()
+    respx.get(SET).mock(return_value=httpx.Response(200, json=_named_doc()))
+    post = respx.post(f"{SET}edits/").mock(return_value=httpx.Response(200, json=_edited("merge")))
+    _tool_json(
+        await _call_as_caller(
+            _server,
+            "edit_sub_catchments",
+            {"project_id": 42, "sub_catchments_id": 7, "kind": "merge", "sub_catchment_ids": ["0b1c-a", "0b1c-b"]},
+        )
+    )
+    assert json.loads(post.calls[0].request.content)["sub_catchment_ids"] == ["0b1c-a", "0b1c-b"]
+    data = _tool_json(
+        await _call_as_caller(
+            _server, "get_sub_catchments", {"project_id": 42, "sub_catchments_id": 7, "outlines_of": ["0b1c-b"]}
+        )
+    )
+    a, b = data["version"]["sub_catchments"]
+    assert "outline" in b and "outline" not in a

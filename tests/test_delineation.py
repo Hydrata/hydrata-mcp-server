@@ -2091,3 +2091,16 @@ async def test_estimate_of_a_run_that_goes_at_once_says_no_wait(_server):
         )
     )
     assert "after the drainage analysis" not in data["say_to_user"]
+
+
+@respx.mock
+async def test_get_delineation_subcatchment_name_form_reads_chainage_names_on_the_line(_server):
+    # epic 4674 W5.5 (TASK-4705): the line read carries chainage_names, so an agent knows the form the sub-catchment names
+    # take (CH18+335-01A with it on, <Name>-01A with it off)
+    _mock_project()
+    for on in (True, False):
+        doc = _doc()
+        doc["line"]["chainage_names"] = on
+        respx.get(ONE).mock(return_value=httpx.Response(200, json=doc))
+        data = await _read(_server, timeout_seconds=0, poll_interval_seconds=0)
+        assert data["line"]["chainage_names"] is on

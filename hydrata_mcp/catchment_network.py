@@ -132,9 +132,40 @@ def _proposal(p: dict) -> dict:
     return out
 
 
+def _names(names) -> dict | None:
+    """TASK-4705: {'form': 'chainage' | 'name', 'chainage_names', 'provisional', 'changes'} of a named version, or None
+    for a set divided before names (its numbers stay)."""
+    if not isinstance(names, dict):
+        return None
+    changes = names.get("changes") if isinstance(names.get("changes"), dict) else None
+    listed = None
+    if changes is not None:
+        listed = {
+            "changed": [
+                {"from": _data(c.get("from")), "to": _data(c.get("to"))}
+                for c in changes.get("changed") or []
+                if isinstance(c, dict)
+            ],
+            **{k: [_data(n) for n in changes.get(k) or []] for k in ("added", "retired")},
+        }
+    return {
+        "form": names.get("form"),
+        "chainage_names": names.get("form") == "chainage",
+        "provisional": bool(names.get("provisional")),
+        "changes": listed,
+    }
+
+
+NAMES_PROVISIONAL = "The names are provisional until a person confirms."
+
+
 def _sentences(version: dict) -> list[str]:
     """The marks and waits of a version, as sentences to relay."""
     out = []
+    if version.get("names_sentence"):
+        out.append(version["names_sentence"])  # TASK-4705: a set divided before names keeps its numbers
+    elif isinstance(version.get("names"), dict) and version["names"].get("provisional"):
+        out.append(NAMES_PROVISIONAL)
     # the line having run again, or (W12.5, TASK-4576) a set created by an earlier rule: the one blocker, as on the screen
     if version.get("line_changed_since") or version.get("earlier_rule"):
         mark = version.get("line_changed_sentence") or version.get("earlier_rule_sentence")
@@ -292,6 +323,8 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         "diversions_changed_since": bool(version.get("diversions_changed_since")),
         **({"diversions_changed": version["diversions_changed"]} if version.get("diversions_changed") else {}),
         "culverts": _culverts(version),
+        # TASK-4705: how the names are formed (chainage, or the line's Name) and what confirming changes in them
+        "names": _names(version.get("names")),
         "sentences": _sentences(version),
     }
     if not full or "sub_catchments" not in version:
@@ -312,14 +345,25 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         }
         for n in version.get("nodes") or []
     ]
+    # epic 4674 W5 (TASK-4705): a sub-catchment's `id` is its permanent ID (the same in every version and after every
+    # edit; edits take it), its `name` (CH18+335-01A, or <Name>-01A), `provisional` until a person confirms, and `drains_to`
+    # the name of the sub-catchment it drains into ('Line': to the line); `drains_to_node` the node. A set divided before
+    # names keeps its numbers (`label`) and the API's id.
+    uid_of = {
+        s.get("id"): s.get("uid") or s.get("id") for s in version.get("sub_catchments") or [] if isinstance(s, dict)
+    }
     out["sub_catchments"] = [
         {
-            **{k: s.get(k) for k in ("id", "label", "drains_to", "drains_to_outside", "line_catchment_id", "area_ha")},
+            "id": s.get("uid") or s.get("id"),
+            **({"name": _data(s.get("name")), "provisional": bool(s.get("provisional"))} if s.get("name") else {}),
+            "drains_to": _data(s.get("drains_to_name")) if s.get("name") else s.get("drains_to"),
+            **({"drains_to_node": s.get("drains_to")} if s.get("name") else {}),
+            **{k: s.get(k) for k in ("label", "drains_to_outside", "line_catchment_id", "area_ha")},
             # W12.5 (TASK-4582): where its label sits, inside its own piece, as [lon, lat]
             "label_point": _point(s.get("label_point")),
             "facts": _compact_facts(s.get("facts"), definitions),
-            "notes": [_note(n) for n in s.get("notes") or []],
-            **({"outline": _rounded(s.get("polygon"))} if s.get("id") in shapes_of else {}),
+            "notes": [{**_note(n), "other": uid_of.get(n.get("other"), n.get("other"))} for n in s.get("notes") or []],
+            **({"outline": _rounded(s.get("polygon"))} if {s.get("id"), s.get("uid")} & set(shapes_of) else {}),
         }
         for s in version.get("sub_catchments") or []
     ]
@@ -608,12 +652,12 @@ async def get_sub_catchments(
     ] = POLL_DEFAULT_TIMEOUT_SECONDS,
     poll_interval_seconds: Annotated[float, "Seconds between polls (default 5)"] = 5.0,
     outlines_of: Annotated[
-        list[int] | None,
+        list[int | str] | None,
         "With sub_catchments_id: the sub-catchments whose outlines to include (GeoJSON in lon/lat, as `outline`), for "
         "example the two either side of a boundary you want to propose moving. At most 10.",
     ] = None,
     streams_of: Annotated[
-        list[int] | None,
+        list[int | str] | None,
         "With sub_catchments_id: the sub-catchments whose streams to include (GeoJSON MultiLineString in lon/lat, as "
         "`streams`): the streams a divide goes on, as the map draws them. Every sub-catchment then says `has_stream` "
         "(false: no stream to divide on; add a forced point instead). At most 10.",
@@ -691,9 +735,9 @@ async def _streams(project_id, set_id, version: dict, wanted: list) -> dict:
     except HydrataAPIError as exc:
         return {"sentence": _data(str(exc))}
     doc = doc if isinstance(doc, dict) else {}
-    marks = {s.get("id"): s for s in doc.get("sub_catchments") or [] if isinstance(s, dict)}
+    marks = {s.get("label"): s for s in doc.get("sub_catchments") or [] if isinstance(s, dict)}
     for sub in version.get("sub_catchments") or []:
-        mark = marks.get(sub.get("id")) or {}
+        mark = marks.get(sub.get("label")) or {}
         sub["has_stream"] = bool(mark.get("has_stream"))
         if sub.get("id") in wanted and mark.get("has_stream"):
             sub["streams"] = _rounded(mark.get("streams"))
@@ -733,7 +777,9 @@ async def edit_sub_catchments(
     ],
     lon: Annotated[float | None, "For divide, move_node and add_forced_point: longitude (WGS84)"] = None,
     lat: Annotated[float | None, "For divide, move_node and add_forced_point: latitude (WGS84)"] = None,
-    sub_catchment_ids: Annotated[list[int] | None, "For merge: the ids of the two sub-catchments"] = None,
+    sub_catchment_ids: Annotated[
+        list[int | str] | None, "For merge: the ids of the two sub-catchments (get_sub_catchments' `id`)"
+    ] = None,
     node_id: Annotated[int | None, "For move_node: the node's id"] = None,
     node_kind: Annotated[
         Literal["forced_point", "culvert_inlet"], "For add_forced_point: a forced point (default) or a culvert inlet"
@@ -994,7 +1040,7 @@ async def _propose_link(project_id, sub_catchments_id, payload: dict) -> str:
 async def propose_sub_catchment_boundary(
     project_id: Annotated[int, "The project ID (Editor rights)"],
     sub_catchments_id: Annotated[int, "The set: its `sub_catchments_id`"],
-    sub_catchment_ids: Annotated[list[int], "The two sub-catchments either side of the boundary (their ids)"],
+    sub_catchment_ids: Annotated[list[int | str], "The two sub-catchments either side of the boundary (their ids)"],
     line: Annotated[
         list[list[float]],
         "The new stretch of boundary as [[lon, lat], ...] (at least 2 points, WGS84). Start and end it ON the boundary "
@@ -1027,6 +1073,10 @@ async def propose_sub_catchment_boundary(
         before = await client.get(_path(project_id, sub_catchments_id))
         rows = ((before or {}).get("version") or {}).get("sub_catchments") or [] if isinstance(before, dict) else []
         labels = {s.get("id"): s.get("label") for s in rows if isinstance(s, dict)}
+        # TASK-4705: by its permanent ID, the name a person sees
+        labels.update(
+            {s.get("uid"): s.get("name") or s.get("label") for s in rows if isinstance(s, dict) and s.get("uid")}
+        )
     except Exception:  # the labels only word the answer; the proposal is filed either way
         labels = {}
     payload = {

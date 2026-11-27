@@ -1296,7 +1296,14 @@
           "anyOf": [
             {
               "items": {
-                "type": "integer"
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               },
               "type": "array"
             },
@@ -1305,7 +1312,7 @@
             }
           ],
           "default": null,
-          "description": "For merge: the ids of the two sub-catchments"
+          "description": "For merge: the ids of the two sub-catchments (get_sub_catchments' `id`)"
         },
         "sub_catchments_id": {
           "description": "The set to change: its `sub_catchments_id`",
@@ -1734,7 +1741,14 @@
           "anyOf": [
             {
               "items": {
-                "type": "integer"
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               },
               "type": "array"
             },
@@ -1758,7 +1772,14 @@
           "anyOf": [
             {
               "items": {
-                "type": "integer"
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
               },
               "type": "array"
             },
@@ -2427,7 +2448,14 @@
         "sub_catchment_ids": {
           "description": "The two sub-catchments either side of the boundary (their ids)",
           "items": {
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "type": "array"
         },
