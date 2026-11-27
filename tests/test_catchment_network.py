@@ -189,7 +189,7 @@ async def test_create_sub_catchments_posts_the_line_and_answers_the_set_compactl
             {
                 "project_id": 42,
                 "delineation_id": 9,
-                "target_count": 12,
+                "max_area_ha": 12.0,
                 "catchment_ids": [501],
                 "forced_points": [[149.105, -35.255]],
                 "name": "Agent set",
@@ -198,7 +198,7 @@ async def test_create_sub_catchments_posts_the_line_and_answers_the_set_compactl
     )
     assert json.loads(post.calls[0].request.content) == {
         "delineation_id": 9,
-        "target_count": 12,
+        "max_area_ha": 12.0,
         "catchment_ids": [501],
         "forced_points": [{"lon": 149.105, "lat": -35.255}],
         "name": "Agent set",
@@ -208,7 +208,7 @@ async def test_create_sub_catchments_posts_the_line_and_answers_the_set_compactl
     assert data["ui_url"].endswith(MAP_URL)
     assert "polygon" not in json.dumps(data) and "geometry" not in json.dumps(data)  # shapes stay on the map
     say = data["say_to_user"]
-    assert say.startswith("I created 2 sub-catchments (2 nodes) from Kaleen toe")
+    assert say.startswith("I divided Kaleen toe")
     assert "a person confirms them on the map" in say
     assert not _words(json.dumps(data)), _words(json.dumps(data))
 
@@ -221,10 +221,10 @@ async def test_create_sub_catchments_again_posts_to_the_set_without_the_line(_se
         await _call_as_caller(
             _server,
             "create_sub_catchments",
-            {"project_id": 42, "delineation_id": 9, "sub_catchments_id": 7, "threshold_m2": 50_000},
+            {"project_id": 42, "delineation_id": 9, "sub_catchments_id": 7, "max_area_ha": 5},
         )
     )
-    assert json.loads(post.calls[0].request.content) == {"threshold_m2": 50_000.0}
+    assert json.loads(post.calls[0].request.content) == {"max_area_ha": 5.0}
     assert data["outcome"] == "created_again"
 
 
@@ -261,6 +261,7 @@ async def test_create_sub_catchments_on_cloud_compute_answers_creating_and_how_t
 
 @respx.mock
 async def test_create_sub_catchments_refuses_both_a_target_and_a_threshold_before_sending(_server):
+    # epic 4674 W4 (TASK-4699): the tool takes neither any more; a call with them is refused before anything is sent
     post = respx.post(LIST).mock(return_value=httpx.Response(201, json=_doc()))
     text = _tool_error_text(
         await _call_as_caller(
@@ -269,7 +270,7 @@ async def test_create_sub_catchments_refuses_both_a_target_and_a_threshold_befor
             {"project_id": 42, "delineation_id": 9, "target_count": 10, "threshold_m2": 1000},
         )
     )
-    assert "not both" in text and not post.called
+    assert "target_count" in text and "threshold_m2" in text and not post.called
 
 
 @respx.mock
@@ -1483,18 +1484,53 @@ async def test_edit_sub_catchments_take_diversions_in_refused_after_the_line_ran
 
 @respx.mock
 async def test_create_sub_catchments_estimate_only_answers_what_create_makes_and_stores_nothing(_server):
+    # epic 4674 W4 (TASK-4697): the estimate of a divide by a maximum area is its preview
     _mock_project()
-    estimate = {"threshold_m2": 18_000.0, "count": 10, "node_count": 7, "target_count": 8, "sentence": None}
-    post = respx.post(LIST).mock(return_value=httpx.Response(200, json={"estimate": estimate}))
+    preview = {
+        "max_area_ha": 4_600.0,
+        "suggested_max_area_ha": 4_600.0,
+        "catchment_count": 38,
+        "over_count": 4,
+        "about_count": 62,
+        "sentence": "4 of 38 catchments divided · about 62 sub-catchments",
+        "over": [{"catchment_id": 501, "name": "Rail Ch 1200", "chainage_m": 1200.0, "area_ha": 92_495.0, "about": 21}],
+    }
+    post = respx.post(LIST).mock(return_value=httpx.Response(200, json={"preview": preview}))
     data = _tool_json(
         await _call_as_caller(
             _server,
             "create_sub_catchments",
-            {"project_id": 42, "delineation_id": 9, "target_count": 8, "estimate_only": True},
+            {"project_id": 42, "delineation_id": 9, "max_area_ha": 4600, "estimate_only": True},
         )
     )
-    assert json.loads(post.calls[0].request.content) == {"delineation_id": 9, "target_count": 8, "estimate_only": True}
-    assert data["outcome"] == "estimate" and data["estimate"] == estimate
+    assert json.loads(post.calls[0].request.content) == {
+        "delineation_id": 9,
+        "max_area_ha": 4600.0,
+        "estimate_only": True,
+    }
+    assert data["outcome"] == "preview" and data["preview"]["over"] == preview["over"]
     assert data["say_to_user"] == (
-        "Creating at 8 would make 10 sub-catchments (7 nodes) at a stream threshold of 1.8 ha. Nothing was stored."
+        "At a maximum of 4,600 ha: 4 of 38 catchments divided · about 62 sub-catchments. The suggested maximum is "
+        "4,600 ha. Nothing was stored; ask the person for the maximum before dividing."
     )
+    assert not _words(json.dumps(data))
+
+
+async def _create_tool(srv) -> dict:
+    tool = next(t for t in await srv.mcp.list_tools() if t.name == "create_sub_catchments")
+    return tool.to_mcp_tool().model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+async def test_max_area_ha_the_tool_schema_has_it_and_no_target_count_or_threshold(_server):
+    schema = (await _create_tool(_server))["inputSchema"]["properties"]
+    assert "max_area_ha" in schema and "target_count" not in schema and "threshold_m2" not in schema
+
+
+async def test_max_area_ha_the_tool_description_says_divide_never_cut_or_split(_server):
+    tool = await _create_tool(_server)
+    words = " ".join(
+        [tool.get("description", ""), *(p.get("description", "") for p in tool["inputSchema"]["properties"].values())]
+    )
+    assert "divide" in words.lower() and "estimate_only" in words
+    assert "cut" not in words.lower().replace("shortcut", "") and "split" not in words.lower()
+    assert "never choose the number" in words.lower()

@@ -640,9 +640,9 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
-      "title": "Create sub-catchments from a line's catchments"
+      "title": "Divide a line's catchments into sub-catchments"
     },
-    "description": "Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,\nslope, flow length...), the nodes' total catchments and the reaches between nodes.\n\nThe line must have a High resolution result: an old coarse result is refused with the sentence 'High res only' (run\nthe line again first). Creating is by a target number (about 20 by default) or a stream threshold, not\nboth. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and\nget_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),\nand give them the link (`ui_url`). Shapes stay on the map. With estimate_only, nothing is created: the answer is\nthe threshold and number Create would make (the number made can differ from the one asked for).",
+    "description": "Divide a line's catchments into sub-catchments by one maximum area: each sub-catchment drains to a node, with its\nmeasured facts (area, slope, flow length...), the nodes' total catchments and the reaches between nodes.\n\nBefore dividing, call it with estimate_only=true and tell the person the preview (how many catchments are over the\nmaximum, about how many sub-catchments, the suggested value), and ask them for the maximum. Never choose the number\nfor them without saying so. The line must have a High resolution result: an old coarse result is refused with the\nsentence 'High res only' (run the line again first). On a terrain too large for the web server it is done on cloud\ncompute: the answer is `creating` and get_sub_catchments waits for it. The result is a draft: tell the user a person\nconfirms it on the map (you cannot), and give them the link (`ui_url`). Shapes stay on the map.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -667,7 +667,7 @@
         },
         "estimate_only": {
           "default": false,
-          "description": "True: create nothing, and answer what Create would make with these choices (the stream threshold and the number of sub-catchments and nodes, the engine's own figures), as the step shows before Create.",
+          "description": "True: divide nothing, and answer the preview at max_area_ha (or at the suggested value): how many catchments are over it, about how many sub-catchments that makes, and the suggested value. Nothing is stored.",
           "type": "boolean"
         },
         "forced_points": {
@@ -687,6 +687,18 @@
           ],
           "default": null,
           "description": "Places that must be a node, as [[lon, lat], ...] (WGS84), for example a gauge or a road crossing."
+        },
+        "max_area_ha": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The largest a sub-catchment may be, in hectares: a catchment at or under it stays one sub-catchment, a larger one is divided until every piece fits. The person chooses it: read the preview (estimate_only) and its suggested value first, and state them. Omitted: the suggested value (the largest catchment over 20)."
         },
         "name": {
           "default": "",
@@ -708,30 +720,6 @@
           ],
           "default": null,
           "description": "To create a set again (its draft, or a new draft after a confirmed version): its `sub_catchments_id`. Omit it to create a new set. An agent creates again only a set an agent made."
-        },
-        "target_count": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "About how many sub-catchments to make (1 to 500). The default is about 20. Not with threshold_m2."
-        },
-        "threshold_m2": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Instead of a target number: the stream threshold in square metres (a stream starts where this much ground drains to it). Not with target_count."
         }
       },
       "required": [
@@ -741,7 +729,7 @@
       "type": "object"
     },
     "name": "create_sub_catchments",
-    "title": "Create sub-catchments from a line's catchments"
+    "title": "Divide a line's catchments into sub-catchments"
   },
   {
     "annotations": {

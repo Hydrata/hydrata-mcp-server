@@ -1,9 +1,11 @@
 """Epic 4445 W11.4 - sub-catchments through four tools (D16: an agent edits; what overrules the terrain is a proposal).
 
-create_sub_catchments  - creates sub-catchments from a High resolution line's catchments, by a target number (about 20 by
-                         default) or a stream threshold, with forced points; or creates a set again. An old coarse result
-                         is refused with the engine's sentence ('High res only', D20). A terrain too large for the web server is
-                         done on cloud compute: the answer is 'creating', and get_sub_catchments waits for it.
+create_sub_catchments  - divides a High resolution line's catchments into sub-catchments by ONE maximum area (epic 4674
+                         W4, max_area_ha), with forced points; or divides a set again. estimate_only first answers the
+                         preview (how many catchments are over the maximum, about how many sub-catchments, the suggested
+                         value), which the agent states before it divides. An old coarse result is refused with the
+                         engine's sentence ('High res only', D20). A terrain too large for the web server is done on cloud
+                         compute: the answer is 'creating', and get_sub_catchments waits for it.
 get_sub_catchments     - the sets of a line, or one set read compactly: nodes, sub-catchments, reaches and their facts (each
                          fact's definition, unit and source once, in `fact_definitions`), the 'can share water' notes, the
                          dragged boundaries and the proposals waiting for a person, and the marks ('The line has run again
@@ -27,7 +29,7 @@ drainage point, `diverted_to`), each diversion link with its facts (area arrivin
 sub-catchment's `label_point` (inside its own piece); a diversion ticked or unticked in step 2 since reads 'Diversions
 changed in step 2.' (never a blocker), and edit_sub_catchments' take_diversions_in takes them in with every edit made again:
 a preview first (nothing stored, the edits made again and those that cannot be, each with its sentence), then preview
-false. create_sub_catchments' estimate_only answers what Create would make (TASK-4587), nothing stored.
+false. create_sub_catchments' estimate_only answers the divide's preview (TASK-4697), nothing stored.
 
 No tool confirms (a person does, in the browser) or stores a drainage barrier. Adopting the confirmed sub-catchments is part
 of adopting a line's catchments (adopt_catchments). Words (Decision 889): sub-catchments, create and divide. The API's own
@@ -272,8 +274,12 @@ def _version(version, full=True, definitions=None, shapes_of=()) -> dict | None:
         "status": version.get("status"),
         "based_on": version.get("based_on"),
         "how_created": {
-            "method": how.get("by"),  # target or threshold ("by" would read as a person's text)
-            **{k: how.get(k) for k in ("target_count", "threshold_m2", "min_area_m2") if how.get(k) is not None},
+            "method": how.get("by"),  # max_area, target or threshold ("by" would read as a person's text)
+            **{
+                k: how.get(k)
+                for k in ("max_area_m2", "target_count", "threshold_m2", "min_area_m2")
+                if how.get(k) is not None
+            },
             "forced_points": len(how.get("forced_points") or []),
         },
         "counts": {"sub_catchments": sizes.get("count"), "nodes": sizes.get("node_count")},
@@ -459,13 +465,11 @@ async def create_sub_catchments(
         "To create a set again (its draft, or a new draft after a confirmed version): its `sub_catchments_id`. Omit it "
         "to create a new set. An agent creates again only a set an agent made.",
     ] = None,
-    target_count: Annotated[
-        int | None, "About how many sub-catchments to make (1 to 500). The default is about 20. Not with threshold_m2."
-    ] = None,
-    threshold_m2: Annotated[
+    max_area_ha: Annotated[
         float | None,
-        "Instead of a target number: the stream threshold in square metres (a stream starts where this much ground "
-        "drains to it). Not with target_count.",
+        "The largest a sub-catchment may be, in hectares: a catchment at or under it stays one sub-catchment, a larger "
+        "one is divided until every piece fits. The person chooses it: read the preview (estimate_only) and its "
+        "suggested value first, and state them. Omitted: the suggested value (the largest catchment over 20).",
     ] = None,
     catchment_ids: Annotated[
         list[int] | None,
@@ -478,29 +482,25 @@ async def create_sub_catchments(
     name: Annotated[str, "A short name for a new set (up to 200 characters)"] = "",
     estimate_only: Annotated[
         bool,
-        "True: create nothing, and answer what Create would make with these choices (the stream threshold and the "
-        "number of sub-catchments and nodes, the engine's own figures), as the step shows before Create.",
+        "True: divide nothing, and answer the preview at max_area_ha (or at the suggested value): how many catchments "
+        "are over it, about how many sub-catchments that makes, and the suggested value. Nothing is stored.",
     ] = False,
 ) -> str:
-    """Create sub-catchments from a line's catchments: each sub-catchment drains to a node, with its measured facts (area,
-    slope, flow length...), the nodes' total catchments and the reaches between nodes.
+    """Divide a line's catchments into sub-catchments by one maximum area: each sub-catchment drains to a node, with its
+    measured facts (area, slope, flow length...), the nodes' total catchments and the reaches between nodes.
 
-    The line must have a High resolution result: an old coarse result is refused with the sentence 'High res only' (run
-    the line again first). Creating is by a target number (about 20 by default) or a stream threshold, not
-    both. On a terrain too large for the web server it is done on cloud compute: the answer is `creating` and
-    get_sub_catchments waits for it. The result is a draft: tell the user a person confirms it on the map (you cannot),
-    and give them the link (`ui_url`). Shapes stay on the map. With estimate_only, nothing is created: the answer is
-    the threshold and number Create would make (the number made can differ from the one asked for).
+    Before dividing, call it with estimate_only=true and tell the person the preview (how many catchments are over the
+    maximum, about how many sub-catchments, the suggested value), and ask them for the maximum. Never choose the number
+    for them without saying so. The line must have a High resolution result: an old coarse result is refused with the
+    sentence 'High res only' (run the line again first). On a terrain too large for the web server it is done on cloud
+    compute: the answer is `creating` and get_sub_catchments waits for it. The result is a draft: tell the user a person
+    confirms it on the map (you cannot), and give them the link (`ui_url`). Shapes stay on the map.
     """
-    if target_count is not None and threshold_m2 is not None:
-        raise ToolError("Give target_count or threshold_m2, not both. Nothing was sent.")
     payload: dict = {}
     if sub_catchments_id is None:
         payload["delineation_id"] = delineation_id
-    if target_count is not None:
-        payload["target_count"] = target_count
-    if threshold_m2 is not None:
-        payload["threshold_m2"] = float(threshold_m2)
+    if max_area_ha is not None:
+        payload["max_area_ha"] = float(max_area_ha)
     if catchment_ids is not None:
         payload["catchment_ids"] = list(catchment_ids)
     if forced_points:
@@ -516,7 +516,7 @@ async def create_sub_catchments(
     body, status = await _post(path, payload)
     links = _links(delineation_id)
     if status >= 400:
-        result = _refused(body, status, "creating the sub-catchments")
+        result = _refused(body, status, "dividing into sub-catchments")
         say = result.pop("say_to_user")
         await _hand_back(result, project_id, {"http_status": status, "error_code": result["error_code"]}, say, **links)
         return json.dumps(result, indent=2)
@@ -534,15 +534,17 @@ async def create_sub_catchments(
             "read is normal: read again later."
         )
         say = (
-            f"The sub-catchments of {line} are being created on cloud compute (set {doc.get('id')}). "
+            f"The sub-catchments of {line} are being divided on cloud compute (set {doc.get('id')}). "
             f"{_data(job.get('sentence')) or ''}".rstrip()
         )
     else:
         result["outcome"] = "created_again" if again else "created"
         counts = version.get("counts") or {}
+        maximum = (version.get("how_created") or {}).get("max_area_m2")
+        at = f" at a maximum of {_ha(maximum)} ha" if isinstance(maximum, (int, float)) else ""
         say = (
-            f"I created {_plural(counts.get('sub_catchments') or 0, 'sub-catchment')} "
-            f"({_plural(counts.get('nodes') or 0, 'node')}) from {line} (set {doc.get('id')}, version "
+            f"I divided {line} into {_plural(counts.get('sub_catchments') or 0, 'sub-catchment')}{at} "
+            f"({_plural(counts.get('nodes') or 0, 'node')}; set {doc.get('id')}, version "
             f"{version.get('number')}, a draft). Open the link to see them; a person confirms them on the map."
         )
     result["http_status"] = status
@@ -552,9 +554,39 @@ async def create_sub_catchments(
     return json.dumps(result, indent=2)
 
 
+def _ha(value_m2) -> str:
+    return f"{value_m2 / 10_000:,.4g}"
+
+
+PREVIEW_OVER_SHOWN = 10
+
+
+async def _preview(project_id, preview: dict, status: int, links: dict) -> str:
+    """TASK-4697: the divide's preview at a maximum (the server's estimate_only), nothing stored."""
+    keys = ("max_area_ha", "suggested_max_area_ha", "catchment_count", "over_count", "about_count", "sentence")
+    shown = {k: preview.get(k) for k in keys}
+    over = [o for o in preview.get("over") or [] if isinstance(o, dict)]
+    shown["over"] = [
+        {k: o.get(k) for k in ("catchment_id", "name", "chainage_m", "area_ha", "about")}
+        for o in over[:PREVIEW_OVER_SHOWN]
+    ]
+    maximum, suggested = shown["max_area_ha"], shown["suggested_max_area_ha"]
+    say = (
+        f"At a maximum of {maximum:,.4g} ha: {_data(shown['sentence'])}. The suggested maximum is {suggested:,.4g} ha. "
+        "Nothing was stored; ask the person for the maximum before dividing."
+        if isinstance(maximum, (int, float)) and isinstance(suggested, (int, float))
+        else "No preview here. Nothing was stored."
+    )
+    result = {"outcome": "preview", "http_status": status, "preview": shown}
+    await _hand_back(result, project_id, {"preview": {k: shown[k] for k in keys}}, say, **links)
+    return json.dumps(result, indent=2)
+
+
 async def _estimate(project_id, body, status: int, links: dict) -> str:
-    """TASK-4587: what Create would make (the server's estimate_only), nothing stored."""
+    """TASK-4587: what Create would make (the server's estimate_only), nothing stored; TASK-4697: the divide's preview."""
     reply = body if isinstance(body, dict) else {}
+    if isinstance(reply.get("preview"), dict):
+        return await _preview(project_id, reply["preview"], status, links)
     estimate = reply.get("estimate") if isinstance(reply.get("estimate"), dict) else {}
     estimate = {k: estimate.get(k) for k in ("threshold_m2", "count", "node_count", "target_count", "sentence")}
     count, nodes, threshold, target = (estimate[k] for k in ("count", "node_count", "threshold_m2", "target_count"))
